@@ -48,7 +48,8 @@ type interactionPayload struct {
 		ID string `json:"id"`
 	} `json:"channel"`
 	Container struct {
-		MessageTS string `json:"message_ts"`
+		MessageTS   string `json:"message_ts"`
+		IsEphemeral bool   `json:"is_ephemeral"`
 	} `json:"container"`
 	// Message carries the source message of a block_actions click or a
 	// message_action shortcut. TS is set on message_action payloads; ThreadTS
@@ -273,14 +274,14 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// replace it, so it is filed under the prompt's anchor.
 		a.recordSignInClick(payload.User.ID, action.Value, payload.ResponseURL)
 		return
-	case connectorDismiss:
-		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
+	case signInDecline:
+		a.handleSignInDecline(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return
 	case authorizeAllOpen:
-		a.openAuthorizeModal(ctx, payload.User.ID, payload.TriggerID, action.Value)
+		a.openAuthorizeModal(ctx, payload.User.ID, payload.TriggerID)
 		return
 	case authorizeGrantOpen:
-		// URL button: the browser opens the grant flow itself; the landing
+		// URL button: the browser opens the grant flow itself; Refresh
 		// redraws the modal.
 		return
 	case authorizeRefresh:
@@ -289,12 +290,24 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		}
 		return
 	case connectorConnect:
-		// URL button: the browser opens the consent flow itself. The click's
-		// response_url is the only handle that can rewrite the ephemeral
-		// prompt later, so it is recorded under the button's completion state.
-		a.handleConnectorConnect(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		// URL button: the browser opens the link itself, and the click is the
+		// person's consent to it. Only an ephemeral prompt is rewritten through
+		// the click's response_url; a card, a real message, is rewritten in
+		// place by its own flow.
+		responseURL := payload.ResponseURL
+		if !payload.Container.IsEphemeral {
+			responseURL = ""
+		}
+		a.handleConnectorConnect(payload.User.ID, action.Value, responseURL)
 		return
-	case teamReviewOpen:
+	case connectorDecline:
+		responseURL := payload.ResponseURL
+		if !payload.Container.IsEphemeral {
+			responseURL = ""
+		}
+		a.handleConnectorDecline(payload.User.ID, action.Value, responseURL)
+		return
+	case teamReviewOpen, refusalOpenAgent:
 		// URL button: the browser opens the link itself.
 		return
 	case teamReviewApprove:
@@ -396,45 +409,6 @@ func classifyAction(actionID string) (hitlAction, bool) {
 	return hitlAction{}, false
 }
 
-// validConnectorName bounds a backend name arriving in a button value:
-// interaction payloads are attacker-shaped input, so an empty or oversized
-// value is dropped rather than persisted.
-func validConnectorName(server string) bool {
-	return server != "" && len(server) <= maxConnectorNameLen
-}
-
-// handleConnectorConnect records a Connect click's response_url under the
-// button's completion state, so the post-login landing can rewrite the
-// ephemeral prompt. A value that resolves to no state (a button without a
-// post-login redirect carries the server name instead, and state expires) or a
-// clicker other than the prompted user is a no-op.
-// When the browser landing already completed (the redirect raced ahead of
-// Slack's interaction delivery), the click owns the pending rewrite.
-func (a *Adapter) handleConnectorConnect(ctx context.Context, slackUser, stateID, responseURL string) {
-	entry, rewriteNow, ok := a.recordConnectorConnectClick(slackUser, stateID, responseURL)
-	if !ok {
-		return
-	}
-	if rewriteNow {
-		if err := respondURL(ctx, responseURL, entry.threadTS, connectorSignedInNotice(entry.server)); err != nil {
-			a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "user", slackUser, "server", entry.server, "error", err)
-		}
-	}
-}
-
-// handleConnectorDismiss acknowledges a "Not now" click and replaces the
-// ephemeral prompt. The prompt cooldown already suppresses re-prompts for the
-// backend, so no state is cleared here.
-func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, threadTS, responseURL string) {
-	if !validConnectorName(server) {
-		return
-	}
-	text := connectorDismissedNotice()
-	if err := respondURL(ctx, responseURL, threadTS, text); err != nil {
-		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
-	}
-}
-
 // handleAccessDecision resolves the initiator's Yes/No on a newcomer's request
 // to instruct the agent. On Yes the newcomer is granted (additively) and their
 // held message is replayed through dispatch; on No it is discarded. The
@@ -479,7 +453,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 			noticeChannel = parked[0].slackChannel
 		}
 		if noticeChannel != "" {
-			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, accessDeniedNewcomerNotice); err != nil {
+			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, fmt.Sprintf(accessDeniedNewcomerNotice, a.slashCommand())); err != nil {
 				a.Logger.Warn("slack: post access denied notice failed", "thread", threadID, "newcomer", newcomerID, "error", err)
 			}
 		}
@@ -509,7 +483,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 	for _, req := range parked {
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after access grant failed",
-				"thread", threadID, "user", newcomerID, "error", err)
+				"thread", threadID, "user", newcomerID, "failure_class", channels.ClassifyFailure(err), "error", err)
 			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 		}
 	}
@@ -642,6 +616,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	decision, resumeText := buildButtonDecision(act, task.Prompt)
+	decision = answering(task.Prompt, decision)
 
 	// Replace the controls with the decision: an approval card keeps its
 	// section and names who decided; a question keeps its question and names

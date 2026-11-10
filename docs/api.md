@@ -123,8 +123,9 @@ moment, and the message keeps its buttons.
 
 One decision closes a review across replicas too: the click's claim on the record is a
 compare-and-set on the Valkey store, so of two clicks only one calls the tool and the other is
-told who decided (and how: approved or denied). A claim left without an outcome for five minutes
-— a gateway that died during the tool call, which the muster client bounds to a minute — is
+told who decided (and how: approved or denied). A claim left without an outcome for seven minutes
+— a gateway that died during the tool call, which the muster client bounds to a minute, or to six
+while muster waits for an accepted sign-in — is
 taken over by the next click instead of holding the review for the rest of its seven days. A
 *Deny* click holds nothing: the modal it opens claims the review on submission.
 
@@ -135,11 +136,11 @@ nothing of structured data without one; a denial also shows the typed reason. An
 a refusal (the manager finding the person outside the team, or the author of the change) and is
 written once, as a status line under the buttons naming the clicker, the decision and the reason,
 where the clicker and the team both read it; the review stays open.
-muster's sign-in challenge — the tool's server holds no grant for the person yet — is not a
-refusal: the clicker gets a *Connect <server>* button, and when the gateway has a public base URL
-(`obo.callbackBaseURL`) and muster's `oauth.mcpClient.postLoginRedirectAllowlist` admits
-`<base>/connectors/complete`, the sign-in lands back on the gateway and the decision — the
-approval, or the denial with its reason — is submitted again as the person without a second click.
+A sign-in muster asks for (the tool's server holds no grant for the person yet) is not a
+refusal: the clicker gets a Connect prompt with muster's link, and their click on it accepts the
+sign-in. The gateway retries the call with the `accept`, muster waits for the sign-in and runs
+it, so the decision (the approval, or the denial with its reason) is submitted as the person
+without a second click on the review.
 
 ### `POST /reviews/{id}/results`
 
@@ -266,6 +267,14 @@ person's email.
 Response `201` with `id`, `channel` and the message's `ts`; `404` for a conversation the gateway
 does not hold — unknown, or quiet for 30 days. Each message, and each reply delivered, keeps the
 conversation another 30 days.
+
+### `GET /groups/{group}/members/{email}`
+
+Whether the person with `email` is in the workspace's enabled user group whose handle is `group`
+(`team-bumblebee` for `@team-bumblebee`): a service that lets a team decide asks it who is on the
+team. Response `200` with `{"member": true}` or `{"member": false}` (also for a person the
+workspace does not know); `404` when no enabled group has the handle; `502` when Slack cannot be
+asked. Needs the app's `usergroups:read` scope.
 
 ## Admin surface
 

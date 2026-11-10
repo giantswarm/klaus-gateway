@@ -176,7 +176,7 @@ func (perRefModelSource) AgentModel(_ context.Context, agentRef string) (string,
 func TestUsageReport_ModelLineFollowsThreadBinding(t *testing.T) {
 	a := &Adapter{DefaultAgent: "kagent/default-agent", Models: perRefModelSource{}}
 	a.gw = newMemoryRecorder()
-	a.bindThreadAgent(t.Context(), "C1", "T1", "kagent/sre-agent")
+	require.NoError(t, a.bindThreadAgent(t.Context(), "C1", "T1", "kagent/sre-agent"))
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{TotalTokens: 3})
 
 	require.Contains(t, a.usageReport(t.Context(), "T1", "C1"), "Model — model-of-kagent/sre-agent")

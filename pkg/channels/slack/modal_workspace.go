@@ -18,7 +18,8 @@ import (
 // static_selects, which Slack filters as the person types, so each is one
 // search-and-dropdown field without a round trip per keystroke. The field
 // shows when workspaces are configured and the person has at least one; its
-// preset is the workspace they last started the chosen agent with, else No
+// preset is their last choice with the chosen agent (a workspace still
+// offered, or No workspace), else the agent's default workspace, else No
 // workspace, and it follows a change of agent. A modal opened without it (the
 // listing was late or failed) leaves the choice to the thread's workspace
 // prompt, as a mention does.
@@ -39,23 +40,64 @@ const workspacePrefChannel = "slack-workspace-pref"
 type modalWorkspaces struct {
 	offered []workspaces.Workspace
 	now     time.Time
-	// lastFor is the workspace the person last started an agent with from
-	// the picker, "" for none.
-	lastFor func(agentRef string) string
+	// lastFor is the person's last choice when they started an agent from
+	// the picker, nil for none.
+	lastFor func(agentRef string) *store.WorkspaceChoice
+	// defaults are the agents' default workspaces, by ref.
+	defaults map[string]string
 }
 
-// preset is the option value the Workspace select opens on for agentRef, and
-// whether it is the workspace last used with it: that workspace while it is
-// still offered, else No workspace.
-func (ws *modalWorkspaces) preset(agentRef string) (string, bool) {
-	last := ""
+// presetSource says where a Workspace select's preset comes from, for its
+// hint.
+type presetSource int
+
+const (
+	presetNone presetSource = iota
+	presetLast
+	presetDefault
+)
+
+// preset is the option value the Workspace select opens on for agentRef and
+// where it comes from (workspacePreset).
+func (ws *modalWorkspaces) preset(agentRef string) (string, presetSource) {
+	var last *store.WorkspaceChoice
 	if ws.lastFor != nil {
 		last = ws.lastFor(agentRef)
 	}
-	if last != "" && slices.ContainsFunc(ws.offered, func(w workspaces.Workspace) bool { return w.Name == last }) {
-		return last, true
+	offered := func(name string) bool {
+		return slices.ContainsFunc(ws.offered, func(w workspaces.Workspace) bool { return w.Name == name })
 	}
-	return askAgentWorkspaceNoneValue, false
+	return workspacePreset(last, ws.defaults[agentRef], offered)
+}
+
+// workspacePreset is the option value a Workspace select opens on: the last
+// choice (No workspace, or a workspace offered still), else the agent's
+// default workspace def when offered, else No workspace.
+func workspacePreset(last *store.WorkspaceChoice, def string, offered func(string) bool) (string, presetSource) {
+	switch {
+	case last != nil && last.None:
+		return askAgentWorkspaceNoneValue, presetLast
+	case last.Chosen() && offered(last.Name):
+		return last.Name, presetLast
+	case def != "" && offered(def):
+		return def, presetDefault
+	}
+	return askAgentWorkspaceNoneValue, presetNone
+}
+
+// workspaceHint is the hint under a Workspace select whose preset comes from
+// source, for the agent agentLabel; "" for none.
+func workspaceHint(source presetSource, agentLabel string) string {
+	if agentLabel == "" {
+		return ""
+	}
+	switch source {
+	case presetLast:
+		return truncateRunes(fmt.Sprintf(askAgentWorkspaceLastHint, agentLabel), modalHintMax)
+	case presetDefault:
+		return truncateRunes(fmt.Sprintf(askAgentWorkspaceDefaultHint, agentLabel), modalHintMax)
+	}
+	return ""
 }
 
 // pickerWorkspaces lists user's workspaces for the picker within
@@ -85,7 +127,7 @@ func (a *Adapter) pickerWorkspaces(ctx context.Context, user string) (*modalWork
 	return &modalWorkspaces{
 		offered: offered,
 		now:     time.Now(),
-		lastFor: func(agentRef string) string { return a.lastChosenWorkspace(ctx, user, agentRef) },
+		lastFor: func(agentRef string) *store.WorkspaceChoice { return a.lastWorkspace(ctx, user, agentRef) },
 	}, true
 }
 
@@ -117,18 +159,9 @@ func (a *Adapter) recordLastWorkspace(ctx context.Context, user, agentRef string
 	}
 }
 
-// lastChosenWorkspace is the workspace user last started agentRef with from
-// the picker, "" when that was No workspace or there is no record.
-func (a *Adapter) lastChosenWorkspace(ctx context.Context, user, agentRef string) string {
-	if last := a.lastWorkspace(ctx, user, agentRef); last.Chosen() {
-		return last.Name
-	}
-	return ""
-}
-
 // workspaceInput is the picker's Workspace select at revision rev, preset to
-// preset; agentLabel names the agent in the last-used hint.
-func workspaceInput(ws *modalWorkspaces, rev int, preset string, lastUsed bool, agentLabel string) map[string]any {
+// preset from source; agentLabel names the agent in its hint.
+func workspaceInput(ws *modalWorkspaces, rev int, preset string, source presetSource, agentLabel string) map[string]any {
 	none := map[string]any{bkText: plainTextObj(workspaceNoneLabel), bkValue: askAgentWorkspaceNoneValue}
 	initial := none
 	option := func(w workspaces.Workspace) map[string]any {
@@ -174,8 +207,8 @@ func workspaceInput(ws *modalWorkspaces, rev int, preset string, lastUsed bool, 
 		bkLabel:    plainTextObj(askAgentWorkspaceLabel),
 		bkElement:  element,
 	}
-	if lastUsed && agentLabel != "" {
-		input[bkHint] = plainTextObj(truncateRunes(fmt.Sprintf(askAgentWorkspaceLastHint, agentLabel), modalHintMax))
+	if hint := workspaceHint(source, agentLabel); hint != "" {
+		input[bkHint] = plainTextObj(hint)
 	}
 	return input
 }
@@ -220,7 +253,8 @@ func submittedWorkspace(values map[string]map[string]blockActionState) *store.Wo
 }
 
 // handleAskAgentAgentChange redraws an open picker whose agent changed, so its
-// Workspace select opens on the new agent's preset. Everything else is sent
+// Workspace select opens on the new agent's preset, its default workspace read
+// from the person's roster. Everything else is sent
 // back as Slack holds it, and the inputs whose block_id stays keep what the
 // person typed. The view's hash makes a stale redraw fail instead of
 // overwriting a newer view.
@@ -240,13 +274,15 @@ func (a *Adapter) handleAskAgentAgentChange(ctx context.Context, payload interac
 	}
 	// The preset is matched against the options the select already holds: a
 	// workspace no longer on them is no preset, and No workspace stands in.
-	last := a.lastChosenWorkspace(ctx, payload.User.ID, agentRef)
-	block, lastUsed, ok := redrawWorkspaceBlock(blocks[idx], rev+1, last)
+	callerCtx := a.withCallerToken(ctx, payload.User.ID)
+	last := a.lastWorkspace(ctx, payload.User.ID, agentRef)
+	def := a.defaultWorkspaceOf(callerCtx, agentRef)
+	block, source, ok := redrawWorkspaceBlock(blocks[idx], rev+1, last, def)
 	if !ok {
 		return
 	}
-	if lastUsed {
-		block[bkHint] = plainTextObj(truncateRunes(fmt.Sprintf(askAgentWorkspaceLastHint, a.agentNameFor(a.withCallerToken(ctx, payload.User.ID), agentRef)), modalHintMax))
+	if hint := workspaceHint(source, a.agentNameFor(callerCtx, agentRef)); hint != "" {
+		block[bkHint] = plainTextObj(hint)
 	} else {
 		delete(block, bkHint)
 	}
@@ -270,21 +306,21 @@ func (a *Adapter) handleAskAgentAgentChange(ctx context.Context, payload interac
 }
 
 // redrawWorkspaceBlock is the Workspace input block at revision rev, opening
-// on the option for workspace last, No workspace when last is "" or not
-// offered; lastUsed reports the former.
-func redrawWorkspaceBlock(block map[string]any, rev int, last string) (_ map[string]any, lastUsed, ok bool) {
+// on workspacePreset's option for the last choice and the default workspace
+// def among the options it holds; source says which.
+func redrawWorkspaceBlock(block map[string]any, rev int, last *store.WorkspaceChoice, def string) (_ map[string]any, source presetSource, ok bool) {
 	// A deep copy through JSON: the block is Slack's, decoded from the payload.
 	raw, err := json.Marshal(block)
 	if err != nil {
-		return nil, false, false
+		return nil, presetNone, false
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, false, false
+		return nil, presetNone, false
 	}
 	element, ok := out[bkElement].(map[string]any)
 	if !ok {
-		return nil, false, false
+		return nil, presetNone, false
 	}
 	var options []map[string]any
 	collect := func(list any) {
@@ -302,23 +338,18 @@ func redrawWorkspaceBlock(block map[string]any, rev int, last string) (_ map[str
 			collect(group[bkOptions])
 		}
 	}
-	var initial, none map[string]any
+	byValue := make(map[string]map[string]any, len(options))
 	for _, opt := range options {
-		switch v := opt[bkValue]; {
-		case v == askAgentWorkspaceNoneValue:
-			none = opt
-		case last != "" && v == last:
-			initial = opt
+		if v, ok := opt[bkValue].(string); ok {
+			byValue[v] = opt
 		}
 	}
-	lastUsed = initial != nil
+	preset, source := workspacePreset(last, def, func(name string) bool { return byValue[name] != nil })
+	initial := byValue[preset]
 	if initial == nil {
-		initial = none
-	}
-	if initial == nil {
-		return nil, false, false
+		return nil, presetNone, false
 	}
 	element[bkInitialOption] = initial
 	out[bkBlockID] = askAgentWorkspaceBlockID + "." + strconv.Itoa(rev)
-	return out, lastUsed, true
+	return out, source, true
 }

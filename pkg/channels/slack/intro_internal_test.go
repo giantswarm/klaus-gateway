@@ -37,19 +37,19 @@ func TestIntroBlocks(t *testing.T) {
 		dflt, body, hints string
 		want, wantHints   string
 	}{
-		"intro names the default agent": {
+		"intro names the slash command and the default agent": {
 			"sre-agent", channelIntroText, channelIntroContext,
-			"Swarmgeist connects this channel to Giant Swarm's agents. Mention <@UBOT> to start a thread with *SRE Agent*, or mention it with `agents` to pick another agent. Agents work with your permissions and ask before making changes.",
+			"Swarmgeist connects this channel to Giant Swarm's agents. Start a conversation with `/swarmgeist`, which lets you pick an agent (*SRE Agent* is preselected), or with *Ask an agent here* on a message to start one in its thread. Agents work with your permissions and ask before making changes.",
 			"<@UBOT> `help` lists the commands",
 		},
-		"greeting names the default agent": {
+		"greeting names the slash command and the default agent": {
 			"sre-agent", assistantGreetingText, assistantGreetingContext,
-			"Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *SRE Agent* by default. Agents work with your permissions and ask before making changes.",
+			"Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent: start one with `/swarmgeist`, which lets you pick the agent (*SRE Agent* is preselected). Agents work with your permissions and ask before making changes.",
 			"<@UBOT> `help` lists the commands · <@UBOT> `agents` lists the agents",
 		},
 		"greeting on an agent off the roster uses its name": {
 			"kagent/swarmgeist", assistantGreetingText, assistantGreetingContext,
-			"Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *swarmgeist* by default. Agents work with your permissions and ask before making changes.",
+			"Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent: start one with `/swarmgeist`, which lets you pick the agent (*swarmgeist* is preselected). Agents work with your permissions and ask before making changes.",
 			"<@UBOT> `help` lists the commands · <@UBOT> `agents` lists the agents",
 		},
 	} {

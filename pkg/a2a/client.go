@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
@@ -153,21 +154,18 @@ func (e *AgentUnavailableError) Error() string {
 
 func (e *AgentUnavailableError) Is(target error) bool { return target == ErrAgentUnavailable }
 
-// ConnectRequiredError is muster's sign-in challenge on the way to the
+// ConnectRequiredError is the sign-in muster asks for on the way to the
 // controller: the caller is signed in, but the muster server a call goes
 // through (agent-manager, for a Session start) waits for their one-time
-// consent, which LoginURL is where they give. Not ErrNoIdentity: a channel
-// answers it with its Connect prompt for the server, never the sign-in
-// prompt, and runs the turn again once they have connected.
+// consent. Not ErrNoIdentity: a channel answers it with its Connect prompt,
+// never the sign-in prompt, and once the person agreed to open the link
+// accepts the sign-in, which runs the call again.
 type ConnectRequiredError struct {
-	// Server is the muster server awaiting the consent.
-	Server string
-	// LoginURL is muster's sign-in link for it.
-	LoginURL string
+	SignIn *muster.SignIn
 }
 
 func (e *ConnectRequiredError) Error() string {
-	return fmt.Sprintf("a2a: muster server %s waits for the caller's sign-in", e.Server)
+	return "a2a: muster waits for the caller's sign-in"
 }
 
 // Config configures a Client.

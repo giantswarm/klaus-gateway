@@ -1,7 +1,10 @@
 # Slack channel adapter
 
-The Slack adapter lets workspace members talk to Klaus by mentioning the bot or sending it
-a direct message. It is disabled by default and must be enabled explicitly.
+The Slack adapter lets workspace members talk to the platform's agents from a channel or
+from the app's direct message. A conversation starts through the app's slash command or the
+**Ask an agent here** message shortcut, both of which open the agent picker; a mention of the
+bot outside a conversation, or a message in a new chat, is answered with the help, which says
+so. The adapter is disabled by default and must be enabled explicitly.
 
 Two connection modes are supported:
 
@@ -93,17 +96,15 @@ mention is
 stripped (it addresses the bot, it does not describe the conversation),
 whitespace collapses to single spaces, and the result is cut at a word boundary
 to Slack's 200-character limit with a trailing `…`. It is sent only with the
-turn that opens the conversation — a channel mention rooting its own thread, the
-first message of a new assistant-pane chat (which is never its own thread root:
-the pane's thread anchor is Slack's), or the slash command's question — because
+turn that opens the conversation — the picker's question, which the slash command
+posts as a new root and the shortcut as a reply in the invoked thread — because
 Slack applies a title when the call *creates* the session and ignores it
 afterwards, which is also what keeps a title a user renamed by hand from being
 overwritten. The title is derived when the message is dispatched and sent by the
 turn that eventually runs, so an opening message held for sign-in still names
-the session once it replays. A first message that normalises to nothing (a bare
-command, an upload with no caption) sends no title and leaves Slack to name the
-session. Should Slack refuse the decorated call, the status is sent again bare,
-so a refused title never costs the turn its indicator.
+the session once it replays. A question that normalises to nothing sends no title
+and leaves Slack to name the session. Should Slack refuse the decorated call, the
+status is sent again bare, so a refused title never costs the turn its indicator.
 
 The creating call also **names the session's starter** (`initiator_user_id`):
 the thread's initiator, the owner the access rule already keeps in the thread's
@@ -128,28 +129,26 @@ creates one, which a turn that switches agents does mid-thread.
   called through muster as the person behind the turn, with the agent, the
   thread's request id and the conversation's name; agent-manager creates it at
   the controller as that person, and the session id it answers is what the
-  thread binds. A start muster refuses with its sign-in challenge for agent-manager (the
-  server is pinned to a GitHub App and waits for the person's one-time consent) gets the
-  Connect prompt for it, to the person alone, with the message held behind it: the sign-in's
-  landing on the gateway runs it as the thread's first turn, and without a public base URL
-  the prompt says to send it again once connected. The hold is the process's own; after a
-  restart the landing says the link is gone. Where the prompt goes follows the sign-in
+  thread binds. A start muster asks a sign-in for (the server is pinned to a GitHub App and
+  waits for the person's one-time consent) gets the Connect prompt, to the person alone, with
+  muster's message, the whole link and the message held behind it. The person's click on the
+  link button is their consent: the gateway accepts the sign-in (it retries the start with
+  muster's `requestState` and the `accept`, and muster waits for the sign-in before it runs the
+  start), then runs the held message as the thread's first turn. The hold is the process's own;
+  after a restart the click continues nothing. Where the prompt goes follows the sign-in
   prompt: in a DM the card is a message of the conversation, and a later message of the
   person's gets a card of its own while the earlier one loses its button; in a channel thread
   the card is ephemeral, so it also goes to the person's DM with the app, led by a line that
   links the thread, and a line everyone in the thread sees says whom it waits for and where
-  the button is ("Waiting for @Jose to connect *agent-manager* (the Connect button is in a
-  direct message from the app)"). A later message of the person's before they connect posts
-  the ephemeral again and refreshes the DM card in place; the line stays. Once the person
-  has connected, the line reads "@Jose connected *agent-manager*." and the card is a
-  confirmation: the landing of the prompt's own link does it and runs the held message
-  ("Connected *agent-manager*. Your message is on its way to the agent."), and settles the
-  same way every other thread where the person waits for the same server, running that
-  thread's held message there (a thread whose held message has expired gets "Connected
-  *agent-manager*." alone); so does the person's next turn in the thread that starts its Session, however they connected, when the
-  held message stays unsent ("Connected *agent-manager*.") and the prompts' stale buttons
-  lead to the expired page. Only the ephemeral's button carries the completion state, so only
-  it is replaced through its click's `response_url`; the cards are rewritten in place. A
+  the button is ("Waiting for @Jose to sign in (the Sign in button is in a direct message from
+  the app)"). A later message of the person's before they sign in posts the ephemeral again
+  and refreshes the DM card in place; the line stays. Once the person has signed in, the line
+  reads "@Jose signed in." and the card is a confirmation: the click's continuation does it and
+  runs the held message ("Signed in. Your message is on its way to the agent."), and so does
+  the person's next turn in the thread that starts its Session, however they signed in, when
+  the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
+  Every surface's button carries the completion state; the ephemeral is replaced at the click
+  through its `response_url` ("Opened the sign-in link. ..."), the cards are rewritten in place. A
   collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
@@ -159,8 +158,20 @@ creates one, which a turn that switches agents does mid-thread.
   id and the agent ref are written into the thread's row, every later turn of the
   thread is addressed to that session, and a gateway restart keeps the mapping on a
   persistent store (`valkey` or `bolt`), because the row carries it, not the process.
-- In a DM every top-level message opens its own thread and therefore its own
-  session; a "New chat" in the assistant pane likewise.
+- **Only the agent picker opens a conversation**: the slash command (in a channel or in
+  the direct message) and the **Ask an agent here** shortcut (on a message, for its thread).
+  Any other message that finds no conversation in its thread — a mention on a channel
+  message or under an alert, the first message of a new chat in the assistant pane, a reply
+  after the conversation ended — starts nothing: it is answered in its thread with the help
+  reply, led by "No conversation is open here, so your message did not reach an agent. Here is
+  how to start one.", and nothing is written to the store, so the thread stays free for the
+  shortcut. A command word with a mention (`@bot agents`, `@bot help`, `@bot login`) is still
+  that command. A row the store cannot read is not "no conversation": the message is not
+  handled and its author is told, as for any store outage. In the direct message, every
+  conversation is one the slash command opened, and a "New chat" of the assistant pane sends
+  its first message to the help. The suggested prompts the manifest pins there are therefore
+  the slash command with a question: Slack runs a message that starts with `/` as a Slack
+  command (see `invariants.md`), so the click opens the picker with the question filled in.
 - The session is started under the thread **initiator's** identity, and kagent
   lets only its creator act on it. A granted collaborator's turn runs under the
   collaborator's own token and reaches the session through an **Session
@@ -179,7 +190,7 @@ creates one, which a turn that switches agents does mid-thread.
   conversation ended; deleting the session, as a session reset does, removes
   its shares at the controller. Only the session's creator may revoke its
   shares, so a turn that does not hold the creator's token (a collaborator's
-  while the creator is signed out, or a new mention that restarts an ended
+  while the creator is signed out, or the picker's turn that restarts an ended
   conversation) leaves the share valid and logs it.
 - The share is minted to expire after the thread's lifetime (`--thread-ttl`).
   A collaborator turn replaces a share that expires within the renewal window
@@ -235,8 +246,8 @@ creates one, which a turn that switches agents does mid-thread.
   instead — "An earlier interrupted turn corrupted this conversation's history … I've
   reset the session: please resend your message …" — so the person knows to resend.
 - **The thread's earlier messages go to the agent.** When a conversation opens inside a thread that
-  already has messages — the **Ask an agent here** shortcut, a pick in the agent picker,
-  a bare mention under an alert — the adapter reads that thread once, on the opening turn, and hands
+  already has messages — the **Ask an agent here** shortcut, a roster row's Select, both of which
+  open the picker on that thread — the adapter reads that thread once, on the opening turn, and hands
   the messages written before the opener to the agent as a labelled part of its own (`[thread
   context shared by <name>: N earlier messages in this thread, oldest first]`, one line per message
   with a UTC time and the author's display name). Every human's message is shared; of the bots,
@@ -244,7 +255,9 @@ creates one, which a turn that switches agents does mid-thread.
   bot profile name (the alerting integrations; `*-alertmanager` admits every installation's
   Alertmanager app, each with its own `bot_id`). The profile name is the Slack app's own bot name;
   the name a post sets is whatever it posts under and never admits a bot; any other bot's post is left out, and the
-  catch-up of a muted thread admits the same authors. An allowed bot's alert is flattened out of its attachments
+  catch-up of a muted thread admits the same authors. Either list admits posts only in threads the gateway can
+  read, which are those in channels its bot is a member of: for alert posts to reach an agent, the gateway's bot is
+  invited to each alert or incident channel it should serve. An allowed bot's alert is flattened out of its attachments
   and blocks, which is where PagerDuty and friends put the text; `<@U…>` mentions become names; the
   gateway's own posts and content-less events are left out; files are named, never downloaded. At
   most 12,000 characters, oldest dropped first, root always kept — a constant, not configuration;
@@ -253,10 +266,9 @@ creates one, which a turn that switches agents does mid-thread.
   labelled as a partial read rather than presented as its newest messages. The picker offers a
   checkbox ("Include the earlier messages in this thread", ticked) so the person starting the
   session can leave a noisy thread out; it carries no count, because counting would mean reading the
-  thread before the modal opens and Slack kills the trigger after three seconds. The reply entry
-  points have no modal and no checkbox. A conversation that starts its own thread (a mention on a
-  root, the slash command) has nothing earlier to read, and a DM is never read at all, whichever
-  entry point opened the conversation — the shortcut included, which Slack also offers in a DM: the
+  thread before the modal opens and Slack kills the trigger after three seconds. A conversation
+  that starts its own thread (the slash command) has nothing earlier to read, and a DM is never
+  read at all, whichever entry point opened the conversation — the shortcut included, which Slack also offers in a DM: the
   assistant pane roots every chat at an anchor of Slack's own, so there is no thread there that
   predates the conversation, and the only earlier messages are the person's own and the bot's.
   Nothing is posted in the thread for this, and later turns read nothing: they are turns of the
@@ -274,8 +286,9 @@ creates one, which a turn that switches agents does mid-thread.
   refreshed by every turn. While the thread lives, the initiator and the collaborators they
   allowed instruct the agent without mentioning the bot again and their grants hold. After that
   long without a message the **conversation has ended**: the agent, the initiator, the grants and
-  the binding all read as absent, an un-mentioned reply is not answered, and the next mention
-  starts the thread over — its author becomes the initiator and no grant carries over. Whether
+  the binding all read as absent, an un-mentioned reply is not answered, a mention is answered
+  with the help, and the shortcut on a message of the thread starts it over — the submitter
+  becomes the initiator and no grant carries over. Whether
   the agent remembers is the controller's call: its create is idempotent per person and thread,
   so the same person gets the earlier session back while the controller still holds it, and
   another person gets a new one.
@@ -284,13 +297,14 @@ creates one, which a turn that switches agents does mid-thread.
   gateway knows the difference between a thread whose conversation ended and a thread it was
   never in. So an un-mentioned reply in one of the former, unless it opens with someone else's mention (below),
   gets one private line — "This
-  conversation ended after 90 days without messages. Mention the bot to start a new one." — instead
+  conversation ended after 90 days without messages. Start a new one with `/swarmgeist`, or with
+  *Ask an agent here* on a message in this thread." — instead
   of silence. The sentence names the configured lifetime exactly, as the count of the largest
   unit it is a whole multiple of: `--thread-ttl=36h` reads "36 hours", not "1 day", and `90m`
   reads "90 minutes". It is ephemeral, so only its author sees it, every reply gets it, and
   nothing is written to the store for it. A reply that **does** mention the bot gets no notice —
-  it starts the conversation over, and Slack delivers it twice (as a mention and as a plain
-  message), so the notice would answer the mention with a request to mention. Past twice the
+  it gets the help instead, and Slack delivers it twice (as a mention and as a plain
+  message), so the notice would answer the same message twice. Past twice the
   lifetime the row is gone and the thread is a stranger again: replies are ignored without a
   word, as for any thread the bot was never in. There is no warning before the end, and no
   sweep: the notice is posted when somebody writes, which is the moment it is useful. A
@@ -343,7 +357,8 @@ creates one, which a turn that switches agents does mid-thread.
   label. Later turns read nothing. A mention that answers an approval or a question the agent left
   open reaches it as that answer alone, without the catch-up. Muting keeps the agent, the session and the grants, and it is the row's `muted_at` (the
   `ts` of the `mute` message), so it survives a restart on a persistent store and ends with the
-  conversation: a mention after the thread lifetime starts the thread over, unmuted. In a DM `mute`
+  conversation: after the thread lifetime a mention gets the help, and the shortcut starts the
+  thread over, unmuted. In a DM `mute`
   is a message for the agent. In a private channel the app reads only mentions anyway, so a mute
   there silences nothing, but the mention that ends it still brings the catch-up of what was
   written meanwhile (read with `groups:history`).
@@ -351,7 +366,8 @@ creates one, which a turn that switches agents does mid-thread.
 ### Selecting a workspace
 
 With workspaces on (`workspaces.toolsPrefix`, see [deployment](deployment.md#workspaces)), a
-thread's Session runs in the workspace its initiator picks, or in none. A Session in a
+thread's Session runs in the workspace its initiator picks, or in none; an agent with a default
+workspace starts in it unless the initiator picks otherwise. A Session in a
 workspace works in its own directory on the workspace's volume, with the workspace's
 repositories as read-only mirrors beside it.
 
@@ -360,9 +376,11 @@ repositories as read-only mirrors beside it.
   which carries the choice itself: a **Workspace** select under the agent, offered when the
   person has workspaces and the listing (as them, beside the roster) answers within 1.5 s of
   the trigger. **No workspace** comes first, then the workspaces as in the prompt below. It is
-  preset to the workspace the person last started the selected agent with from the picker, while
-  it is still listed, else to **No workspace**, and a change of agent redraws the picker
-  (`views.update`) with that agent's preset. On submit a workspace is authorized as the person
+  preset to the person's last choice with the selected agent from the picker (**No workspace**,
+  or a workspace while it is still listed), else to the agent's default workspace while it is
+  listed, else to **No workspace**; the hint says which ("Last used with …", "The default of
+  …"). A change of agent redraws the picker (`views.update`) with that agent's preset, its
+  default read from the person's roster. On submit a workspace is authorized as the person
   before anything is posted; a denial is answered privately as in the thread below (the
   unreadable repositories, not synced yet, or each provider's sign-in link) with the prompt
   quoted back, and nothing starts. The thread then starts with the choice and is not asked. The
@@ -370,15 +388,29 @@ repositories as read-only mirrors beside it.
   `slack-workspace-pref`, the person and the agent as its key, the name or `none`, never a grant),
   which ends with the thread lifetime. A picker opened without the select (the listing was late
   or failed) leaves the choice to the prompt, as a mention does.
+- **The agent's default workspace.** An Agent carries it as the annotation
+  `agent-platform.giantswarm.io/default-workspace` (`<namespace>/<name>`, written by
+  agent-manager's `defaultWorkspace`); the roster reads it as the person and takes it only in
+  the Agent's own namespace. The message that would ask (below) asks nobody on such an agent:
+  it is held, and the default is chosen on it as the initiator's click would, authorized as
+  them, without listing their workspaces or posting a prompt. Granted, the Session starts in
+  it and the thread says so, with the slash command that picks another ("Working in workspace
+  *platform*, this agent's default. To work in another, start with `/swarmgeist` and pick
+  it."). A provider or the workspace-manager to connect gets the connect prompt as below, and
+  their next mention, once connected, chooses the default again with the held message. Any
+  other denial starts nothing and keeps nothing: the initiator alone is told why (the
+  repositories they cannot read, not synced yet, the check failed), never that the agent is
+  closed to them, that the slash command starts it in another workspace or in none, and their
+  message is quoted back. A roster that cannot be read is no default: the initiator is asked.
 - **Who is asked, and when.** The initiator's message that would start the thread's Session —
-  no Session bound and no choice recorded yet, and the message carries none itself — lists
+  no Session bound and no choice recorded yet, the message carries none itself, and the agent
+  has no default workspace — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
   listed, the Session starts without a workspace and nobody is asked (the second case with a
-  note in the thread). A listing muster answers with its sign-in challenge for the
-  workspace-manager (the person has not granted its App) is no failure: the message is held
-  behind the workspace-manager's Connect prompt, as a Session start's challenge is
-  (`session_connect_required`), and once connected it is replayed, lists again and gets the
-  prompt. Otherwise the message is held and the thread gets one prompt. Nothing
+  note in the thread). A listing muster answers with a sign-in for the workspace-manager (the
+  person has not granted its App) is no failure: the message is held behind the Connect
+  prompt, as a Session start's sign-in is (`session_connect_required`), and the person's click
+  accepts the sign-in, then replays the message, which lists again and gets the prompt. Otherwise the message is held and the thread gets one prompt. Nothing
   is read from the message: a workspace named in its text neither narrows the offer nor
   picks one.
 - **The prompt.** A select of the workspaces, grouped by Organization, each with how long
@@ -397,14 +429,15 @@ repositories as read-only mirrors beside it.
   `authorize_workspace`'s `connect`: its button opens the link muster's `core_auth_login`
   answers, called as the person for the server the entry's `signIn` names; a `signIn` that names
   no muster server (muster holds no grant for that provider) is quoted instead, without a button.
-  An `authorize_workspace` muster answers with its sign-in challenge for the workspace-manager
-  gets the same connect prompt for the workspace-manager, with muster's link.
+  An `authorize_workspace` muster answers with a sign-in for the workspace-manager gets a
+  Connect prompt with muster's message and link.
   Once connected, their next pick or mention in
   the thread authorizes it again and starts the Session with the held message, as a sign-in
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
   `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`,
   `workspace_check_failed`); repository names are logged at debug only. **No workspace**
-  starts the Session without a grant.
+  starts the Session without a grant. Every start without a grant tells `start_session`
+  `noWorkspace: true`, so agent-manager never starts it in the agent's default instead.
 - **After the choice.** The prompt is replaced by the start notice ("Working in workspace
   *platform*, chosen by @…", or "Working without a workspace…"). The choice is written to
   the thread's row with its Session (`store.Entry.Workspace`), so the later turns of the
@@ -454,19 +487,19 @@ Layer 2 is one grant per server whose authorization server is the person's own a
 GitHub App behind a `*-manager` server, GitHub, Slack, …); muster files it under the person,
 so it is given once. The **authorize modal** collects them all in one place before the agent
 needs them. It lists every server muster reaches with a grant of the person's (`kind: grant`
-in muster's `core_auth_status`), its state, and an *Authorize* button with the link that
-starts the grant; the servers that come with the sign-in itself (token forwarding or exchange)
-are a count. Each link lands on `/connectors/complete`, which redraws the modal, so a row turns
-*Authorized* as its grant lands; *Refresh* issues new links (muster's live ten minutes). It
+in muster's `core_auth_status`), its state, and, shown whole with its domain in bold, the link
+that starts the grant with an *Authorize* button opening it; the servers that come with the sign-in itself (token forwarding or exchange)
+are a count. Each link is muster's, unchanged; *Refresh* redraws the modal, so a row turns
+*Authorized* once its grant is given, and issues new links (muster's live ten minutes). It
 opens from:
 
 - the direct message right after the sign-in, when a grant is still missing ("You're signed
   in. 2 tools need your one-time authorization …", button *Authorize all*);
 - `/<command> connect` (or `authorize`), anywhere;
 - *Authorize all* beside every muster server's Connect prompt's button (a workspace
-  provider's Connect prompt offers the provider's sign-in alone). Opened from the prompt that held a
-  Session start's message, the modal's row for that server lands on the prompt's own
-  completion, so granting it from the modal runs the held message.
+  provider's Connect prompt offers the provider's sign-in alone). A grant given from the modal
+  continues nothing the prompt held: the prompt's own *Sign in* does, and muster finds the
+  grant there.
 
 The modal opens on the click's `trigger_id` with a loading view and is filled by
 `views.update` once muster answers. It needs `obo.connectorsEnabled` (the Connect prompts) and
@@ -476,11 +509,11 @@ unknown withdraws the offer until the gateway restarts.
 The gateway learns which tool a `call_tool` result belongs to from the result itself: muster
 5.36.0 and later end the `call_tool` envelope with the dispatched tool (`tool`: `name`, and
 for a backend's tool `server` and `serverTool`) and carry it in the result's `_meta` under
-`muster.giantswarm.io/tool`. The Connect prompt and the Inspect agent steps log rely on it, so
-both need muster 5.36.0 or later; against an older muster a `call_tool` result names no tool,
-its call still pairs with it by call id, and no Connect prompt is offered. The Connect prompt
-that answers a Session start reads muster's challenge from the `start_session` answer itself
-(its structured content, or its text), so it needs no tool name.
+`muster.giantswarm.io/tool`. The Inspect agent steps log relies on it, so it needs muster
+5.36.0 or later; against an older muster a `call_tool` result names no tool, and its call still
+pairs with it by call id. The Connect prompt that answers a Session start reads muster's
+challenge from the `start_session` answer itself (its structured content, or its text), so it
+needs no tool name.
 
 ## Slack app setup
 
@@ -509,11 +542,11 @@ reinstall.
 ## Agent routing
 
 Every Slack thread is routed to a single agent via the A2A executor. A conversation picks its
-agent when it opens, and keeps it for life. A plain mention reaches the default agent
-(`slack.defaultAgent`); choosing another one happens through one of these entry points:
+agent when it opens, and keeps it for life. It opens through the agent picker, which preselects
+the default agent (`a2a.defaultAgent`); the picker is reached through one of these entry points:
 
 - **The roster**: `agents` lists the agents as rows: an "Agents" header, how many
-  there are and which one a plain mention reaches, then one row per agent, the default first
+  there are and which one the picker preselects, then one row per agent, the default first
   and the rest A–Z: the display name, its tenant, the first sentence of its description, and a
   **Select** button. The roster is the person's own: it is listed as them, across the platform
   tenant and their organizations, each time. At most 8 rows; the rest are named in the footer. Select opens the same picker as the
@@ -554,8 +587,8 @@ agent when it opens, and keeps it for life. A plain mention reaches the default 
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
-An agent that is installed but whose `Agent` is not ready (its `Ready` condition is not `True`)
-is refused by the pickers with that reason instead of as an unknown name. The roster lists
+An agent that is installed but whose `Agent` never had a ready revision (no
+`status.latestSuccessfulRevision` and its `Ready` condition is not `True`) is refused by the pickers with that reason instead of as an unknown name. The roster lists
 selectable agents only, so such an agent has no row to pick in the first place.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
@@ -573,10 +606,11 @@ hours. A parked message is stored without its sender's token and without attachm
 can download again. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
-restart loses this state, and every thread starts fresh from its next message. On any store a
-thread nobody has written in for `routing.threadTTL` has ended, agent and all, and its next
-mention starts it over (see [Threads and conversations](#threads-and-conversations) for what the agent may
-still remember and for the notice an un-mentioned reply gets meanwhile).
+restart loses this state: every conversation is gone, a plain reply in one gets no answer, a
+mention gets the help, and the thread is free for the shortcut again. On any store a
+thread nobody has written in for `routing.threadTTL` has ended, agent and all: a mention there
+gets the help, and the shortcut starts it over (see [Threads and conversations](#threads-and-conversations)
+for what the agent may still remember and for the notice an un-mentioned reply gets meanwhile).
 
 The turn that opens a conversation posts no notice of its own: the agent's first reply, under
 the agent's name, is the first sign of which agent joined the thread. The picker's branded echo
@@ -587,8 +621,14 @@ agent was chosen before any message existed.
 |------|---------|---------|
 | `--a2a-default-agent` | `KLAUS_GATEWAY_A2A_DEFAULT_AGENT` | Yes (when Slack is enabled) |
 
-The adapter refuses to start without it. The name is not checked at startup: the controller
-resolves it on the thread's first turn, and an unknown agent is reported in the thread.
+The adapter refuses to start without it. The name is not checked at startup: the picker
+lists the roster, and an agent that is not on it is reported to the person privately.
+
+The help, the channel intro, the assistant-pane greeting and the notices name the slash
+command as the way to start a conversation. Slack sends the command's name only with an
+invocation, so it is configured: `slack.slashCommand` (`--slack-slash-command`,
+`SLACK_SLASH_COMMAND`), `/swarmgeist` by default as in `deploy/slack/manifest.yaml`. An app
+whose command is named differently sets it, or the help names a command Slack does not run.
 
 Example Helm values:
 
@@ -679,16 +719,19 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    (Socket Mode).
 2. The adapter ignores bot messages and messages with a subtype, with one exception:
    `thread_broadcast` (a thread reply the author also sent to the channel) is a normal human
-   reply and is routed like one. It processes `app_mention` and `message.im` events only.
+   reply and is routed like one. It processes `app_mention`, `message.im` and, for replies
+   in a thread that has its conversation, `message.channels` events.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
 4. The routing key is `(channel="slack", channelID=<Slack channel ID>,
    threadID=<thread_ts or ts>)`.
-5. The thread's row in the routing store names its agent and its Session. The thread's
-   first turn creates that session and records it; every later turn is addressed to it, so
+5. The thread's row in the routing store names its agent and its Session. The picker's
+   submission wrote the agent when it opened the conversation; a message in a thread whose
+   row names no agent is answered with the help and goes no further. The thread's
+   first turn creates the session and records it; every later turn is addressed to it, so
    every participant in the thread talks to the one conversation. See
    [Threads and conversations](#threads-and-conversations).
 6. The gateway forwards the turn through the A2A executor to the thread's Session — the
-   agent the row names, which is the default agent when nothing selected another one.
+   agent the row names.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
@@ -787,7 +830,7 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
 `thread_id` (the Slack `thread_ts`) and `trace_id`:
 
 - `turn_dispatch` -- the turn is admitted and about to be sent: `agent`, `agent_source`
-  (`command`, `shortcut`, `thread`, `default`, `task`, `replay`), `slack_user`, `subject` (the resolved
+  (`command`, `shortcut`, `thread`, `task`, `replay`), `slack_user`, `subject` (the resolved
   e-mail), `sub` (the linked muster identity), `channel_id`, `thread_id`, `message_id`,
   `task_id` (on a resume), `resume`, `trace_id`, `dispatch_ms` (since the event arrived).
 - `turn_complete` -- one per turn, whatever its end: `outcome` (see
@@ -806,8 +849,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
   the calls it saw, so do not sum the two.
-- `session_connect_required` -- a Session start muster refused with its sign-in challenge for
-  a server, the turn ending as `connect_required`: `server`, `agent`, `slack_user`, `owner`
+- `session_connect_required` -- a Session start muster asked a sign-in for, the turn ending as
+  `connect_required`: `agent`, `slack_user`, `owner`
   (the thread owner the start ran as, on a collaborator's turn), `channel_id`, `thread_id`.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
   `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
@@ -818,9 +861,15 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   may get past, and is sent once more on the same Session: `channel`, `channel_id`,
   `thread`, `agent`, `failure_class`, `error` (the first attempt's). The thread sees only the
   second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
-- `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
-  background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
-  `expires_in_s`, or `error`. A turn is dispatched only with a token that covers a turn: the
+- `token_refresh` -- a refresh of the person's muster id_token was attempted: `trigger`
+  (`ahead` for the background refresher, `turn` for a refresh on the turn's path), `source`
+  (`request` when the returned token came from this replica's refresh request, `store` when
+  it came from a link another writer stored, `none` on failure), `refresh_requests` (the number
+  of refresh requests this replica attempted, including failed ones), `slackUser`,
+  `duration_ms`, `expires_in_s`, or `error`. Sum `refresh_requests` to count requests: a
+  discovery or lease failure has zero, and a concurrent sign-in can yield `source=store`
+  after a refresh request was already sent. These fields are always logged; no flag is
+  required. A turn is dispatched only with a token that covers a turn: the
   agent keeps the token it starts with until the turn ends, and muster ends the turn's session
   (and its tools) when that token expires, so a cached token with less than
   `obo.minTokenLifetime` left (`--obo-min-token-lifetime`, 25 minutes by default) is refreshed
@@ -860,6 +909,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   | `model` | the model or its provider returned an error | The model behind this agent returned an error … try again in a minute |
   | `model` | the provider refused the platform's credentials (Anthropic `authentication_error` or `permission_error`, such as an invalid API key) | The model provider refused the platform's credentials … a retry does not help |
   | `policy` | a gateway policy refused the request (authorization, a prompt guard, a rate limit) | A platform policy refused this request … sending it again does not change that |
+  | `connection_required` | the agent's model runs on the person's own provider account (a ChatGPT subscription) they have not connected, so the egress refused to lend its credential: kagent's failure reason `connection_required` (`kagent.dev/a2a/failure-reason` on the failed task's status message), or the refusal's text `credential provider <authority> denied` | Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again. |
   | `unknown` | anything else | The turn failed before an answer. Send the message again to retry. |
 
   A fresh turn that fails on `tools` or `platform` before anything of it was shown — the
@@ -873,7 +923,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   it and one note goes under it: `The turn ended with <a platform error>
   before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
   It names the class (a tool connection error, a platform error, a model error, a policy
-  refusal, or just an error), never the error's text. A stream reset by a controller restart
+  refusal, an unconnected ChatGPT subscription, or just an error), never the error's text. A stream reset by a controller restart
   (`RST_STREAM`) is a `platform` failure.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `The gateway restarted while *<agent>* was working. The
@@ -922,13 +972,17 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
-- **Commands and notes.** `help` answers with a header, how to address the bot ("Send a command
-  as the word alone, in a direct message or in a thread @Swarmgeist is in; anywhere else mention
-  @Swarmgeist first"), the commands
-  grouped by what the person is doing (In a thread: `stop`, `usage`, `mute`; Agents: `agents`, only
+- **Commands and notes.** `help` answers with a header, the commands
+  grouped by what the person is doing (Start a conversation: the slash command as typed,
+  `/swarmgeist [question]`, and the **Ask an agent here** shortcut by its name; In a thread:
+  `stop`, `usage`, `mute`; Agents: `agents`, only
   with agent selection; Account: `login`, `logout`,
   only with sign-in), each command as a code
-  label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
+  label with its effect as text, how the command words reach the bot ("Send a command word
+  as the word alone, in a direct message or in a thread @Swarmgeist is in; anywhere else mention
+  @Swarmgeist first"), and a context line for the **Inspect agent steps** shortcut. A message
+  that found no conversation in its thread gets the same reply, led by one line that says so
+  (see [Threads and conversations](#threads-and-conversations)).
   The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
   line in Slack's small muted text, written in the third person without emoji: they name what
   happened and the one thing to do next, apart from the agent's answer.
@@ -995,10 +1049,11 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   a reject carrying the text. The Go ADK runtime does not give that text to the model
   (giantswarm/kagent-upstream#71).
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
-  (requires the `member_joined_channel` bot event). It names the default agent, the one a plain
-  mention reaches, by its roster name, and ends with how to reach `help`. The assistant-pane
-  greeting does the same and also points at `agents`. Both name the bot by its mention, so each
-  Slack app shows its own name.
+  (requires the `member_joined_channel` bot event). It says how a conversation starts — the
+  slash command, whose picker preselects the default agent, named by its roster name, and the
+  **Ask an agent here** shortcut — and ends with how to reach `help`. The assistant-pane
+  greeting does the same for the slash command and also points at `agents`. Both name the bot
+  by its mention, so each Slack app shows its own name.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
   Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15
   minutes, and a last line that depends on the trigger ("Your message runs as soon as you sign
@@ -1050,8 +1105,67 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every
   channel the bot is invited to, the default), `allowlist` (only the channel IDs in
   `SLACK_CHANNEL_ALLOWLIST`, comma-separated), or `none` (DM-only deployments). A mention in a
-  channel outside the allowlist gets a one-time ephemeral notice; the channel intro and all
+  channel outside the allowlist gets a one-time ephemeral notice, and the slash command and
+  the shortcut are refused there privately; the channel intro and all
   other activity are suppressed there.
+
+## Egress refusal notices
+
+With `refusals.enabled` (`--refusals-enabled`), the creator of an agent learns by direct message
+from the app when the Substrate egress refuses a destination the agent's egress
+does not declare: *Outgoing connection to <host> blocked*, how many attempts in how many
+Sessions since when, what they can do about it, and the destination and origin under
+*Technical details*. There is one
+notice per agent and destination within `refusals.window` (24 h): later refusals inside it rewrite
+that message with the new count and time, and the first refusal after it posts a new one. A
+second destination of the same agent is a second notice. Nothing goes through Alertmanager.
+
+- **Remedy.** The notice words it as the Dev Portal's Session alert does
+  (`plugins/agent-platform/src/lib/egressCopy.ts` in giantswarm/backstage,
+  giantswarm/giantswarm#38814), by the runtime of the Agent's Harness (`spec.harnessRef`; the
+  runtime is the Harness spec's one key besides `workload`, `env` and `substrate`):
+
+  | Harness runtime | Remedy | Button |
+  | --- | --- | --- |
+  | `kagent`, http(s) | You can allow it: add `<origin>` to <agent>’s Extra egress origins. | *Edit <agent>* (`refusals.agentURLTemplate`) |
+  | any other (`claude`, `codex`, `byo`): a coding agent | <agent> can only reach the addresses the platform allows for <runtime>. Ask your platform team to allow <host>. | none |
+  | not known (the Harness is not found, or the gateway may not read it) | If <agent> needs <host>, ask your platform team. | none |
+  | any, raw TCP | No egress setting can allow it. If <host> offers HTTPS, have <agent> use that instead. | none |
+
+  A coding agent's egress is the platform's list for its Harness (agent-manager's
+  `harness.egress.<harness>`), which refuses any other origin, so no editor can add one. `<runtime>`
+  is the Harness's `ui.giantswarm.io/display-name`, else Claude Code, Codex or Custom image. The
+  portal's toolchain remedy is not offered: the gateway does not know whether the installation's
+  Sessions mount toolchains. Raw TCP is allowed to no agent: kagent's egress declares HTTP and
+  HTTPS origins only, so neither the agent's settings nor the platform's list can add it.
+- **Source.** Every `refusals.interval` (1 min) the gateway reads
+  `agentgateway_atenet_egress_refusals_total` (one series per actor and destination: `ate_atespace`,
+  `ate_actor_name`, `scheme`, `host`, `port`) from the stats port of every pod behind
+  `refusals.egressService`, found through its EndpointSlices, and counts each series' increase
+  since the previous read; a series it sees for the first time counts whole. The egress folds
+  destinations and actors beyond its bounds into `other`, which name nothing to notify.
+- **Agent and creator.** kagent names a Session's actor `session-<Session id>`; the gateway asks
+  the kagent controller (`refusals.kagentTarget`, gRPC `SessionService/GetSession`) which Agent the
+  Session runs, as its own ServiceAccount with a token projected for `refusals.kagentAudience`,
+  which the controller admits as its session reader. A Session deleted before the read still
+  answers, with its tombstone, which names the Agent, so a short-lived Session's refusal counts
+  into its Agent's notice (a kagent that reads tombstones for its session reader,
+  giantswarm/kagent-upstream#815; an older one answers `NotFound`). A Session a sweep deleted
+  (idle, or its Agent deleted) keeps no tombstone. An actor that is no Session kagent knows (a sandbox's) is
+  logged once per increase (`atespace`, `actor`, `scheme`, `host`, `port`, `count`, `reason`) and
+  counted as `not_session`. The creator is the email in the Agent's
+  `agent-platform.giantswarm.io/created-by` annotation (agent-manager records it); an Agent
+  without one is counted (`klaus_gateway_egress_refusals_total{outcome="no_creator"}`) and
+  nobody is told. The creator is found in Slack by that email (`users:read.email`). For an Agent
+  with a creator the gateway reads its Harness, in the Agent's namespace: one that is not found
+  leaves the runtime unknown, one it may not read too, logged with the missing grant; any other
+  failure is retried on the next read.
+- **Record.** The notice is a record in the review store (`refusal-<hash of agent and
+  destination>`, the window as its TTL), so on `valkey` and `bolt` a restart keeps the
+  deduplication. A notice Slack or kagent could not take is retried on the next read with the
+  refusals since; a creator Slack does not know is not.
+- **Outcomes** are counted in `klaus_gateway_egress_refusals_total{outcome}`: `noted`, `failed`,
+  `no_creator`, `not_session`.
 
 ## Required bot OAuth scopes
 

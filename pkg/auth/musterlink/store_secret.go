@@ -160,6 +160,43 @@ func (s *SecretStore) Delete(slackUserID string) error {
 	return nil
 }
 
+// Update runs fn on the stored link and writes its answer against the
+// resourceVersion fn read, so a write another process made in between makes
+// the update retry on the newer Secret instead of being overwritten.
+func (s *SecretStore) Update(slackUserID string, fn func(*Link) (*Link, bool)) error {
+	var sealErr error
+	if err := s.mutate(func(data map[string][]byte) bool {
+		sealErr = nil
+		var current *Link
+		if record, ok := data[slackUserID]; ok {
+			if link, err := s.cipher.openLink(record); err == nil {
+				current = link
+			}
+		}
+		next, write := fn(current)
+		switch {
+		case !write:
+			return false
+		case next == nil:
+			if _, ok := data[slackUserID]; !ok {
+				return false
+			}
+			delete(data, slackUserID)
+			return true
+		}
+		record, err := s.cipher.sealLink(next)
+		if err != nil {
+			sealErr = err
+			return false
+		}
+		data[slackUserID] = record
+		return true
+	}); err != nil {
+		return fmt.Errorf("musterlink: update secret %s: %w", s.Ref(), err)
+	}
+	return sealErr
+}
+
 // Import adds every link in links that the Secret does not hold yet, in one
 // write, and returns how many it added. An entry already present wins: it may
 // carry a refresh token rotated after the source was last written, and
@@ -226,5 +263,5 @@ func (s *SecretStore) mutate(fn func(data map[string][]byte) bool) error {
 			return err
 		}
 	}
-	return fmt.Errorf("secret %s: conflict retry limit exceeded", s.Ref())
+	return fmt.Errorf("secret %s: conflict retry limit exceeded: %w", s.Ref(), errStoreConflict)
 }

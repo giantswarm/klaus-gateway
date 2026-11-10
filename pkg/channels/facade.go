@@ -253,13 +253,19 @@ func (f *Facade) forward(ctx context.Context, out chan<- OutboundDelta, deltas <
 }
 
 // taskEnded is a task's terminal state other than completed, with the
-// runtime's (or the controller's) account of it as the error text.
+// runtime's (or the controller's) account of it as the error text and the
+// runtime's class of it (its status message's mdFailureReason), when it gave
+// one.
 type taskEnded struct {
-	state  a2apkg.TaskState
-	reason string
+	state         a2apkg.TaskState
+	reason        string
+	failureReason string
 }
 
 func (e *taskEnded) Error() string { return e.reason }
+
+// FailureReason is the runtime's class of the failure (FailureReasoner).
+func (e *taskEnded) FailureReason() string { return e.failureReason }
 
 // isTaskFailure reports whether err is a task that ended failed.
 func isTaskFailure(err error) bool {
@@ -776,7 +782,7 @@ func (f *Facade) outboundMessage(ctx context.Context, msg InboundMessage) (*a2ap
 	if err != nil {
 		return nil, fmt.Errorf("a2a: load the paused task %s: %w", msg.TaskID, err)
 	}
-	if task.Status.State != a2apkg.TaskStateInputRequired {
+	if task.Status.State != a2apkg.TaskStateInputRequired && task.Status.State != a2apkg.TaskStateAuthRequired {
 		return nil, fmt.Errorf("%w: task %s is %s", ErrNoPendingPrompt, msg.TaskID, task.Status.State)
 	}
 	request, err := pkga2a.ParseHITLRequest(task.Status.Message)
@@ -785,6 +791,9 @@ func (f *Facade) outboundMessage(ctx context.Context, msg InboundMessage) (*a2ap
 	}
 	if request == nil {
 		return nil, fmt.Errorf("%w: task %s carries no HITL request", ErrNoPendingPrompt, msg.TaskID)
+	}
+	if want := msg.Decision.RequestID; want != "" && want != request.ID() {
+		return nil, fmt.Errorf("%w: task %s waits on request %q, not %q", ErrNoPendingPrompt, msg.TaskID, request.ID(), want)
 	}
 	if err := pkga2a.AttachHITL(message, hitlResponse(request, msg.Decision)); err != nil {
 		return nil, err
@@ -897,13 +906,14 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, interim func(
 		return []OutboundDelta{{Kind: DeltaPrompt, Content: text, TaskID: string(taskID), Prompt: hitl}}
 	default:
 		if status.State.Terminal() {
-			msg := fmt.Sprintf("a2a: task ended with state %s", status.State)
+			ended := &taskEnded{state: status.State, reason: fmt.Sprintf("a2a: task ended with state %s", status.State)}
 			if status.Message != nil {
 				if text := extractTextFromA2AParts(status.Message.Parts); text != "" {
-					msg = text
+					ended.reason = text
 				}
+				ended.failureReason, _ = status.Message.Metadata[mdFailureReason].(string)
 			}
-			return []OutboundDelta{{Err: &taskEnded{state: status.State, reason: msg}}}
+			return []OutboundDelta{{Err: ended}}
 		}
 		return interim()
 	}

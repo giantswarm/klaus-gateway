@@ -81,8 +81,9 @@ Slack channel gateway for the Agent Platform's kagent agents
 | slack.dmMode | string | `""` |  |
 | slack.channelMode | string | `""` |  |
 | slack.channelAllowlist | list | `[]` |  |
-| slack.contextBotIDs | list | `[]` |  |
-| slack.contextBotNames | list | `[]` |  |
+| slack.slashCommand | string | `""` |  |
+| slack.contextBotIDs | list | `[]` | The bot_ids (B…) whose posts the thread context hands to the agent: the alerting integrations a conversation is opened under (Alertmanager, PagerDuty). Every human's message is shared; a bot's post only when its bot_id is listed here or its profile name matches `contextBotNames`. The gateway's own posts never are. A thread is read only in a channel the gateway's bot is a member of, so the bot is invited to every alert channel whose posts should reach an agent. Rendered as SLACK_CONTEXT_BOT_IDS. Empty lists no bot_id. |
+| slack.contextBotNames | list | `[]` | Patterns matched against a bot's Slack profile name, the app's own bot name (`bot_profile.name`), never the name a post sets: `path.Match` syntax (`*`, `?`, `[...]`), case-insensitive, an invalid pattern fails start-up. One entry admits an integration that runs one Slack app per installation, each with its own bot_id: `*-alertmanager` admits every installation's Alertmanager, a new installation included. Admits beside `contextBotIDs`, with the same channel-membership requirement. Rendered as SLACK_CONTEXT_BOT_NAMES. Empty matches no name. |
 | slack.dropStale | bool | `false` |  |
 | slack.progress.emojis.working | string | `""` |  |
 | slack.progress.emojis.done | string | `""` |  |
@@ -110,6 +111,15 @@ Slack channel gateway for the Agent Platform's kagent agents
 | reviews.enabled | bool | `false` |  |
 | reviews.audience | string | `"klaus-gateway"` |  |
 | reviews.allowedCallers[0] | string | `"system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager"` |  |
+| refusals.enabled | bool | `false` |  |
+| refusals.egressService | string | `"ate-system/atenet-egress"` |  |
+| refusals.statsPort | int | `15020` |  |
+| refusals.metricsPath | string | `"/metrics"` |  |
+| refusals.kagentTarget | string | `"kagent-controller.kagent.svc:8083"` |  |
+| refusals.kagentAudience | string | `"kagent"` |  |
+| refusals.window | string | `"24h"` |  |
+| refusals.interval | string | `"1m"` |  |
+| refusals.agentURLTemplate | string | `""` |  |
 | workspaces.toolsPrefix | string | `""` |  |
 | global.podSecurityStandards.enforced | bool | `false` |  |
 | nodeSelector | object | `{}` |  |

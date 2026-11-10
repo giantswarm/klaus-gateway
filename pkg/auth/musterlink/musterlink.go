@@ -37,17 +37,15 @@
 package musterlink
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -58,6 +56,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giantswarm/pagekit"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/oauth2"
 )
@@ -115,52 +114,6 @@ const DefaultMinTokenLifetime = 25 * time.Minute
 // callers report it as such rather than prompting a sign-in.
 var ErrNotLinked = errors.New("musterlink: slack user is not linked to a muster identity")
 
-// pageHTML is the branded shell served for the interactive (browser-facing) link
-// outcomes: the success page and the handful of user-actionable errors. It is the
-// gateway's adaptation of the platform gateway-api error page
-// (giantswarm/shared-configs), reworked from Envoy %RESPONSE_*% substitutions
-// into an html/template, with light/dark support and the Giant Swarm logo.
-//
-//go:embed page.html
-var pageHTML string
-
-// pageTmpl is parsed once at startup; a parse failure is a defect in the
-// embedded asset and should fail fast rather than per request.
-var pageTmpl = template.Must(template.New("page").Parse(pageHTML))
-
-// Page is the data rendered into pageHTML. Detail is optional: its box is omitted
-// when empty.
-type Page struct {
-	Title   string // browser tab title and bold subtitle line
-	Heading string // large accent heading (e.g. "Signed in" or "Sign-in failed")
-	Message string // explanatory paragraph
-	Detail  string // optional monospace detail (technical hint); omitted when empty
-}
-
-// RenderPage writes p as an HTML document with the given status, using the
-// shared branded page shell. It renders into a buffer first so a template
-// failure cannot emit a half-written body, falling back to a plain-text status
-// line if rendering fails.
-func RenderPage(w http.ResponseWriter, status int, p Page) {
-	renderPageWith(slog.Default(), w, status, p)
-}
-
-func renderPageWith(logger *slog.Logger, w http.ResponseWriter, status int, p Page) {
-	var buf bytes.Buffer
-	if err := pageTmpl.Execute(&buf, p); err != nil {
-		logger.Error("musterlink: render page", "err", err)
-		http.Error(w, http.StatusText(status), status)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write(buf.Bytes())
-}
-
-func (l *Linker) renderPage(w http.ResponseWriter, status int, p Page) {
-	renderPageWith(l.logger, w, status, p)
-}
-
 // Config configures a Linker.
 type Config struct {
 	// BaseURL is the muster authorization server base URL. RFC 8414 discovery
@@ -179,8 +132,9 @@ type Config struct {
 	// relative path.
 	PublicBaseURL string
 	// Scopes requested from muster. When empty, defaults to
-	// openid, profile, email, offline_access (offline_access is required to
-	// receive a refresh token).
+	// openid, profile, email, groups, offline_access (offline_access is
+	// required to receive a refresh token; groups puts the person's groups in
+	// the forwarded id_token, which the kagent controller authorizes them by).
 	Scopes []string
 	// StateKey is the HMAC key used to sign link state. Must be non-empty.
 	StateKey []byte
@@ -274,6 +228,15 @@ type Linker struct {
 	nextDelay  time.Duration
 	flushTimer *time.Timer
 	closed     bool
+
+	// leaseHolder names this process in the refresh leases it writes
+	// (lease.go); leaseTTL is how long a lease holds before it expires,
+	// leaseWait how long a lease held by another process is waited for, and
+	// leasePoll how often the store is re-read meanwhile.
+	leaseHolder string
+	leaseTTL    time.Duration
+	leaseWait   time.Duration
+	leasePoll   time.Duration
 
 	// refreshStop ends the background refresher (refresh.go); refreshDone
 	// closes when it has exited.
@@ -372,7 +335,7 @@ func New(cfg Config) (*Linker, error) {
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{"openid", "profile", "email", "offline_access"}
+		scopes = []string{"openid", "profile", "email", "groups", "offline_access"}
 	}
 	ttl := cfg.StateTTL
 	if ttl <= 0 {
@@ -410,6 +373,10 @@ func New(cfg Config) (*Linker, error) {
 		cacheTTL:      linkCacheTTL,
 		retryDelay:    writeRetryDelay,
 		nextDelay:     writeRetryDelay,
+		leaseHolder:   rand.Text(),
+		leaseTTL:      refreshLeaseTTL,
+		leaseWait:     leaseWaitTimeout,
+		leasePoll:     leasePollInterval,
 		refreshStop:   make(chan struct{}),
 		refreshDone:   make(chan struct{}),
 	}
@@ -556,20 +523,12 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("u")
 	if _, err := l.verifyState(state); err != nil {
 		l.logger.Warn("musterlink: rejected link request", "err", err)
-		l.renderPage(w, http.StatusBadRequest, Page{
-			Heading: "Link expired",
-			Title:   "Sign-in link invalid",
-			Message: "This sign-in link is invalid or has expired. Return to Slack and start the sign-in again.",
-		})
+		renderFailed(w, http.StatusBadRequest, "The sign-in link is invalid or has expired", messageStartAgain, "")
 		return
 	}
 	if err := l.ensureEndpoints(r.Context()); err != nil {
 		l.logger.Error("musterlink: discovery failed", "err", err)
-		l.renderPage(w, http.StatusBadGateway, Page{
-			Heading: "Unavailable",
-			Title:   "Sign-in is temporarily unavailable",
-			Message: "The sign-in service could not be reached. Please try again in a moment.",
-		})
+		renderFailed(w, http.StatusBadGateway, "The sign-in service could not be reached", messageTryLater, "")
 		return
 	}
 	url := l.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(l.verifier(state)))
@@ -595,42 +554,32 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		if email, ok := l.takeDone(nonce); ok && email != "" {
 			message = fmt.Sprintf("Signed in as %s. You can close this tab and return to Slack.", email)
 		}
-		l.renderPage(w, http.StatusOK, Page{
-			Heading: "Success",
-			Title:   "Signed in to Giant Swarm",
-			Message: message,
-		})
+		pagekit.Render(w, http.StatusOK, signedInPage(message))
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		l.renderPage(w, http.StatusBadRequest, Page{
-			Heading: "Sign-in cancelled",
-			Title:   "Sign-in was not completed",
-			Message: "The sign-in was cancelled or denied. Return to Slack and try again.",
-			Detail:  e,
-		})
+		l.logger.Warn("musterlink: authorization server refused the sign-in", "error", e, "error_description", q.Get("error_description"))
+		// The authorization server's own trouble is worth retrying as it is;
+		// any other refusal needs a new sign-in.
+		status, message := http.StatusBadRequest, messageStartAgain
+		if e == "server_error" || e == "temporarily_unavailable" {
+			status, message = http.StatusBadGateway, messageTryLater
+		}
+		renderFailed(w, status, "The sign-in was denied or failed", message, e)
 		return
 	}
 	state := q.Get("state")
 	slackUser, err := l.verifyState(state)
 	if err != nil {
 		l.logger.Warn("musterlink: rejected callback state", "err", err)
-		l.renderPage(w, http.StatusBadRequest, Page{
-			Heading: "Link expired",
-			Title:   "Sign-in link invalid",
-			Message: "This sign-in link is invalid or has expired. Return to Slack and start the sign-in again.",
-		})
+		renderFailed(w, http.StatusBadRequest, "The sign-in link is invalid or has expired", messageStartAgain, "")
 		return
 	}
 	ctx := r.Context()
 	link, err := l.exchange(ctx, q.Get(responseTypeCode), l.verifier(state))
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
-		l.renderPage(w, http.StatusBadGateway, Page{
-			Heading: "Sign-in failed",
-			Title:   "Sign-in could not be completed",
-			Message: "Something went wrong while completing your sign-in. Please try again in a moment.",
-		})
+		renderFailed(w, http.StatusBadGateway, "The sign-in could not be completed", messageTryLater, "")
 		return
 	}
 
@@ -638,24 +587,22 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		want, err := l.slackEmail(ctx, slackUser)
 		if err != nil {
 			l.logger.Error("musterlink: slack email lookup failed", "err", err)
-			l.renderPage(w, http.StatusBadGateway, Page{
-				Heading: "Sign-in failed",
-				Title:   "Sign-in could not be completed",
-				Message: "Something went wrong while completing your sign-in. Please try again in a moment.",
-			})
+			renderFailed(w, http.StatusBadGateway, "The sign-in could not be completed", messageTryLater, "")
 			return
 		}
-		if want == "" || !strings.EqualFold(want, link.Email) {
+		if want == "" {
+			l.logger.Warn("musterlink: slack profile has no email", "slackUser", slackUser, "identityEmail", link.Email)
+			renderFailed(w, http.StatusForbidden, "Your Slack profile has no email address",
+				"Add an email address to your Slack profile, then start the sign-in again from Slack.", "")
+			return
+		}
+		if !strings.EqualFold(want, link.Email) {
 			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser, "slackEmail", want, "identityEmail", link.Email)
-			l.renderPage(w, http.StatusForbidden, Page{
-				Heading: "Email mismatch",
-				Title:   "Account email does not match",
-				Message: fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
-					"Sign in with the account whose email matches your Slack email. "+
-					"For GitHub-backed sign-in, add %s to your GitHub account (Settings > Emails), verify it, and try again; "+
-					"if sign-in still fails, this deployment releases only the GitHub primary email — make %s your primary email.",
-					link.Email, want, want, want),
-			})
+			renderFailed(w, http.StatusForbidden, "Your account email does not match Slack", fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
+				"Sign in with the account whose email matches your Slack email. "+
+				"For GitHub-backed sign-in, add %s to your GitHub account (Settings > Emails), verify it, and try again; "+
+				"if sign-in still fails, this deployment releases only the GitHub primary email — make %s your primary email.",
+				link.Email, want, want, want), "")
 			return
 		}
 	}
@@ -741,14 +688,20 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 		return "", "", fmt.Errorf("musterlink: read userinfo: %w", err)
 	}
 	var ui struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
+		Sub           string `json:"sub"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
 	}
 	if err := json.Unmarshal(body, &ui); err != nil {
 		return "", "", fmt.Errorf("musterlink: parse userinfo: %w", err)
 	}
 	if ui.Email == "" {
 		return "", "", errors.New("musterlink: userinfo response had no email")
+	}
+	// The email is matched against the Slack profile to decide whose identity
+	// this is, so an email the identity provider has not verified proves nothing.
+	if !ui.EmailVerified {
+		return "", "", errors.New("musterlink: userinfo email is not verified")
 	}
 	return ui.Sub, ui.Email, nil
 }
@@ -768,9 +721,10 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 // it (save): a store that fails to read serves the link this process knows, and
 // a rotated refresh token the store fails to take is kept and written later
 // rather than lost -- lost, the next refresh would fail invalid_grant and sign
-// the person out. Before a link is dropped on invalid_grant the store is
-// re-read: a token rotated by another writer meanwhile (a second replica, the
-// import) is retried, not burned.
+// the person out. Across processes sharing the store, a refresh first takes
+// the refresh lease on the stored token (lease.go), so no process presents a
+// token another one is presenting or has presented; muster would revoke the
+// person's sign-in for that replay.
 //
 // Refreshes are serialized per user: a Slack turn can drive several TokenFor
 // calls (event retries, concurrent messages), and muster invalidates the old
@@ -809,16 +763,19 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	return idToken, nil
 }
 
-// refreshLink spends link's refresh token at muster's token endpoint, caches
-// the new id_token with its expiry, rotates the stored refresh token and
-// persists both through save. It returns ErrNotLinked (the link dropped) on a
-// hard refusal, a retryable error on a transient one, and logs one
+// refreshLink takes the refresh lease on link's refresh token, sends the
+// refresh request to muster's token endpoint, caches the new id_token with its expiry and persists the
+// rotated link. When another process wrote the link meanwhile it serves that
+// link's id_token, or refreshes with that link's token instead. It returns
+// ErrNotLinked (the link dropped) on a hard refusal, a retryable error on a transient one, and logs one
 // token_refresh record either way with the trigger that ran it. The caller
 // holds the user's lock.
 func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link, trigger string) (idToken string, expiry time.Time, err error) {
 	began := l.now()
+	source := refreshSourceNone
+	refreshRequests := 0
 	defer func() {
-		fields := []any{"record", recordTokenRefresh, "trigger", trigger, "slackUser", slackUserID, "duration_ms", l.now().Sub(began).Milliseconds()}
+		fields := []any{"record", recordTokenRefresh, "trigger", trigger, "source", source, "refresh_requests", refreshRequests, "slackUser", slackUserID, "duration_ms", l.now().Sub(began).Milliseconds()}
 		if err != nil {
 			l.logger.Warn("musterlink: id_token refresh failed", append(fields, "error", err.Error())...)
 			return
@@ -837,46 +794,95 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return "", time.Time{}, fmt.Errorf("musterlink: discover endpoints: %w", err)
 	}
-	tok, err := l.refresh(ctx, link.RefreshToken)
+	for attempt := 1; ; attempt++ {
+		lease, adopted, err := l.acquireRefreshLease(ctx, slackUserID, link)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if lease != leaseAdopted {
+			refreshRequests++
+			idToken, expiry, adopted, err = l.sendRefreshRequest(ctx, slackUserID, link, lease == leaseHeld)
+			if adopted == nil {
+				if err == nil {
+					source = refreshSourceRequest
+				}
+				return idToken, expiry, err
+			}
+		}
+		// Another process wrote the link: its id_token may already cover the
+		// turn, else its refresh token is the one to present.
+		link = adopted
+		if cached := l.reusableToken(slackUserID, link, l.now()); cached != "" {
+			source = refreshSourceStore
+			return cached, link.Expiry, nil
+		}
+		if attempt == refreshAttempts {
+			return "", time.Time{}, errRefreshContended
+		}
+	}
+}
+
+// sendRefreshRequest presents link's refresh token at muster's token endpoint
+// (RFC 6749 section 6) and records the outcome: the rotated link, or the link
+// dropped on invalid_grant. leased says this process holds the refresh lease
+// on the token (lease.go); then the store is only written while it still
+// holds the presented token, and adopted is the link another writer put there
+// meanwhile, for the caller to retry with.
+func (l *Linker) sendRefreshRequest(ctx context.Context, slackUserID string, link *Link, leased bool) (idToken string, expiry time.Time, adopted *Link, err error) {
+	// A request once sent runs to its own bound whatever is left of the
+	// caller's: cut short, muster may have rotated the token without the
+	// gateway learning the new one.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	defer cancel()
+	token, err := l.refresh(rctx, link.RefreshToken)
 	if isInvalidGrant(err) {
-		// muster rejected the refresh token. Before declaring the link dead, ask
-		// the store past the process-local copy: another writer may have rotated
-		// the token since this process last read it, and then the stored one is
-		// the live one.
-		stored, serr := l.reload(slackUserID)
-		if serr != nil || stored.RefreshToken == link.RefreshToken {
-			return "", time.Time{}, l.dropDead(slackUserID)
+		refused := link.RefreshToken
+		if stored := l.storedRefreshTokenOf(slackUserID); !leased && stored != "" {
+			// The store never held the refused token; it holds the one this
+			// was rotated from, as dead now, and presenting it would replay it.
+			refused = stored
 		}
-		l.logger.Info("musterlink: refresh token rotated by another writer, retrying with the stored one", "slackUser", slackUserID)
-		link = stored
-		if tok, err = l.refresh(ctx, link.RefreshToken); isInvalidGrant(err) {
-			return "", time.Time{}, l.dropDead(slackUserID)
-		}
+		adopted, err = l.dropRefused(slackUserID, refused)
+		return "", time.Time{}, adopted, err
 	}
 	if err != nil {
 		// A non-invalid_grant token-endpoint error (transient 5xx, network)
 		// keeps the link and stays retryable.
-		return "", time.Time{}, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
+		if leased {
+			l.logger.Warn("musterlink: refresh request failed, the refresh token's state at muster is unknown", "slackUser", slackUserID, "err", err)
+			l.releaseRefreshLease(slackUserID, link.RefreshToken)
+		}
+		return "", time.Time{}, nil, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
 	// The refresh succeeded, so muster has already rotated the refresh token
 	// server-side; persist it even when the response is unusable, or the stored
 	// token is spent and the next refresh burns the link with invalid_grant.
 	updated := *link
-	if tok.RefreshToken != "" {
-		updated.RefreshToken = tok.RefreshToken
+	updated.Lease = nil
+	if token.RefreshToken != "" {
+		updated.RefreshToken = token.RefreshToken
 	}
-	idToken, _ = tok.Extra("id_token").(string)
+	idToken, _ = token.Extra("id_token").(string)
 	if idToken == "" {
 		updated.IDToken = ""
 		updated.Expiry = time.Time{}
-		l.save(slackUserID, &updated)
-		return "", time.Time{}, errors.New("musterlink: refresh response carried no id_token")
+	} else {
+		updated.IDToken = idToken
+		updated.Expiry = idTokenExpiry(idToken, token.Expiry)
 	}
-	updated.IDToken = idToken
-	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
-	l.save(slackUserID, &updated)
+	if leased {
+		adopted, err = l.saveRotated(slackUserID, link.RefreshToken, &updated)
+		if adopted != nil || err != nil {
+			return "", time.Time{}, adopted, err
+		}
+	} else {
+		l.save(slackUserID, &updated)
+	}
+	if idToken == "" {
+		return "", time.Time{}, nil, errors.New("musterlink: refresh response carried no id_token")
+	}
 	l.noteRefreshed(slackUserID)
-	return idToken, updated.Expiry, nil
+	return idToken, updated.Expiry, nil, nil
 }
 
 // refresh spends refreshToken at muster's token endpoint and returns the new
@@ -891,17 +897,6 @@ func (l *Linker) refresh(ctx context.Context, refreshToken string) (*oauth2.Toke
 func isInvalidGrant(err error) bool {
 	var re *oauth2.RetrieveError
 	return errors.As(err, &re) && re.ErrorCode == "invalid_grant"
-}
-
-// dropDead removes a link whose refresh token muster rejected and returns
-// ErrNotLinked, so the caller prompts sign-in on this same turn rather than a
-// turn later. A store that refuses the delete is logged: the next read finds
-// the dead link again and lands here again, which is harmless.
-func (l *Linker) dropDead(slackUserID string) error {
-	if err := l.drop(slackUserID); err != nil {
-		l.logger.Warn("musterlink: dropping a dead link from the store failed", "slackUser", slackUserID, "err", err)
-	}
-	return ErrNotLinked
 }
 
 // LinkedIdentity returns the muster identity (subject and email) stored for a

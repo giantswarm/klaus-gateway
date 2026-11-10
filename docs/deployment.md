@@ -92,8 +92,22 @@ failure never costs a person their sign-in:
   sign-in prompt, and `login` answers the same way. `logout` reports a sign-out the store
   refused instead of confirming it.
 - Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than
-  one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token
-  rotated by another writer (a second replica, the import) is retried rather than burned.
+  one per lookup.
+- Replicas sharing the Secret never present the same refresh token. muster revokes the whole
+  sign-in when a refresh token it has already rotated is presented again, so before a refresh
+  the gateway writes a refresh lease on the token into the link, and only while the Secret still
+  holds that token. A replica that finds another one's lease waits for its rotated link (up to
+  60 s, when an unfinished lease expires) and serves its token; one that finds a newer token adopts
+  it. The rotated link is written, and a refused one deleted, only while the Secret still holds
+  the token that was presented, so a sign-in that lands meanwhile is kept. A Secret that cannot be
+  read or written for the lease fails the refresh as transient without presenting the token:
+  another replica that can reach the Secret may be presenting it. A cached id_token that still
+  covers a turn is served as before, so only a person whose token is due waits for the Secret.
+  A Secret whose writes keep conflicting is waited out the same way, up to 60 s. A rotated link
+  the Secret refuses is kept in memory and written later only while the Secret still holds the
+  token it was rotated from. One case stays open: when the Secret refuses that write for longer
+  than 60 s, the lease expires and another replica presents the rotated-away token, which signs
+  the person out. Pod clocks must agree within 30 s.
 
 ## Workspaces
 
@@ -123,8 +137,9 @@ how much of its reply has landed (continued, not repeated, after a restart, see
 initiator, grants, the Session and its in-flight task are one row, with one sliding
 lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
 refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
-without mentioning the bot again, and after that long of silence the conversation ends: the next
-mention starts it over with a new initiator and no grants (what the agent still remembers is
+without mentioning the bot again, and after that long of silence the conversation ends: a mention
+gets the help, and the **Ask an agent here** shortcut starts the thread over with a new initiator
+and no grants (what the agent still remembers is
 the controller's call, see [channels-slack.md](channels-slack.md#threads-and-conversations)). The
 row itself is kept for **twice** the lifetime (180 days by default), so a reply without a mention
 in a thread whose conversation ended gets one private line saying so instead of silence; past
@@ -225,9 +240,9 @@ binding and the task with it. Installations with a Slack channel should run `val
 lies inside a mounted volume. On a persistent store a restarted gateway also keeps each Slack
 thread's agent, initiator and grants — for `routing.threadTTL` (90 days by default) of silence,
 after which the conversation has ended on every store: a reply without a mention gets the notice
-while the row lasts (twice the lifetime), and past that the thread is forgotten. On `memory` the
-thread starts fresh at each restart, and the first person to mention the bot becomes its
-initiator.
+while the row lasts (twice the lifetime), and past that the thread is forgotten. On `memory` every
+conversation is lost at each restart: a plain reply in one gets no answer, a mention gets the help,
+and the thread is free for the shortcut to open again.
 
 ## Observability
 
@@ -242,12 +257,14 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   but the channel refused part of the answer), `send_failed` (the turn died before it was
   sent: the controller refused it), `connect_required` (the Session could not start: a
   muster server waits for the person's consent, the Connect prompt went out and the message
-  is held) and `share_refused` (a collaborator's turn the thread's Session could not be opened
+  is held), `share_refused` (a collaborator's turn the thread's Session could not be opened
   to: kagent refused to share it, or the share needs the initiator's sign-in; the thread was
-  told why). A `failed` or `send_failed` turn carries what broke as
+  told why) and `prompt_answered` (an answer to a prompt the task no longer waits on, because
+  it was answered elsewhere first; nothing was sent). A `failed` or `send_failed` turn carries what broke as
   `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
   controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
-  refused it) or `unknown`; every other turn has none. One person's model error is noise; a
+  refused it), `connection_required` (the person has not connected the provider account the
+  agent's model runs on, such as their ChatGPT subscription) or `unknown`; every other turn has none. One person's model error is noise; a
   burst of one class across people is an outage of that part of the platform, which
   `sum by (failure_class) (increase(klaus_gateway_turn_total{outcome=~"failed|send_failed"}[10m]))`
   shows (see [channels-slack.md](channels-slack.md#restarts-and-stop) for what each class tells

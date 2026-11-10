@@ -74,8 +74,7 @@ func (wm *fakeWorkspaceManager) challengeFor(call mustertest.Call) *mustertest.A
 	if !wm.challenged[strings.TrimPrefix(call.Bearer, "Bearer ")] {
 		return nil
 	}
-	return &mustertest.Answer{IsError: true, Text: "auth_required: server 'workspace-manager' requires authentication\n\n" + workspaceManagerSignInLink,
-		Structured: map[string]any{"status": "auth_required", "server": "workspace-manager", "authUrl": workspaceManagerSignInLink}}
+	return &mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to workspace-manager to continue.", URL: workspaceManagerSignInLink}}
 }
 
 // gitlabSignInLink is the link muster's core_auth_login answers for
@@ -181,8 +180,7 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 			if call.Args["server"] != "gitlab-manager" {
 				return mustertest.Answer{IsError: true, Text: "server not found"}
 			}
-			return mustertest.Answer{Text: "Authentication Required\n\nServer: gitlab-manager\n\n" + gitlabSignInLink,
-				Structured: map[string]any{"authUrl": gitlabSignInLink}}
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to gitlab-manager to continue.", URL: gitlabSignInLink}}
 		},
 	}
 	t.Cleanup(wm.Close)
@@ -213,6 +211,7 @@ func withWorkspaces(wm *fakeWorkspaceManager) func(*slackadapter.Adapter) {
 		channelMode(a)
 		a.OBO = &multiUserOBO{linked: workspaceLinked}
 		a.Workspaces = workspaces.New(muster.NewClient(wm.URL), workspaceToolsPrefix)
+		a.SignIns = muster.NewClient(wm.URL)
 	}
 }
 
@@ -321,6 +320,7 @@ func TestWorkspace_NewThreadAsksOnceAndStartsOneSessionWithTheGrant(t *testing.T
 	facade := &channels.Facade{Agent: kagent, Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
 	a, srv := newEventsAdapter(t, facade, api.URL, withWorkspaces(wm))
 
+	openConversationIn(t, facade, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond, "the thread asks for its workspace")
 	sendEvent(t, srv, mention("U001", "<@UBOT> and on staging?", "101.000", "100.000"))
@@ -373,6 +373,7 @@ func TestWorkspace_SenderWithoutWorkspacesIsNotAsked(t *testing.T) {
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
 	require.Eventually(t, func() bool { return len(captured()) == 1 }, flowWait, 20*time.Millisecond)
 	require.Nil(t, captured()[0].Workspace, "no choice, nobody asked")
@@ -390,6 +391,7 @@ func TestWorkspace_NoWorkspaceStartsWithoutAGrant(t *testing.T) {
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond)
 	sendWorkspaceClick(t, srv, "U001", "100.000", "")
@@ -411,7 +413,9 @@ func TestWorkspace_MessageTextChangesNeitherOfferNorChoice(t *testing.T) {
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
+	gw.openConversation(t, "C1", "200.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> work in workspace klaus-dev, not platform", "200.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 2 }, flowWait, 20*time.Millisecond)
 	prompts := workspacePrompts(fake)
@@ -443,6 +447,7 @@ func TestWorkspace_OnlyTheInitiatorChoosesAndARefusalKeepsThePrompt(t *testing.T
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond)
 
@@ -483,6 +488,7 @@ func TestWorkspace_RestartBetweenPromptAndClickCompletesTheStart(t *testing.T) {
 	shared := slackadapter.NewMemoryRecorder()
 
 	a1, srv1 := newEventsAdapter(t, &stubGateway{records: shared}, api.URL, withWorkspaces(wm))
+	openConversationIn(t, shared, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv1, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond)
 	require.Eventually(t, func() bool {
@@ -523,10 +529,10 @@ func TestWorkspace_ClickOnAClosedPromptStartsNothing(t *testing.T) {
 }
 
 // A person who has not granted the workspace-manager's App gets muster's
-// sign-in challenge for the listing: the thread answers with the Connect
-// prompt for it, holding the message, never "could not be listed". Once
-// connected, the landing replays the message, which lists again and asks for
-// the workspace.
+// sign-in for the listing: the thread answers with the Connect prompt for it,
+// holding the message, never "could not be listed". Their click accepts the
+// sign-in, which lists again once they signed in, and replays the message,
+// which asks for the workspace.
 func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
@@ -537,19 +543,16 @@ func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T)
 	kagent := newWorkspaceKagent()
 	facade := &channels.Facade{Agent: kagent, Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
 	log := &lockedLog{}
-	_, srv := newEventsAdapter(t, facade, api.URL, withWorkspaces(wm), withInfoLog(log), func(a *slackadapter.Adapter) {
-		a.PublicBaseURL = "https://gw.example"
-	})
+	_, srv := newEventsAdapter(t, facade, api.URL, withWorkspaces(wm), withInfoLog(log))
 
+	openConversationIn(t, facade, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	var buttonURL, stateID string
 	var ok bool
 	require.Eventually(t, func() bool { buttonURL, stateID, ok = connectButton(fake); return ok }, flowWait, 20*time.Millisecond,
 		"the Connect prompt for the workspace-manager")
-	parsed, err := url.Parse(buttonURL)
-	require.NoError(t, err)
-	require.Equal(t, "wm", parsed.Query().Get("state"), "muster's own sign-in link, decorated")
-	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "*workspace-manager*")
+	require.Equal(t, workspaceManagerSignInLink, buttonURL, "muster's own sign-in link, unchanged")
+	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "Sign in to workspace-manager to continue.")
 	cards := 0
 	for _, call := range append(fake.pathCalls("chat.postEphemeral"), fake.pathCalls("chat.postMessage")...) {
 		if _, _, _, ok := connectButtonIn([]recordedCall{call}); !ok {
@@ -565,15 +568,29 @@ func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T)
 	created, _, _ := kagent.state()
 	require.Zero(t, created, "nothing starts before the grant")
 	require.Contains(t, log.String(), "record=session_connect_required")
-	require.Contains(t, log.String(), "server=workspace-manager")
 
 	wm.challenge("tok1", false)
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=workspace-manager")
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	sendSignInConsent(t, srv, "U001", stateID)
+	require.Eventually(t, func() bool {
+		for _, call := range wm.Calls() {
+			if call.Accepted && call.Tool == workspaceToolsPrefix+"list_workspaces" {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the click accepts the listing's sign-in")
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond,
 		"the replayed message lists the workspaces and asks")
 	created, _, _ = kagent.state()
 	require.Zero(t, created)
+}
+
+// sendSignInConsent posts user's click on a Connect prompt's link button
+// carrying stateID, on an ephemeral prompt.
+func sendSignInConsent(t *testing.T, srv *httptest.Server, user, stateID string) {
+	t.Helper()
+	postInteraction(t, srv, map[string]any{
+		"type": "block_actions", "user": map[string]any{"id": user}, "container": map[string]any{"type": "message", "is_ephemeral": true},
+		"actions": []any{map[string]any{"action_id": "connector_connect", "value": stateID}},
+	})
 }

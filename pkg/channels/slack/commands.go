@@ -149,8 +149,12 @@ func isBareStop(text string) bool {
 }
 
 // helpCommand is one command in the help reply: the command as it is typed,
-// and what it does.
-type helpCommand struct{ command, effect string }
+// and what it does. A shortcut is clicked, not typed: it is shown as a name,
+// not as a code label, and left out of the notification fallback.
+type helpCommand struct {
+	command, effect string
+	shortcut        bool
+}
 
 // helpGroup is one group of the help reply, named by what the person is doing.
 type helpGroup struct {
@@ -158,24 +162,36 @@ type helpGroup struct {
 	commands []helpCommand
 }
 
-// helpGroups lists the commands the gateway serves, grouped by what the
-// person is doing: agent selection and sign-in only when this gateway has
-// them.
-func helpGroups(agents, signIn bool) []helpGroup {
-	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
-		{cmdStop, "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
-		{cmdUsage, "Tokens for the last turn and the session"},
-		{cmdMute, "Stop replying to messages here; the next mention brings the bot back with what was said meanwhile"},
-	}}}
+// helpAskAgentShortcut is the name the app manifest gives the message
+// shortcut that opens the agent picker on a thread; like the Inspect
+// shortcut's, it is per app and the gateway routes on the callback id.
+const helpAskAgentShortcut = "Ask an agent here"
+
+// helpGroups lists what the gateway serves, grouped by what the person is
+// doing: first how a conversation starts, since the two entry points are the
+// only ones (a mention and a new chat start nothing), then the command words,
+// with agent selection and sign-in only when this gateway has them.
+func helpGroups(slashCommand string, agents, signIn bool) []helpGroup {
+	groups := []helpGroup{
+		{title: "Start a conversation", commands: []helpCommand{
+			{command: slashCommand + " [question]", effect: "Pick an agent and ask it; in a channel or in a direct message, not inside a thread"},
+			{command: helpAskAgentShortcut, effect: "Open the ⋯ menu on a message, then Apps: the conversation starts in that message's thread", shortcut: true},
+		}},
+		{title: "In a thread", commands: []helpCommand{
+			{command: cmdStop, effect: "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
+			{command: cmdUsage, effect: "Tokens for the last turn and the session"},
+			{command: cmdMute, effect: "Stop replying to messages here; the next mention brings the bot back with what was said meanwhile"},
+		}},
+	}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
-			{cmdAgents, "List the agents; in a new thread each row starts a conversation"},
+			{command: cmdAgents, effect: "List the agents; in a new thread each row starts a conversation"},
 		}})
 	}
 	if signIn {
 		groups = append(groups, helpGroup{title: "Account", commands: []helpCommand{
-			{cmdLogin, "Sign in to Giant Swarm; the agent then acts with your permissions"},
-			{cmdLogout, "Sign out"},
+			{command: cmdLogin, effect: "Sign in to Giant Swarm; the agent then acts with your permissions"},
+			{command: cmdLogout, effect: "Sign out"},
 		}})
 	}
 	return groups
@@ -184,48 +200,80 @@ func helpGroups(agents, signIn bool) []helpGroup {
 // helpShortcutNote names the one feature that is a shortcut, not a command.
 const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message in the thread, then Apps. Visible only to you."
 
-// helpBlocks builds the help reply: a header, how to address the bot, one
-// group per activity with the command as a code label and its effect as the
-// text, and the Inspect shortcut. botName is the bot's own display name; when
-// known the mention names it, otherwise it says "the bot" rather than
-// hardcoding one. The returned text is the notification fallback.
-func helpBlocks(botName string, agents, signIn bool) (string, []any) {
+// noConversationLead opens the help reply of a message that found no
+// conversation in its thread: a mention on a channel message or under an
+// alert, a new chat in the assistant pane, a reply after the conversation
+// ended. It says why nothing was answered before the help says how to start.
+const noConversationLead = "No conversation is open here, so your message did not reach an agent. Here is how to start one."
+
+// helpBlocks builds the help reply: a header, an optional lead line, one
+// group per activity with the command as a code label (a shortcut by its
+// name) and its effect as the text, how the command words reach the bot, and
+// the Inspect shortcut. slashCommand is the app's slash command, the way a
+// conversation starts; botName is the bot's own display name; when known the
+// mention names it, otherwise it says "the bot" rather than hardcoding one.
+// The returned text is the notification fallback.
+func helpBlocks(botName, slashCommand string, agents, signIn bool, lead string) (string, []any) {
 	// A command word reaches the bot wherever it reads messages, which is a DM
 	// and a thread it is in; a top-level channel message reaches it only with
-	// a mention. No command carries a slash: Slack's composer takes a message
-	// that starts with / as one of Slack's own commands, in a DM too.
+	// a mention. No command word carries a slash: Slack's composer takes a
+	// message that starts with / as one of Slack's own commands, in a DM too,
+	// which is also why the slash command is a command of the app.
 	who := "the bot"
 	if botName != "" {
 		who = "@" + botName
 	}
-	address := fmt.Sprintf("Send a command as the word alone, in a direct message or in a thread %s is in; anywhere else mention %s first.", who, who)
+	address := fmt.Sprintf("Send a command word as the word alone, in a direct message or in a thread %s is in; anywhere else mention %s first.", who, who)
 	var lines []string
 	var elements []any
-	for _, g := range helpGroups(agents, signIn) {
+	for _, g := range helpGroups(slashCommand, agents, signIn) {
 		elements = append(elements, map[string]any{
 			bkType:     "rich_text_section",
 			bkElements: []any{map[string]any{bkType: bkText, bkText: g.title, bkStyle: map[string]any{"bold": true}}},
 		})
 		items := make([]any, 0, len(g.commands))
 		for _, c := range g.commands {
-			lines = append(lines, c.command)
+			style := map[string]any{"code": true}
+			if c.shortcut {
+				style = map[string]any{"bold": true}
+			} else {
+				lines = append(lines, c.command)
+			}
 			items = append(items, map[string]any{
 				bkType: "rich_text_section",
 				bkElements: []any{
-					map[string]any{bkType: bkText, bkText: c.command, bkStyle: map[string]any{"code": true}},
+					map[string]any{bkType: bkText, bkText: c.command, bkStyle: style},
 					map[string]any{bkType: bkText, bkText: "  " + c.effect},
 				},
 			})
 		}
 		elements = append(elements, map[string]any{bkType: "rich_text_list", bkStyle: "bullet", bkElements: items})
 	}
-	blocks := []any{
-		map[string]any{bkType: bkHeader, bkText: plainTextObj("Commands")},
-		contextBlock(address),
-		map[string]any{bkType: "rich_text", bkElements: elements},
-		contextBlock(helpShortcutNote),
+	blocks := []any{map[string]any{bkType: bkHeader, bkText: plainTextObj("Commands")}}
+	if lead != "" {
+		blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: lead}})
 	}
-	return "Commands: " + strings.Join(lines, ", "), blocks
+	blocks = append(blocks,
+		map[string]any{bkType: "rich_text", bkElements: elements},
+		contextBlock(address),
+		contextBlock(helpShortcutNote),
+	)
+	text := "Commands: " + strings.Join(lines, ", ")
+	if lead != "" {
+		text = lead + " " + text
+	}
+	return text, blocks
+}
+
+// postHelp posts the help reply in the thread, led by lead when it is not
+// empty: the help command posts it bare, and a message that found no
+// conversation in its thread posts it with noConversationLead.
+func (a *Adapter) postHelp(ctx context.Context, slackChannel, threadID, lead string) {
+	_, agents := a.AgentCards.(agentCardChecker)
+	text, blocks := helpBlocks(a.botName(ctx), a.slashCommand(), agents, a.OBO != nil, lead)
+	if _, err := a.apiClient().postBlocks(ctx, slackChannel, threadID, text, blocks); err != nil {
+		a.Logger.Warn("slack: post help failed", "thread", threadID, "error", err)
+	}
 }
 
 // handleCommand runs a command and posts a reply in-thread.
@@ -276,11 +324,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 
 	switch cmd.Name {
 	case cmdHelp:
-		_, agents := a.AgentCards.(agentCardChecker)
-		text, blocks := helpBlocks(a.botName(ctx), agents, a.OBO != nil)
-		if _, err := client.postBlocks(ctx, slackChannel, threadID, text, blocks); err != nil {
-			a.Logger.Warn("slack: post help failed", "error", err)
-		}
+		a.postHelp(ctx, slackChannel, threadID, "")
 		return true
 
 	case cmdLogin:

@@ -21,6 +21,7 @@ func parkForConsent(t *testing.T, fake *fakeSlackAPI, gw *stubGateway) (*slackad
 	t.Helper()
 	api := fake.server(t)
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode)
+	gw.openConversation(t, "C1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "600.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "600.000")
@@ -95,6 +96,7 @@ func parkForSignIn(t *testing.T, fake *fakeSlackAPI, gw *stubGateway, obo *multi
 	api := fake.server(t)
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode)
 	a.OBO = obo
+	gw.openConversation(t, "C1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "600.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "600.000")
@@ -178,6 +180,7 @@ func TestMuteParked_EachSenderIsToldOnce(t *testing.T) {
 	obo := &multiUserOBO{linked: map[string]string{"U1": "tok1", "U2": "tok2"}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = obo
+	gw.openConversation(t, "C1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "600.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "600.000")
@@ -219,6 +222,7 @@ func TestMuteParked_ReplayWaitingForTheSlotIsDropped(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "thinking"}}, hold: hold}
 	api := fake.server(t)
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode)
+	gw.openConversation(t, "C1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "600.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 

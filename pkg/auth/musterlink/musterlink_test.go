@@ -24,28 +24,41 @@ type musterStub struct {
 	server   *httptest.Server
 	clientID string
 
-	mu             sync.Mutex
-	email          string
-	sub            string
-	failRefresh    bool          // reject refresh with 400 invalid_grant (dead token)
-	failRefresh5xx bool          // reject refresh with a transient 503 (no OAuth error code)
-	hangRefresh    bool          // never answer a refresh (blackholed endpoint) until the request context ends
-	omitIDToken    bool          // omit id_token from the token response (upstream had none)
-	idTokenTTL     time.Duration // lifetime of a minted id_token; zero means an hour
-	counter        int
-	validAccess    map[string]bool
+	mu              sync.Mutex
+	email           string
+	sub             string
+	failRefresh     bool          // reject refresh with 400 invalid_grant (dead token)
+	failRefresh5xx  bool          // reject refresh with a transient 503 (no OAuth error code)
+	hangRefresh     bool          // never answer a refresh (blackholed endpoint) until the request context ends
+	omitIDToken     bool          // omit id_token from the token response (upstream had none)
+	unverifiedEmail bool          // userinfo answers email_verified: false
+	idTokenTTL      time.Duration // lifetime of a minted id_token; zero means an hour
+	counter         int
+	validAccess     map[string]bool
 	// spent holds every refresh token already presented: muster rotates on each
-	// refresh and rejects a spent token with invalid_grant, and so does the stub.
+	// refresh, and a spent token presented again revokes its whole family (the
+	// token it was rotated into included) and fails invalid_grant, as
+	// mcp-oauth's reuse detection does. family maps a refresh token to its
+	// family, revoked holds the revoked families, reused counts the replays.
 	// lastRefresh is the refresh token presented most recently.
 	spent       map[string]bool
+	family      map[string]int
+	revoked     map[int]bool
+	families    int
+	reused      int
 	lastRefresh string
+	// onRefresh, when set, runs at the start of every refresh request, before
+	// the stub answers it.
+	onRefresh func()
+	// refreshRequests counts the refresh_token grant requests the stub saw.
+	refreshRequests int
 	// lastVerifier is the PKCE code_verifier of the last code exchange.
 	lastVerifier string
 }
 
 func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 	t.Helper()
-	s := &musterStub{clientID: clientID, email: email, sub: sub, validAccess: map[string]bool{}, spent: map[string]bool{}}
+	s := &musterStub{clientID: clientID, email: email, sub: sub, validAccess: map[string]bool{}, spent: map[string]bool{}, family: map[string]int{}, revoked: map[int]bool{}}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
@@ -62,8 +75,11 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 		if r.Form.Get("grant_type") == "authorization_code" {
 			s.lastVerifier = r.Form.Get("code_verifier")
 		}
-		hang := s.hangRefresh
+		hang, hook := s.hangRefresh, s.onRefresh
 		s.mu.Unlock()
+		if r.Form.Get("grant_type") == "refresh_token" && hook != nil {
+			hook()
+		}
 		if r.Form.Get("grant_type") == "refresh_token" && hang {
 			<-r.Context().Done()
 			return
@@ -80,9 +96,21 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		var familyID int
 		if r.Form.Get("grant_type") == "refresh_token" {
+			s.refreshRequests++
 			rt := r.Form.Get("refresh_token")
-			if s.spent[rt] {
+			presented, known := s.family[rt]
+			if !known {
+				s.families++
+				presented = s.families
+				s.family[rt] = presented
+			}
+			if s.spent[rt] && !s.revoked[presented] {
+				s.revoked[presented] = true
+				s.reused++
+			}
+			if s.revoked[presented] {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
@@ -90,10 +118,15 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			}
 			s.spent[rt] = true
 			s.lastRefresh = rt
+			familyID = presented
+		} else {
+			s.families++
+			familyID = s.families
 		}
 		s.counter++
 		at := fmt.Sprintf("access-%d", s.counter)
 		rt := fmt.Sprintf("refresh-%d", s.counter)
+		s.family[rt] = familyID
 		s.validAccess[at] = true
 		resp := map[string]any{
 			"access_token":  at,
@@ -122,7 +155,7 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, map[string]any{"sub": s.sub, "email": s.email})
+		writeJSON(w, map[string]any{"sub": s.sub, "email": s.email, "email_verified": !s.unverifiedEmail})
 	})
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
@@ -213,7 +246,7 @@ func TestClientMetadataDocument(t *testing.T) {
 	require.Contains(t, doc.RedirectURIs, publicBase+CallbackPath)
 	require.Equal(t, "none", doc.TokenEndpointAuthMethod)
 	require.Contains(t, doc.GrantTypes, "refresh_token")
-	require.Equal(t, "openid profile email offline_access", doc.Scope)
+	require.Equal(t, "openid profile email groups offline_access", doc.Scope)
 }
 
 func TestNewDerivesClientIDAndRedirectFromPublicBaseURL(t *testing.T) {
@@ -486,6 +519,7 @@ func TestTokenForTransientRefreshErrorKeepsLink(t *testing.T) {
 	got, err := store.Get("U1")
 	require.NoError(t, err, "a transient refresh failure must retain the link")
 	require.Equal(t, "refresh-0", got.RefreshToken)
+	require.Nil(t, got.Lease, "the unspent token is released for other processes")
 }
 
 func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
@@ -546,6 +580,21 @@ func TestCallbackRedirectsToCodeFreeSuccessPage(t *testing.T) {
 	require.Contains(t, rrec.Body.String(), "Signed in to Giant Swarm")
 	require.NotContains(t, rrec.Body.String(), "alice@example.com",
 		"a reload must not replay the identity confirmation")
+}
+
+// The sign-in asks muster for the groups scope, so the id_token forwarded on
+// every turn carries the person's groups for the kagent controller's RBAC
+// review whatever muster's own default scopes are.
+func TestLinkAsksForGroups(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	l := newTestLinker(t, stub, NewMemStore(), nil)
+
+	rec := httptest.NewRecorder()
+	l.HandleLink(rec, httptest.NewRequest(http.MethodGet, LinkPath+"?u="+url.QueryEscape(l.SignState("U1")), nil))
+	require.Equal(t, http.StatusFound, rec.Code)
+	authorize, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	require.Subset(t, strings.Fields(authorize.Query().Get("scope")), []string{"openid", "groups", "offline_access"})
 }
 
 // A sign-in whose callback reaches another process than its authorize
@@ -654,6 +703,19 @@ func TestCallbackRejectsEmailMismatch(t *testing.T) {
 	driveCallback(t, l, "U1", http.StatusForbidden)
 	_, gerr := store.Get("U1")
 	require.ErrorIs(t, gerr, ErrNotLinked, "a spoofed email must not create a link")
+}
+
+func TestCallbackRejectsUnverifiedEmail(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.unverifiedEmail = true
+	store := NewMemStore()
+	l := newTestLinker(t, stub, store, func(context.Context, string) (string, error) {
+		return "alice@example.com", nil // Slack and muster agree, but muster has not verified it
+	})
+
+	driveCallback(t, l, "U1", http.StatusBadGateway)
+	_, gerr := store.Get("U1")
+	require.ErrorIs(t, gerr, ErrNotLinked, "an unverified email must not create a link")
 }
 
 // driveCallback runs HandleLink (to seed PKCE pending state) then HandleCallback

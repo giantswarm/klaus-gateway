@@ -66,9 +66,12 @@ references:
   carries none (falling back to `a2a.fallbackIconUrlTemplate` with `{agent}` replaced by the
   technical name); description and `modelConfig` from the referenced template, or from the
   embedded one;
-- readiness from the Agent's `status.conditions`: an Agent is offered when its `Ready`
-  condition is `True`, which the controller sets once it has compiled a revision a Session can
-  be created from. An Agent that is not ready is not offered; selecting it by name is refused
+- readiness from the Agent's status: an Agent is offered once it has a
+  `status.latestSuccessfulRevision`, the revision the controller creates new Sessions from. It
+  stays offered while a newer revision prepares (`Ready=False`, `ActorTemplatePending`, after an
+  Agent spec or EgressPolicy edit), as the kagent UI shows it "updating". An Agent without one is
+  offered when its `Ready` condition is `True`. An Agent that never had a ready revision is not
+  offered; selecting it by name is refused
   with the condition's message (`Agent <name> is not ready: <message>`) in the gateway's log,
   and the channel shows its unknown-agent notice with the roster.
 
@@ -104,7 +107,9 @@ thread to exactly one session:
    channelID, "", threadID, agentRef`, followed by the workspace's namespace and name when the
    thread chose one) and the `sessionName`, for a thread that chose a workspace the
    `workspaceGrant` `authorize_workspace` answered the initiator (a Session keyed to a
-   workspace is never started without it), and no `message`: without one `start_session`
+   workspace is never started without it), `noWorkspace: true` for every other (agent-manager
+   would otherwise start it in the Agent's default workspace, which the gateway chooses itself,
+   as the person, with a grant), and no `message`: without one `start_session`
    only creates the session and answers `{session}`, and the gateway sends the turn itself,
    attachments included, over A2A as on every later turn. The tool is
    `<a2a.agentManagerToolsPrefix>start_session`, `x_agent-manager_start_session` by default.
@@ -117,12 +122,14 @@ thread to exactly one session:
    `conflict`) is reported the same way, as the agent being unavailable. A caller muster or
    agent-manager cannot act as (an HTTP 401 or 403 from muster, agent-manager's
    `unauthenticated`, or an `auth_required` without a sign-in link) is a caller without an
-   identity, the condition a channel answers with its sign-in prompt. muster's own sign-in
-   challenge for agent-manager (`auth_required` with the link: the server is pinned to a
-   GitHub App, so muster runs its tools for a person only after their one-time consent) is
-   `ConnectRequiredError`, the server and the link. The person is signed in, so the channel
-   answers with its Connect prompt for the server, never the sign-in prompt, and runs the
-   turn again once they have connected.
+   identity, the condition a channel answers with its sign-in prompt. The gateway's muster
+   client declares URL mode elicitation on protocol 2026-07-28, so the sign-in muster asks for
+   first (the server is pinned to a GitHub App, so muster runs its tools for a person only
+   after their one-time consent) comes as an `input_required` result with a URL elicitation:
+   `ConnectRequiredError`, carrying muster's message, the link and the state to retry with.
+   The person is signed in, so the channel answers with its Connect prompt, never the sign-in
+   prompt; once the person agreed to open the link it accepts the sign-in, which muster runs
+   the start for once the sign-in completed, and runs the turn again.
 
    The start also carries `sessionName`, the conversation's display name: the message that opened the
    thread, rendered on one line and cut at the controller's 200-character limit on a word
@@ -192,16 +199,28 @@ typed payload under the extension URI in its metadata:
 
 - `tool_approval_request` — `hint`, `tools[]` (`id`, `call_id`, `name`, `args`), optionally
   `nested` (a request propagated from a sub-agent, decided on the child's tools);
-- `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`).
+- `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`);
+- `url_elicitation_request` — `id`, `server`, `message`, `url`, `elicitation_id`: an MCP
+  server's URL elicitation, such as muster's sign-in link for a server the person has not
+  connected.
 
 `pkg/channels` parses that payload into the `HitlPrompt` the channels render (Approve/Deny,
 a choice widget, a form), and the message's text part is the agent's hint. The channel's
 answer is a `HitlDecision`; the gateway turns it into the matching response — one approval per
 requested tool (all approved or all rejected together, the reason on a rejection), or the
-positional `ask_user_response` under the request's correlation id — by reading the paused task
+positional `ask_user_response` under the request's correlation id, or a
+`url_elicitation_response` with `accept` (the person signed in) or `decline` — by reading the paused task
 (`GetTask`) and building the payload against the request it is paused on. The decision travels
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
-place and nothing is left waiting at `input-required`.
+place and nothing is left waiting at `input-required` or `auth-required`.
+
+Another client can answer the same task first (Backstage shows the same request). The decision
+therefore names the request it answers (`HitlDecision.RequestID`, taken from the prompt: the
+URL elicitation's id, the `ask_user` correlation id, or the approval ids). A decision that
+reaches a task no longer paused, or paused again on another request, is refused with
+`ErrNoPendingPrompt`: nothing is sent, and the late answer cannot decide a request it never
+saw. The Slack turn then ends as `prompt_answered`, and the thread reads "This was already
+answered elsewhere, so this answer was not sent to the agent."
 
 ## Stop
 

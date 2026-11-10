@@ -49,19 +49,14 @@ func TestCountOf(t *testing.T) {
 	require.Equal(t, "0 days", countOf(0, "day"))
 }
 
-// The notice reads as one sentence with the configured lifetime in it.
+// The notice names the configured lifetime and the two ways to start again:
+// the app's slash command and the shortcut on a message of the thread.
 func TestThreadClosedNotice(t *testing.T) {
 	require.Equal(t,
-		"This conversation ended after 90 days without messages. Mention the bot to start a new one.",
-		threadClosedNotice(90*24*time.Hour))
-	require.Contains(t, threadClosedNotice(36*time.Hour), "after 36 hours without messages")
-}
-
-// The dismissed-connector note names the real cooldown, so a change to it
-// cannot leave the note wrong.
-func TestConnectorDismissedNotice(t *testing.T) {
-	require.Equal(t, "Not asked again for 1 hour.", connectorDismissedNotice())
-	require.Contains(t, connectorDismissedNotice(), spellDuration(connectorPromptCooldown))
+		"This conversation ended after 90 days without messages. Start a new one with `/swarmgeist`, or with *Ask an agent here* on a message in this thread.",
+		threadClosedNotice(90*24*time.Hour, "/swarmgeist"))
+	require.Contains(t, threadClosedNotice(36*time.Hour, "/agent"), "after 36 hours without messages")
+	require.Contains(t, threadClosedNotice(36*time.Hour, "/agent"), "`/agent`")
 }
 
 // A terminal note is mrkdwn: Slack's error text in it is escaped.
@@ -103,6 +98,7 @@ func TestInterruptedFailureNote(t *testing.T) {
 		{errors.New(`llm error response (code STREAM_ERROR): "401 Unauthorized {\"type\":\"authentication_error\"}"`), "a model error"},
 		{errors.New("failed to list MCP tools: connection reset by peer"), "a tool connection error"},
 		{errors.New("403 authorization failed"), "a policy refusal"},
+		{errors.New("credential provider muster.giantswarm.io denied: the person holds no grant for the provider"), "an unconnected ChatGPT subscription"},
 		{errors.New("boom"), "an error"},
 	} {
 		note := interruptedFailureNote(tc.err)

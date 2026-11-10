@@ -3,7 +3,6 @@ package slack
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -16,9 +15,8 @@ import (
 // conversation the latest card, a message of the conversation. A re-issued
 // prompt refreshes the line and the DM card in place, and the settled
 // consent rewrites them. Kept for pendingTTL, the lifetime of a parked
-// message: the link's own expiry only ends the landing.
+// message: the link's own expiry only ends its click's continuation.
 type sessionConnectSurfaces struct {
-	server   string
 	channel  string // the thread's channel
 	threadTS string
 	lineTS   string // the waiting line in the thread; "" when none was posted
@@ -35,8 +33,8 @@ type sessionConnectSurfaces struct {
 }
 
 // lastState is the completion state of the latest prompt, "" when none was
-// minted: the cards' Authorize all carries it, so a grant from the modal it
-// opens runs the held message as the prompt's own link would.
+// minted: every surface's link button carries it, so the person's click on any
+// of them continues the start.
 func (s sessionConnectSurfaces) lastState() string {
 	if len(s.states) == 0 {
 		return ""
@@ -83,36 +81,17 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 	return entry.value, true
 }
 
-// takeOtherSessionConnects returns and forgets the live surfaces of every
-// thread but threadID where slackUser waits for server.
-func (a *Adapter) takeOtherSessionConnects(slackUser, server, threadID string) []sessionConnectSurfaces {
-	now := time.Now()
-	prefix := sessionConnectKey(slackUser, "")
-	a.sessionConnectMu.Lock()
-	defer a.sessionConnectMu.Unlock()
-	var taken []sessionConnectSurfaces
-	for key, entry := range a.sessionConnects {
-		if !strings.HasPrefix(key, prefix) || entry.value.server != server || entry.value.threadTS == threadID || !now.Before(entry.expires) {
-			continue
-		}
-		taken = append(taken, entry.value)
-		delete(a.sessionConnects, key)
-	}
-	return taken
-}
-
-// promptSessionConnect answers a Session start muster refused with its
-// sign-in challenge for a server: the person the start ran as is signed in,
-// but that server waits for their one-time consent.
+// promptSessionConnect answers a Session start muster asked a sign-in for:
+// the person the start ran as is signed in, but a server the start goes
+// through waits for their one-time consent.
 //
 // msg is the message as admitted (the raw Slack user as Subject), the one a
 // replay admits again. When the start ran as the sender, the Connect prompt
-// for the server goes to them with the message held behind it: with a
-// public base URL the link lands back on the gateway and the landing runs the
-// held message as the thread's first turn, without one the prompt says to
-// send the message again once connected. The hold is the process's own, like
-// every connector completion: after a restart the landing says the link is
-// gone and the person sends the message again.
+// goes to them with the message held behind it: their click on its link is
+// their consent, which accepts the sign-in (muster waits for it, then starts
+// the Session) and runs the held message as the thread's first turn. The hold
+// is the process's own, like every connector completion: after a restart the
+// click continues nothing and the person sends the message again.
 //
 // Where the prompt goes follows the sign-in prompt (klaus-gateway#406). In a
 // DM conversation the card is a message of the conversation: one reader, and
@@ -123,21 +102,17 @@ func (a *Adapter) takeOtherSessionConnects(slackUser, server, threadID string) [
 // shows nothing from the channel, so the same card also goes to the person's
 // DM, and a line everyone in the thread sees says whom it waits for and where
 // the button is. A re-issued prompt refreshes the DM card in place; the line
-// stays. Only the ephemeral's Connect button carries the completion state in
-// its value: a click on it records the response_url that replaces it, while
-// the cards, real messages, are rewritten in place by settleSessionConnect.
-// Every surface's Authorize all carries the state, so the modal it opens
-// grants the server on the prompt's own completion.
+// stays. Every surface's link button carries the latest completion state; the
+// ephemeral is rewritten through its click's response_url, the cards, real
+// messages, in place by settleSessionConnect.
 //
 // When the start ran as the thread's owner (asOwner: a collaborator's turn
-// that starts the owner's Session), the challenge and its link are the
-// owner's, so the sender gets no link: a private note that names the owner,
-// whose own next message gets the prompt.
+// that starts the owner's Session), the sign-in and its link are the owner's,
+// so the sender gets no link: a private note that names the owner, whose own
+// next message gets the prompt.
 func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.InboundMessage, slackChannel, slackUser, owner string, asOwner bool, challenge *pkga2a.ConnectRequiredError) {
-	server := challenge.Server
-	a.Logger.Info("slack: session start waits for the person's consent to a server",
+	a.Logger.Info("slack: session start waits for the person's sign-in",
 		"record", "session_connect_required",
-		"server", server,
 		"agent", msg.AgentRef,
 		"slack_user", slackUser,
 		"owner", owner,
@@ -146,38 +121,30 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	)
 	client := a.apiClient()
 	if asOwner {
-		text := fmt.Sprintf(sessionConnectOwnerNote, owner, escapeMrkdwn(server))
+		text := fmt.Sprintf(sessionConnectOwnerNote, owner)
 		if err := client.postEphemeralText(ctx, slackChannel, slackUser, msg.ThreadID, text); err != nil {
-			a.Logger.Warn("slack: post session connect note failed", "thread", msg.ThreadID, "server", server, "error", err)
+			a.Logger.Warn("slack: post session connect note failed", "thread", msg.ThreadID, "error", err)
 		}
 		return
 	}
+	signIn := challenge.SignIn
 	surfaces, _ := a.sessionConnectFor(slackUser, msg.ThreadID)
-	surfaces.server, surfaces.channel, surfaces.threadTS = server, slackChannel, msg.ThreadID
-	promptURL, connectValue, tail := challenge.LoginURL, server, sessionConnectResendTail
-	if base := a.PublicBaseURL; base != "" {
-		held := heldMessageOf(msg, slackChannel, time.Now())
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, server: server, channel: slackChannel, threadTS: msg.ThreadID, held: &held})
-		if decorated, err := decorateConnectorLoginURL(challenge.LoginURL, base, stateID); err != nil {
-			a.Logger.Warn("slack: session connect login URL decoration failed, posting plain link", "server", server, "error", err)
-		} else {
-			promptURL, connectValue, tail = decorated, stateID, sessionConnectResumeTail
-			surfaces.states = append(surfaces.states, stateID)
-		}
-	}
-	text := fmt.Sprintf(sessionConnectNote, escapeMrkdwn(server)) + tail
+	surfaces.channel, surfaces.threadTS = slackChannel, msg.ThreadID
+	held := heldMessageOf(msg, slackChannel, time.Now())
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: msg.ThreadID, signIn: signIn, held: &held})
+	surfaces.states = append(surfaces.states, stateID)
+	text := signInPromptText(sessionConnectNote, signIn.Message, signIn.URL, sessionConnectTail)
 
 	if isDMChannelID(slackChannel) {
-		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, server, surfaces.lastState())
+		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, signIn.URL, stateID)
 		if err != nil {
-			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
+			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "error", err)
 			a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
 			return
 		}
 		// The earlier card loses its button only once the new one is there.
 		if surfaces.cardTS != "" {
-			superseded := fmt.Sprintf(sessionConnectSupersededNote, escapeMrkdwn(server))
-			if err := client.chatUpdate(ctx, surfaces.cardChannel, surfaces.cardTS, superseded, []any{sectionBlock(superseded)}); err != nil {
+			if err := client.chatUpdate(ctx, surfaces.cardChannel, surfaces.cardTS, sessionConnectSupersededNote, []any{sectionBlock(sessionConnectSupersededNote)}); err != nil {
 				a.Logger.Warn("slack: retire earlier session connect card failed", "thread", msg.ThreadID, "error", err)
 			}
 		}
@@ -187,11 +154,11 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	}
 
 	origin := a.signInOrigin(ctx, client, slackChannel, msg.ThreadID)
-	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, promptURL)
+	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, signIn.URL)
 	a.ensureSessionConnectLine(ctx, client, &surfaces, slackUser, dmed)
 	a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
-	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, server, promptURL, connectValue, false); err != nil {
-		a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
+	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, signIn.URL, stateID); err != nil {
+		a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "error", err)
 	}
 }
 
@@ -201,15 +168,15 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 // live card however often the prompt is re-issued; one that cannot be
 // refreshed is replaced. A failure costs only the DM: the ephemeral still
 // goes out, and the line does not point at a DM that is not there.
-func (a *Adapter) sendSessionConnectDM(ctx context.Context, client *slackAPIClient, s *sessionConnectSurfaces, slackUser, origin, text, loginURL string) bool {
+func (a *Adapter) sendSessionConnectDM(ctx context.Context, client *slackAPIClient, s *sessionConnectSurfaces, slackUser, origin, text, link string) bool {
 	if s.cardTS != "" {
-		err := client.updateConnectPrompt(ctx, s.cardChannel, s.cardTS, origin, text, s.server, loginURL, s.server, s.lastState())
+		err := client.updateConnectPrompt(ctx, s.cardChannel, s.cardTS, origin, text, link, s.lastState())
 		if err == nil {
 			return true
 		}
 		a.Logger.Warn("slack: refresh session connect DM failed, posting a new one", "user", slackUser, "thread", s.threadTS, "error", err)
 	}
-	channel, ts, err := client.postConnectPromptDM(ctx, slackUser, origin, text, s.server, loginURL, s.server, s.lastState())
+	channel, ts, err := client.postConnectPromptDM(ctx, slackUser, origin, text, link, s.lastState())
 	if err != nil {
 		a.Logger.Warn("slack: post session connect DM failed", "user", slackUser, "thread", s.threadTS, "error", err)
 		s.cardChannel, s.cardTS = "", ""
@@ -226,7 +193,7 @@ func (a *Adapter) ensureSessionConnectLine(ctx context.Context, client *slackAPI
 	if s.lineTS != "" && s.dmed == dmed {
 		return
 	}
-	text := fmt.Sprintf(sessionConnectWaitingFormat, slackUser, escapeMrkdwn(s.server))
+	text := fmt.Sprintf(sessionConnectWaitingFormat, slackUser)
 	if dmed {
 		text += sessionConnectWaitingDMHint
 	}
@@ -246,58 +213,53 @@ func (a *Adapter) ensureSessionConnectLine(ctx context.Context, client *slackAPI
 	s.dmed = dmed
 }
 
+// sessionConnectOutcome is how a Session start's sign-in prompt settled.
+type sessionConnectOutcome int
+
+const (
+	// sessionConnectDelivered: the prompt's own click continued, and the
+	// held message runs.
+	sessionConnectDelivered sessionConnectOutcome = iota
+	// sessionConnectSignedIn: the person's next turn found them signed in;
+	// the held message stays unsent.
+	sessionConnectSignedIn
+	// sessionConnectDeclined: the person chose Not now; the held message is
+	// dropped.
+	sessionConnectDeclined
+)
+
 // settleSessionConnect rewrites the surfaces of the prompt (slackUser,
-// threadID) got, once the consent is given: the waiting line to who
-// connected, the card to the confirmation. Called by the landing of the
-// prompt's own link, which then runs the held message (delivered), and by
-// the person's next turn in the thread that starts its Session, however they
-// connected (another muster client, a gateway without a public base URL),
-// when the held message stays unsent and the
-// card must not say otherwise. The prompts' completion states go with the
-// surfaces, so a stale button runs no held message after the fact. The
-// ephemeral is replaced through its click's response_url by the landing,
-// when the click reached this process.
-func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string, delivered bool) {
+// threadID) got once it settled: the waiting line to who signed in or did
+// not, the card to the outcome. Called by the continuation of the prompt's
+// own click, which then runs the held message, by its Not now, and by the
+// person's next turn in the thread that starts its Session, however they
+// signed in (another thread's prompt, another muster client), when the held
+// message stays unsent and the card must not say otherwise. The prompts'
+// completion states go with the surfaces, so a stale button runs no held
+// message after the fact. The ephemeral is replaced through its click's
+// response_url by the continuation.
+func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string, outcome sessionConnectOutcome) {
 	s, ok := a.takeSessionConnect(slackUser, threadID)
 	if !ok {
 		return
 	}
 	a.dropConnectorCompletions(s.states)
-	a.rewriteSessionConnect(ctx, slackUser, s, delivered)
-}
-
-// settleOtherSessionConnects settles, once a landing settled its own thread,
-// every other thread where slackUser waits for server: the consent is the
-// person's per server, not per thread. Each thread's held message, the one
-// of its latest prompt, runs as the person in that thread, as the landing
-// runs its own; a thread whose held message has expired gets the confirmation
-// alone.
-func (a *Adapter) settleOtherSessionConnects(ctx context.Context, slackUser, server, threadID string) {
-	for _, s := range a.takeOtherSessionConnects(slackUser, server, threadID) {
-		held := a.takeHeldMessage(s.states)
-		a.rewriteSessionConnect(ctx, slackUser, s, held != nil)
-		if held == nil {
-			continue
-		}
-		entry := connectorCompletion{slackUser: slackUser, server: server, channel: s.channel, threadTS: s.threadTS, held: held}
-		a.background(func(ctx context.Context) { a.resumeAfterConnectorSignIn(ctx, entry) })
-	}
-}
-
-// rewriteSessionConnect rewrites the line and the card of s to who connected.
-func (a *Adapter) rewriteSessionConnect(ctx context.Context, slackUser string, s sessionConnectSurfaces, delivered bool) {
 	client := a.apiClient()
+	line, card := sessionConnectConnectedFormat, sessionConnectCardConnected
+	switch outcome {
+	case sessionConnectDelivered:
+		card = sessionConnectCardDone
+	case sessionConnectDeclined:
+		line, card = sessionConnectDeclinedFormat, connectorDeclinedNotice
+	}
 	if s.lineTS != "" {
-		text := fmt.Sprintf(sessionConnectConnectedFormat, slackUser, escapeMrkdwn(s.server))
+		text := fmt.Sprintf(line, slackUser)
 		if err := client.chatUpdate(ctx, s.channel, s.lineTS, text, []any{contextBlock(text)}); err != nil {
 			a.Logger.Warn("slack: rewrite session connect line after sign-in failed", "thread", s.threadTS, "error", err)
 		}
 	}
 	if s.cardTS != "" {
-		text := fmt.Sprintf(sessionConnectCardConnected, escapeMrkdwn(s.server))
-		if delivered {
-			text = fmt.Sprintf(sessionConnectCardDone, escapeMrkdwn(s.server))
-		}
+		text := card
 		if err := client.chatUpdate(ctx, s.cardChannel, s.cardTS, text, []any{sectionBlock(text)}); err != nil {
 			a.Logger.Warn("slack: rewrite session connect card after sign-in failed", "thread", s.threadTS, "error", err)
 		}
@@ -306,16 +268,16 @@ func (a *Adapter) rewriteSessionConnect(ctx context.Context, slackUser string, s
 
 // postConnectPromptMessage posts a Connect prompt as a message of the
 // conversation, in threadID when set, and returns its ts.
-func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, threadID, text, server, loginURL, connectValue, authorizeOrigin string) (string, error) {
-	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll))
+func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, threadID, text, link, connectValue string) (string, error) {
+	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, signInButtonLabel, link, connectValue, true, c.authorizeAll))
 }
 
 // postConnectPromptDM posts a Connect prompt's card to user's DM, led by
 // origin, where it waits for a Slack client that was closed when the
 // ephemeral went out. The DM is addressed by user ID, so the D… conversation
 // Slack put it in comes back with its ts for the rewrites.
-func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, text, server, loginURL, connectValue, authorizeOrigin string) (channel, ts string, err error) {
-	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll)...)
+func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, text, link, connectValue string) (channel, ts string, err error) {
+	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, signInButtonLabel, link, connectValue, true, c.authorizeAll)...)
 	resp, err := c.postJSONResponse(ctx, methodChatPostMessage, map[string]any{paramChannel: user, paramText: text, paramBlocks: blocks})
 	if err != nil {
 		return "", "", err
@@ -328,8 +290,8 @@ func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, 
 
 // updateConnectPrompt rewrites the Connect card at (channel, ts) to a fresh
 // button, led by origin when there is one.
-func (c *slackAPIClient) updateConnectPrompt(ctx context.Context, channel, ts, origin, text, server, loginURL, connectValue, authorizeOrigin string) error {
-	blocks := connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll)
+func (c *slackAPIClient) updateConnectPrompt(ctx context.Context, channel, ts, origin, text, link, connectValue string) error {
+	blocks := connectPromptBlocks(text, signInButtonLabel, link, connectValue, true, c.authorizeAll)
 	if origin != "" {
 		blocks = append([]any{contextBlock(origin)}, blocks...)
 	}

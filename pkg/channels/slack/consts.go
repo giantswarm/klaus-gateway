@@ -82,93 +82,99 @@ const (
 // anchor, not by the click.
 const oboSignIn = "obo_sign_in"
 
-// Connector Block Kit action IDs. The button value carries the backend name.
-// connectorConnect is a URL button (opens the backend's consent flow in the
-// browser); connectorDismiss suppresses the prompt for that backend until the
-// cooldown lapses.
-const (
-	connectorConnect = "connector_connect"
-	connectorDismiss = "connector_dismiss"
-)
+// connectorConnect is the Connect prompt's Block Kit action ID: a URL button
+// opening the server's sign-in link in the browser, whose click is the
+// person's consent to it.
+const connectorConnect = "connector_connect"
 
-// musterAuthLoginTool is the muster tool whose result carries a backend login
-// link; its appearance in the agent's stream drives the Connect prompt.
-const musterAuthLoginTool = "core_auth_login"
+// connectorDecline is a Connect prompt's Not now button: the person will not
+// open the link. Its value is the prompt's completion state.
+const connectorDecline = "connector_decline"
+
+// signInButtonLabel labels a Connect prompt's link button.
+const signInButtonLabel = "Sign in"
 
 // musterCallToolMetaTool is muster's aggregating meta-tool. Agents typically
-// reach core_auth_login through it, so the inner tool name arrives in the
-// call's arguments ({"name": "core_auth_login", ...}) rather than as the
-// stream's tool name.
+// reach muster's tools through it, so the inner tool name arrives in the
+// call's arguments ({"name": "<tool>", ...}) rather than as the stream's tool
+// name.
 const musterCallToolMetaTool = "call_tool"
 
-// connectorPromptCooldown bounds how often the connect prompt re-posts for one
-// (user, backend) while it is neither connected nor dismissed, so an ignored
-// prompt does not repeat on every message.
-const connectorPromptCooldown = time.Hour
-
-// connectorCheckTimeout bounds the async prompt post; it runs on the adapter
-// lifecycle context, off the turn's critical path.
-const connectorCheckTimeout = 10 * time.Second
-
-// maxConnectorNameLen bounds the backend name accepted from a button value
-// (interaction payloads are attacker-shaped input).
-const maxConnectorNameLen = 128
-
 // connectorCompletionTTL bounds a connector completion state: the window
-// between the Connect prompt posting and the browser landing back on the
-// gateway. Matched to the login link's own lifetime; past it the landing
-// renders the expired page and no resume fires.
+// between the Connect prompt posting and the person's click on its link.
+// Matched to the login link's own lifetime; past it the click continues
+// nothing.
 const connectorCompletionTTL = musterlink.DefaultStateTTL
 
-// connectorDismissedNotice replaces a Connect prompt after "Not now": the
-// prompt stays away for connectorPromptCooldown.
-func connectorDismissedNotice() string {
-	return fmt.Sprintf("Not asked again for %s.", spellDuration(connectorPromptCooldown))
-}
-
-// connectorResumeText is the synthetic message dispatched into the thread
-// after a connector sign-in completes, so the agent retries the blocked tools
-// without the user retyping; %s is the backend name.
-const connectorResumeText = "I've signed in to %s, continue"
+// Texts of a task paused on an MCP server's sign-in link (postMCPSignInPrompt).
+// The server is the MCP server that asked, such as an MCP gateway; what needs
+// the sign-in is in its own message, quoted after the attribution.
+// signInWaitingNote names the person (a Slack user ID) and the server.
+const (
+	signInWaitingNote        = "Waiting for <@%s> to sign in (asked by *%s*)."
+	signInPromptLead         = "*%s* asks you to sign in so the agent can continue."
+	signInPromptTail         = "Open it with *Sign in*: the agent continues once you're signed in."
+	signInLinkUnusableNotice = "Its sign-in link is not one the app opens (it must be https, short enough to show whole, and written out without spaces, hidden characters or credentials). Reply here or choose *Not now*."
+	signInAcceptedLine       = "<@%s> signed in."
+	signInDeclinedLine       = "<@%s> did not sign in."
+	signInDismissedNotice    = "Not signed in. The agent continues without it."
+	signInContinuingNotice   = "Opened the sign-in link. The agent continues once you're signed in."
+	signInResumeText         = "I've signed in, continue"
+	signInMessageMaxRunes    = 500
+	signInServerNameMaxRunes = 100
+)
 
 // sessionConnectNote leads the Connect prompt that answers a Session start
-// muster refused with its sign-in challenge: the person is signed in, but the
-// server the start goes through waits for their one-time consent; %s is the
-// server. One of the tails follows: the resume tail when the link lands back
-// on the gateway, which runs the held message by itself, the resend tail when
-// it cannot (no public base URL).
+// muster asked a sign-in for: the person is signed in, but a server the start
+// goes through waits for their one-time consent. muster's own message on it
+// and the link follow, then sessionConnectTail.
 const (
-	sessionConnectNote       = "The conversation can't start yet: *%s* needs you to connect your account once."
-	sessionConnectResumeTail = " Connect it, and your message is sent to the agent."
-	sessionConnectResendTail = " Connect it, then send your message again."
+	sessionConnectNote = "The conversation can't start yet. *muster* asks you to sign in once:"
+	sessionConnectTail = "Open it with *Sign in*: your message goes to the agent once you're signed in."
 )
 
 // sessionConnectOwnerNote answers a collaborator whose turn would start the
 // thread owner's Session: the consent is the owner's to give, so no link for
-// the sender; %s are the owner's Slack user ID and the server.
-const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs to connect *%s* once. Ask them to mention the agent here, then send your message again."
+// the sender; %s is the owner's Slack user ID.
+const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs to sign in once. Ask them to mention the agent here, then send your message again."
 
 // The waiting line a Session start's Connect prompt posts in a channel
 // thread, which everyone sees: whom the thread waits for and, while their DM
 // holds the card, where the button is; it never carries the link, which is
-// the person's alone. Once the sign-in lands it says who connected. %s are
-// the person's Slack user ID and the server. The card is rewritten once the
-// consent is settled: sessionConnectCardDone when the prompt's own link
-// landed and the held message runs, sessionConnectCardConnected when the
-// person's next turn found them connected and the held message stays
-// unsent; %s is the server.
+// the person's alone. Once the sign-in completed it says who signed in. %s is
+// the person's Slack user ID. The card is rewritten once the consent is
+// settled: sessionConnectCardDone when the prompt's own click continued and
+// the held message runs, sessionConnectCardConnected when the person's next
+// turn found them signed in and the held message stays unsent.
 const (
-	sessionConnectWaitingFormat   = "Waiting for <@%s> to connect *%s*"
-	sessionConnectWaitingDMHint   = " (the Connect button is in a direct message from the app)"
-	sessionConnectConnectedFormat = "<@%s> connected *%s*."
-	sessionConnectCardDone        = "Connected *%s*. Your message is on its way to the agent."
-	sessionConnectCardConnected   = "Connected *%s*."
+	sessionConnectWaitingFormat   = "Waiting for <@%s> to sign in"
+	sessionConnectWaitingDMHint   = " (the Sign in button is in a direct message from the app)"
+	sessionConnectConnectedFormat = "<@%s> signed in."
+	sessionConnectDeclinedFormat  = "<@%s> did not sign in."
+	sessionConnectCardDone        = "Signed in. Your message is on its way to the agent."
+	sessionConnectCardConnected   = "Signed in."
 )
 
 // sessionConnectSupersededNote replaces the earlier card of a DM
 // conversation when a later message gets a card of its own, so one button is
-// live; %s is the server.
-const sessionConnectSupersededNote = "Connect *%s* with the newer prompt below."
+// live.
+const sessionConnectSupersededNote = "Sign in with the newer prompt below."
+
+// connectorContinuingNotice replaces a Connect prompt on the click of its
+// link; connectorDeclinedNotice once the person chose Not now, which dropped
+// what it held.
+const (
+	connectorContinuingNotice = "Opened the sign-in link. What waited for it goes ahead once you're signed in."
+	connectorDeclinedNotice   = "Not signed in. What waited for the sign-in was not sent; try again when you want to sign in."
+)
+
+// signInLinkOpensLead leads the domain a sign-in link opens, shown in bold
+// above the whole link; signInLinkPunycodeWarning follows an
+// internationalized domain, shown in its punycode form.
+const (
+	signInLinkOpensLead       = "Opens "
+	signInLinkPunycodeWarning = ":warning: This domain is internationalized (shown in its `xn--` punycode form) and may imitate another one. Open it only if you expected this address."
+)
 
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
@@ -216,6 +222,9 @@ const (
 	// preset is the workspace the person last started the agent with; %s is
 	// the agent's display name.
 	askAgentWorkspaceLastHint = "Last used with %s."
+	// askAgentWorkspaceDefaultHint sits under it when its preset is the
+	// agent's default workspace; %s is the agent's name.
+	askAgentWorkspaceDefaultHint = "The default of %s."
 	// askAgentWorkspacePromptQuote follows a workspace refusal sent privately
 	// after a submission: the modal is gone, so the prompt is handed back,
 	// quoted.
@@ -426,7 +435,8 @@ const (
 // workspaceNotSyncedReason when the workspace-manager gives no reason;
 // workspaceConnectNote asks them to connect a provider (%s) first, and
 // workspaceConnectHow adds the workspace-manager's word on how (%s) when
-// muster issued no sign-in link for it;
+// muster issued no sign-in link for it; workspaceSignInNote leads muster's own
+// sign-in before the workspace-manager answers for them;
 // workspaceCheckFailedNote is the answer when nobody could be asked.
 // workspacePickAgainTail offers the choice again, and workspaceConnectTail
 // says how the held message goes on once connected.
@@ -435,16 +445,34 @@ const (
 	workspaceUnavailableNote = "Cannot start in workspace *%s* yet: %s."
 	workspaceNotSyncedReason = "it has not synced yet"
 	workspaceConnectNote     = "Connect *%s* first, so the agent can work in workspace *%s* as you."
+	workspaceSignInNote      = "*muster* asks you to sign in before the agent can work in workspace *%s* as you:"
 	workspaceConnectHow      = " The workspace-manager says: %s."
 	workspaceCheckFailedNote = "Could not check workspace *%s* right now."
 	workspacePickAgainTail   = " Nothing was started; pick another workspace or *No workspace*."
 	workspaceConnectTail     = " Your message is kept: once connected, pick the workspace again or mention me."
 )
 
+// The answers when the agent's default workspace (the first %s) starts
+// nothing, told to the initiator alone, as the workspaceRefusedNote family
+// is: workspaceDefaultPickTail follows any but a provider to connect with
+// the slash command (%s) that starts in another workspace or none, and
+// workspaceDefaultConnectTail follows the connect prompts. Once it starts,
+// workspaceDefaultNotice names it in the thread, with the slash command
+// (%s) that picks another.
+const (
+	workspaceDefaultRefusedNote     = "You cannot start in workspace *%s*, this agent's default: you cannot read %s."
+	workspaceDefaultUnavailableNote = "Cannot start in workspace *%s*, this agent's default, yet: %s."
+	workspaceDefaultCheckFailedNote = "Could not check workspace *%s*, this agent's default, right now."
+	workspaceDefaultPickTail        = " Nothing was started; pick another workspace or *No workspace* in `%s`."
+	workspaceDefaultConnectTail     = " Your message is kept: once connected, mention me and it runs."
+	workspaceDefaultNotice          = "Working in workspace *%s*, this agent's default. To work in another, start with `%s` and pick it."
+)
+
 // The answers to a collaborator whose turn on a thread's workspace (the first
 // %s) authorize_workspace did not grant, told to them alone; the turn does not
 // run. collaboratorWorkspaceRefusedNote names the repositories they cannot
-// read (%s), collaboratorWorkspaceUnavailableNote says why the check could
+// read (%s), collaboratorWorkspaceOwnTail follows it with the slash command
+// that starts a conversation of their own (%s), collaboratorWorkspaceUnavailableNote says why the check could
 // not decide (%s), collaboratorWorkspaceCheckFailedNote is the answer when
 // nobody could be asked, and collaboratorWorkspaceConnectTail follows the
 // connect prompt, whose message is held for pendingTTL;
@@ -453,7 +481,8 @@ const (
 // initiator's
 // "allowed" on a thread with a workspace (%s).
 const (
-	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here; mention me in a new thread to start your own."
+	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here."
+	collaboratorWorkspaceOwnTail         = " Start your own conversation with `%s`."
 	collaboratorWorkspaceUnavailableNote = "Could not check your access to workspace *%s*, which this thread works in: %s. Your message was not passed on; send it again later."
 	collaboratorWorkspaceCheckFailedNote = "Could not check your access to workspace *%s*, which this thread works in, right now. Your message was not passed on; send it again later."
 	collaboratorWorkspaceConnectTail     = " Your message is kept for a day: once connected, mention me here and it runs."
@@ -472,7 +501,8 @@ const accessPromptExpiredNotice = "This request expired because the thread state
 
 // accessDeniedNewcomerNotice is shown (ephemerally) to a parked newcomer when
 // the thread owner declines them, closing the loop opened by the waiting ack.
-const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Mention the bot in a new thread to start your own."
+// %s is the slash command, the way to start a conversation of their own.
+const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Start your own conversation with `%s`."
 
 // parkedDropNotice is shown (ephemerally) to a user whose parked messages
 // overflowed the per-thread cap, so the drop is visible and the user knows to
@@ -592,6 +622,11 @@ const promptSupersededNotice = "A newer prompt replaced this one. Answer the lat
 // answered, dropped by the TTL, or lost in a restart.
 const promptAnsweredNotice = "Already answered."
 
+// promptAnsweredElsewhereNote tells the thread an answer reached a task that
+// no longer waits on the prompt it answered: someone answered it elsewhere
+// first.
+const promptAnsweredElsewhereNote = "This was already answered elsewhere, so this answer was not sent to the agent."
+
 // formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
 // multi-question ask_user form with a question with choices still unanswered;
 // the form stays pending so the user can complete it and submit again. A text
@@ -643,12 +678,15 @@ const failedNote = "The turn failed before an answer. Send the message again to 
 // broke and whether trying again helps: a tools or platform failure was
 // already retried once and is not the person's to fix, a model error usually
 // passes (except a credentials refusal, which stays until the platform fixes
-// it), a policy refusal stays.
+// it), a policy refusal stays, and an unconnected provider account is the
+// person's to connect.
 const (
 	toolsFailedNote    = "The agent could not connect to its tools, so it did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	platformFailedNote = "The agent platform could not be reached, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	modelFailedNote    = "The model behind this agent returned an error instead of an answer. This is usually temporary: try again in a minute."
 	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
+
+	connectionRequiredNote = "Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again."
 
 	modelAuthFailedNote = "The model provider refused the platform's credentials, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry does not help."
 )
@@ -736,6 +774,8 @@ func failureNote(err error) string {
 		return modelFailedNote
 	case channels.FailurePolicy:
 		return policyFailedNote
+	case channels.FailureConnectionRequired:
+		return connectionRequiredNote
 	}
 	return failedNote
 }
@@ -759,6 +799,8 @@ func interruptedFailureNote(err error) string {
 		cause = "a model error"
 	case channels.FailurePolicy:
 		cause = "a policy refusal"
+	case channels.FailureConnectionRequired:
+		cause = "an unconnected ChatGPT subscription"
 	}
 	return fmt.Sprintf(interruptedNote, cause)
 }
@@ -805,10 +847,11 @@ const resumeStartingFreshNotice = "The earlier conversation in this thread was n
 
 // threadClosedNotice tells the author of a reply in a thread whose
 // conversation ended — no message for the whole thread lifetime — why nobody
-// answers, and how to start again. Ephemeral: the rest of the thread does not
-// need it.
-func threadClosedNotice(lifetime time.Duration) string {
-	return fmt.Sprintf("This conversation ended after %s without messages. Mention the bot to start a new one.", spellDuration(lifetime))
+// answers, and how to start again: the slash command, or the shortcut on a
+// message of this thread, which the picker takes since the thread has no agent
+// any more. Ephemeral: the rest of the thread does not need it.
+func threadClosedNotice(lifetime time.Duration, slashCommand string) string {
+	return fmt.Sprintf("This conversation ended after %s without messages. Start a new one with `%s`, or with *%s* on a message in this thread.", spellDuration(lifetime), slashCommand, helpAskAgentShortcut)
 }
 
 // spellDuration writes a thread lifetime the way the notice reads it, and
@@ -843,14 +886,16 @@ func countOf(n int64, unit string) string {
 
 // The channel intro is posted once when the bot is added to a channel, and the
 // assistant greeting into a user's assistant pane the first time they open it
-// (app_home_opened, Messages tab). Both describe the product, name the agent a
-// plain mention reaches, and say how to reach the commands and the roster.
-// The %[1]s verbs take the bot's mention, %[2]s the default agent's name.
+// (app_home_opened, Messages tab). Both describe the product, say how a
+// conversation starts (the slash command, whose picker preselects the default
+// agent; in a channel also the shortcut), and say how to reach the commands
+// and the roster. The %[1]s verbs take the bot's mention, %[2]s the default
+// agent's name, %[3]s the slash command, %[4]s the shortcut's name.
 const (
-	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `agents` to pick another agent. Agents work with your permissions and ask before making changes."
+	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Start a conversation with `%[3]s`, which lets you pick an agent (*%[2]s* is preselected), or with *%[4]s* on a message to start one in its thread. Agents work with your permissions and ask before making changes."
 	channelIntroContext = "%[1]s `help` lists the commands"
 
-	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
+	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent: start one with `%[3]s`, which lets you pick the agent (*%[2]s* is preselected). Agents work with your permissions and ask before making changes."
 	assistantGreetingContext = "%[1]s `help` lists the commands · %[1]s `agents` lists the agents"
 )
 
@@ -859,8 +904,17 @@ const (
 const homeGreetingTTL = 24 * time.Hour
 
 // dmRedirect is posted when a user DMs the bot while DMs are in redirect mode,
-// pointing them to a channel instead.
-const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and mention `@Swarmgeist` there to start."
+// pointing them to a channel instead; %s is the slash command.
+const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and start a conversation there with `%s`."
+
+// defaultSlashCommand is the slash command deploy/slack/manifest.yaml
+// declares. The gateway learns the command's name from no Slack API (Slack
+// sends it only with an invocation), so the help and the notices name the
+// configured one (Adapter.SlashCommand), and this one when none is set — an
+// Adapter built without main.go, as the tests do. config.DefaultSlashCommand
+// is the same value for the flag; the config package is a leaf and cannot
+// import this one.
+const defaultSlashCommand = "/swarmgeist"
 
 // channelNotServed tells a user the channel is outside the configured
 // allowlist: ephemerally on a mention, through the response_url on a slash
@@ -929,6 +983,9 @@ const (
 	bkOptions   = "options"
 	bkBlockID   = "block_id"
 	bkAccessory = "accessory"
+	// bkVerbatim on a mrkdwn text object stops Slack from turning URL-like
+	// text (a host, host:port) into links.
+	bkVerbatim = "verbatim"
 
 	// Modal / input block keys (the agent picker).
 	bkCallbackID      = "callback_id"

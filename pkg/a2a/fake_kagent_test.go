@@ -631,6 +631,13 @@ func inNamespace[T interface {
 	return obj
 }
 
+// withLatestSuccessfulRevision records the revision the controller keeps
+// starting Sessions on while a newer one prepares.
+func withLatestSuccessfulRevision(a *apiv1alpha1.Agent, revision string) *apiv1alpha1.Agent {
+	a.GetResource().GetValue().GetFields()["status"].GetStructValue().GetFields()["latestSuccessfulRevision"] = structpb.NewStringValue(revision)
+	return a
+}
+
 // readyCondition is the Ready condition of an Agent's status as the
 // controller writes it.
 func readyCondition(ready bool, reason, message string) []any {

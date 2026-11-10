@@ -14,10 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
@@ -345,10 +343,10 @@ func (e *ToolError) Error() string {
 var signInServerRe = regexp.MustCompile(`\b` + musterAuthLoginTool + `\s+server=([^\s,;]+)`)
 
 // SignInLink is the link that starts the person's grant of a Connect's
-// provider App: muster's core_auth_login, called as the person for the server
-// signIn names. A signIn that names none (muster holds no grant for the
-// provider) has no link: "" without an error. A person whose grant muster
-// already holds gets "" too, and so does an answer without a plain https link.
+// provider App: the sign-in muster asks for when core_auth_login is called as
+// the person for the server signIn names. A signIn that names none (muster
+// holds no grant for the provider) has no link: "" without an error. A person
+// whose grant muster already holds gets "" too.
 func (c *Client) SignInLink(ctx context.Context, bearer, signIn string) (string, error) {
 	if !c.Enabled() {
 		return "", ErrDisabled
@@ -361,19 +359,13 @@ func (c *Client) SignInLink(ctx context.Context, bearer, signIn string) (string,
 	if err != nil {
 		return "", fmt.Errorf("workspaces: %s %s: %w", musterAuthLoginTool, m[1], err)
 	}
+	if res.SignIn != nil {
+		return res.SignIn.URL, nil
+	}
 	if res.IsError {
 		return "", &ToolError{Tool: musterAuthLoginTool, Message: res.Text}
 	}
-	var out struct {
-		AuthURL string `json:"authUrl"`
-	}
-	if len(res.Structured) == 0 || json.Unmarshal(res.Structured, &out) != nil {
-		return "", nil
-	}
-	if u, err := url.Parse(out.AuthURL); err != nil || u.Scheme != "https" || u.Host == "" {
-		return "", nil
-	}
-	return out.AuthURL, nil
+	return "", nil
 }
 
 // MalformedError is an answer that is not the tool's documented result.
@@ -386,22 +378,15 @@ func (e *MalformedError) Error() string {
 	return fmt.Sprintf("workspaces: %s answered a malformed result: %s", e.Tool, e.Reason)
 }
 
-// AuthRequiredError is muster's sign-in challenge: it holds no grant for the
-// person at the workspace-manager yet. LoginURL is where the person signs in;
-// the call succeeds once they have.
+// AuthRequiredError is the sign-in muster asks for before it runs the
+// workspace-manager's tool as the person; the call succeeds once they signed
+// in.
 type AuthRequiredError struct {
-	Server   string
-	LoginURL string
+	SignIn *muster.SignIn
 }
 
 func (e *AuthRequiredError) Error() string {
-	return fmt.Sprintf("workspaces: sign-in to %s required", e.Server)
-}
-
-// server is the workspace-manager's server name in muster, the prefix's:
-// x_workspace-manager_ is workspace-manager.
-func (c *Client) server() string {
-	return strings.TrimSuffix(strings.TrimPrefix(c.prefix, "x_"), "_")
+	return "workspaces: sign-in required"
 }
 
 // call runs the tool as the person and decodes its structured result into
@@ -415,11 +400,8 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 	if err != nil {
 		return fmt.Errorf("workspaces: %s: %w", name, err)
 	}
-	if challenge := authChallengeOf(res); challenge != nil {
-		if challenge.Server == "" {
-			challenge.Server = c.server()
-		}
-		return challenge
+	if res.SignIn != nil {
+		return &AuthRequiredError{SignIn: res.SignIn}
 	}
 	if res.IsError {
 		if !res.Dispatched {
@@ -436,28 +418,6 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 			return &MalformedError{Tool: name, Reason: fmt.Sprintf("field %s is not a %s", typeErr.Field, typeErr.Type)}
 		}
 		return &MalformedError{Tool: name, Reason: "not a JSON object"}
-	}
-	return nil
-}
-
-// authChallengeOf reads muster's auth_required answer: an error result whose
-// structured content names the server and the sign-in link (muster puts the
-// link both there and in the text, which the Slack adapter's tool calls
-// parse).
-func authChallengeOf(res muster.Result) *AuthRequiredError {
-	if !res.IsError {
-		return nil
-	}
-	var challenge struct {
-		Status  string `json:"status"`
-		Server  string `json:"server"`
-		AuthURL string `json:"authUrl"`
-	}
-	if len(res.Structured) > 0 && json.Unmarshal(res.Structured, &challenge) == nil && challenge.Status == "auth_required" {
-		return &AuthRequiredError{Server: challenge.Server, LoginURL: challenge.AuthURL}
-	}
-	if strings.HasPrefix(res.Text, "auth_required") {
-		return &AuthRequiredError{}
 	}
 	return nil
 }

@@ -84,6 +84,9 @@
         "enabled": {
             "type": "boolean"
         },
+        "externalDNSIP": {
+            "type": "string"
+        },
         "fullnameOverride": {
             "type": "string"
         },
@@ -92,11 +95,12 @@
         },
         "global": {
             "type": "object",
+            "description": "Global values shared between all subcharts and the platform.",
             "additionalProperties": true,
             "properties": {
                 "podSecurityStandards": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "properties": {
                         "enforced": {
                             "type": "boolean"
@@ -104,6 +108,10 @@
                     }
                 }
             }
+        },
+        "helm": {
+            "type": "object",
+            "additionalProperties": true
         },
         "image": {
             "type": "object",
@@ -124,6 +132,9 @@
             }
         },
         "logLevel": {
+            "type": "string"
+        },
+        "managementCluster": {
             "type": "string"
         },
         "metrics": {
@@ -309,6 +320,39 @@
         },
         "provider": {
             "type": "string"
+        },
+        "refusals": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "agentURLTemplate": {
+                    "type": "string"
+                },
+                "egressService": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "interval": {
+                    "type": "string"
+                },
+                "kagentAudience": {
+                    "type": "string"
+                },
+                "kagentTarget": {
+                    "type": "string"
+                },
+                "metricsPath": {
+                    "type": "string"
+                },
+                "statsPort": {
+                    "type": "integer"
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
         },
         "replicaCount": {
             "type": "integer"
@@ -515,10 +559,12 @@
                     "type": "string"
                 },
                 "contextBotIDs": {
-                    "type": "array"
+                    "type": "array",
+                    "description": "The bot_ids (B…) whose posts the thread context hands to the agent: the alerting integrations a conversation is opened under (Alertmanager, PagerDuty). Every human's message is shared; a bot's post only when its bot_id is listed here or its profile name matches `contextBotNames`. The gateway's own posts never are. A thread is read only in a channel the gateway's bot is a member of, so the bot is invited to every alert channel whose posts should reach an agent. Rendered as SLACK_CONTEXT_BOT_IDS. Empty lists no bot_id."
                 },
                 "contextBotNames": {
-                    "type": "array"
+                    "type": "array",
+                    "description": "Patterns matched against a bot's Slack profile name, the app's own bot name (`bot_profile.name`), never the name a post sets: `path.Match` syntax (`*`, `?`, `[...]`), case-insensitive, an invalid pattern fails start-up. One entry admits an integration that runs one Slack app per installation, each with its own bot_id: `*-alertmanager` admits every installation's Alertmanager, a new installation included. Admits beside `contextBotIDs`, with the same channel-membership requirement. Rendered as SLACK_CONTEXT_BOT_NAMES. Empty matches no name."
                 },
                 "dmMode": {
                     "type": "string"
@@ -563,6 +609,9 @@
                     "type": "string"
                 },
                 "signingSecret": {
+                    "type": "string"
+                },
+                "slashCommand": {
                     "type": "string"
                 }
             }

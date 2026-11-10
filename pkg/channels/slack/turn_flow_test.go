@@ -31,6 +31,7 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 	}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "800.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up", "800.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
 
@@ -71,6 +72,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "900.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up", "900.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
 
@@ -146,6 +148,7 @@ func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "111.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "delete the pod", "111.000"))
 
 	// The buffered text is retried at the handoff (3 chat.startStream attempts);
@@ -191,6 +194,7 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "300.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "do something", "300.000"))
 	select {
 	case <-dispatchEntered:
@@ -222,6 +226,7 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 	gw := &stubGateway{hold: hold}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "555.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -256,6 +261,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "910.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up", "910.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
 
@@ -310,6 +316,7 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "920.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up", "920.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
 
@@ -346,6 +353,7 @@ func TestStop_BareWordDuringTurnInterrupts(t *testing.T) {
 	gw := &stubGateway{hold: hold}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -368,6 +376,7 @@ func TestStop_BareWordIdleThreadReachesAgent(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "800.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "800.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
 	time.Sleep(150 * time.Millisecond)
@@ -400,6 +409,7 @@ func TestStreamedReply_DMTurnStartsAppendsAndStops(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "900.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "900.000"))
 	require.Eventually(t, func() bool {
 		return len(fake.pathCalls(pathStopStream)) > 0
@@ -429,6 +439,7 @@ func TestStreamedReply_ChannelTurnNamesTheRecipient(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "901.000", "U1", "test-agent")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> how many nodes?","channel":"C1","ts":"901.000"}}`)
 	// The exit status call is made after the stop that closed the stream, so
 	// waiting on the stop alone races the assertion below against it.
@@ -491,6 +502,7 @@ func TestStreamedReply_StreamLostTwiceReportsTheReplyCutShort(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "930.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "930.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Slack refused the rest of the reply")

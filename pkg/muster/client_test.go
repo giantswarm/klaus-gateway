@@ -1,151 +1,63 @@
-package muster
+package muster_test
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
+	"github.com/giantswarm/klaus-gateway/pkg/muster/mustertest"
 )
 
-// fakeMuster is a stateful streamable-HTTP MCP server: initialize hands out a
-// session id, later requests must carry it and the bearer, tools/call answers
-// from callResult, in JSON or SSE.
-type fakeMuster struct {
-	mu         sync.Mutex
-	sse        bool
-	callResult map[string]any
-	bearers    []string
-	calls      []map[string]any
-	deleted    bool
-	unauth     bool
-}
+// personToken is the person's dex id_token the tests call as.
+const personToken = "id-token-alice"
 
-func (f *fakeMuster) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.bearers = append(f.bearers, r.Header.Get("Authorization"))
-		if f.unauth {
-			http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
-			return
-		}
-		if r.Method == http.MethodDelete {
-			f.deleted = r.Header.Get(sessionHeader) == "sess-1"
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		var req struct {
-			ID     any            `json:"id"`
-			Method string         `json:"method"`
-			Params map[string]any `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if req.Method == "initialize" {
-			w.Header().Set(sessionHeader, "sess-1")
-			f.reply(w, req.ID, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "muster"}})
-			return
-		}
-		if r.Header.Get(sessionHeader) != "sess-1" {
-			http.Error(w, "missing session", http.StatusBadRequest)
-			return
-		}
-		if req.Method == "notifications/initialized" {
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-		if req.Method == "tools/call" {
-			f.calls = append(f.calls, req.Params)
-			f.reply(w, req.ID, f.callResult)
-			return
-		}
-		http.Error(w, "unexpected method "+req.Method, http.StatusBadRequest)
+func TestCallTool_RunsAsThePersonThroughCallTool(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_repo_approve_change": func(map[string]any) mustertest.Answer { return mustertest.Answer{Text: "review submitted"} },
 	})
-}
+	defer fake.Close()
 
-func (f *fakeMuster) reply(w http.ResponseWriter, id, result any) {
-	payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
-	if f.sse {
-		w.Header().Set("Content-Type", "text/event-stream")
-		// A notification without an id precedes the response, as a server may
-		// interleave one; the client must skip it.
-		_, _ = fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n")
-		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", payload)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(payload)
-}
-
-func approved() map[string]any {
-	return envelope(map[string]any{"isError": false, "content": []any{map[string]any{"type": "text", "text": "review submitted"}}}, false)
-}
-
-// envelope wraps a target tool's result the way muster's call_tool returns
-// it: serialised into the meta-tool's text content, isError mirrored when set.
-func envelope(inner map[string]any, isError bool) map[string]any {
-	text, _ := json.Marshal(inner)
-	return map[string]any{"isError": isError, "content": []any{map[string]any{"type": "text", "text": string(text)}}}
-}
-
-func TestCallTool_RunsAsThePersonAndClosesTheSession(t *testing.T) {
-	for _, sse := range []bool{false, true} {
-		t.Run(fmt.Sprintf("sse=%v", sse), func(t *testing.T) {
-			fake := &fakeMuster{sse: sse, callResult: approved()}
-			srv := httptest.NewServer(fake.handler())
-			defer srv.Close()
-
-			res, err := NewClient(srv.URL+"/").CallTool(context.Background(), "id-token-alice", "x_repo_approve_change", map[string]any{"pr": 7})
-			require.NoError(t, err)
-			require.Equal(t, Result{Text: "review submitted", Dispatched: true}, res)
-
-			fake.mu.Lock()
-			defer fake.mu.Unlock()
-			require.Len(t, fake.calls, 1)
-			require.Equal(t, "call_tool", fake.calls[0]["name"], "every tool is reached through muster's meta-tool")
-			require.Equal(t, map[string]any{"name": "x_repo_approve_change", "arguments": map[string]any{"pr": float64(7)}}, fake.calls[0]["arguments"])
-			for _, b := range fake.bearers {
-				require.Equal(t, "Bearer id-token-alice", b, "every request carries the person's token")
-			}
-			require.True(t, fake.deleted, "the session muster issued is closed")
-		})
-	}
+	res, err := muster.NewClient(fake.URL+"/").CallTool(t.Context(), personToken, "x_repo_approve_change", map[string]any{"pr": 7})
+	require.NoError(t, err)
+	require.Equal(t, muster.Result{Text: "review submitted", Dispatched: true}, res)
+	calls := fake.Calls()
+	require.Len(t, calls, 1)
+	require.Equal(t, "Bearer "+personToken, calls[0].Bearer, "muster sees the person")
+	require.Equal(t, "x_repo_approve_change", calls[0].Tool, "the tool is reached through call_tool")
+	require.Equal(t, map[string]any{"pr": float64(7)}, calls[0].Args)
 }
 
 func TestCallTool_ToolRefusalIsAResultNotAnError(t *testing.T) {
-	fake := &fakeMuster{callResult: envelope(map[string]any{
-		"isError": true,
-		"content": []any{map[string]any{"type": "text", "text": "alice is not a member of team-bumblebee"}},
-	}, true)}
-	srv := httptest.NewServer(fake.handler())
-	defer srv.Close()
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_repo_approve_change": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: "alice is not a member of team-bumblebee", IsError: true}
+		},
+	})
+	defer fake.Close()
 
-	res, err := NewClient(srv.URL).CallTool(context.Background(), "id-token-alice", "x_repo_approve_change", nil)
+	res, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_approve_change", nil)
 	require.NoError(t, err)
-	require.True(t, res.IsError)
-	require.True(t, res.Dispatched, "the tool itself refused")
-	require.Equal(t, "alice is not a member of team-bumblebee", res.Text)
+	require.Equal(t, muster.Result{Text: "alice is not a member of team-bumblebee", IsError: true, Dispatched: true}, res)
 }
 
-// A tool's structuredContent rides inside call_tool's envelope and comes back
-// as the tool sent it.
 func TestCallTool_StructuredContentOfTheTool(t *testing.T) {
-	fake := &fakeMuster{callResult: envelope(map[string]any{
-		"isError":           false,
-		"content":           []any{map[string]any{"type": "text", "text": "2 workspaces"}},
-		"structuredContent": map[string]any{"workspaces": []any{map[string]any{"name": "a"}}},
-	}, false)}
-	srv := httptest.NewServer(fake.handler())
-	defer srv.Close()
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_ws_list_workspaces": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: "2 workspaces", Structured: map[string]any{"workspaces": []any{map[string]any{"name": "a"}}}}
+		},
+	})
+	defer fake.Close()
 
-	res, err := NewClient(srv.URL).CallTool(context.Background(), "id-token-alice", "x_ws_list_workspaces", nil)
+	res, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_ws_list_workspaces", nil)
 	require.NoError(t, err)
 	require.Equal(t, "2 workspaces", res.Text)
 	require.JSONEq(t, `{"workspaces":[{"name":"a"}]}`, string(res.Structured))
@@ -155,35 +67,189 @@ func TestCallTool_StructuredContentOfTheTool(t *testing.T) {
 // muster's own refusal (an unknown tool, one outside the caller's toolset)
 // is call_tool's plain-text error result, no inner envelope: still a result.
 func TestCallTool_MetaToolRefusalIsAResultNotAnError(t *testing.T) {
-	fake := &fakeMuster{callResult: map[string]any{
-		"isError": true,
-		"content": []any{map[string]any{"type": "text", "text": "tool 'x_repo_approve_change' not found"}},
-	}}
-	srv := httptest.NewServer(fake.handler())
-	defer srv.Close()
+	fake := mustertest.New(nil)
+	defer fake.Close()
 
-	res, err := NewClient(srv.URL).CallTool(context.Background(), "id-token-alice", "x_repo_approve_change", nil)
+	res, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_approve_change", nil)
 	require.NoError(t, err)
-	require.Equal(t, Result{Text: "tool 'x_repo_approve_change' not found", IsError: true}, res)
+	require.Equal(t, muster.Result{Text: "Tool execution failed: tool not found: x_repo_approve_change", IsError: true}, res)
 }
 
 func TestCallTool_RefusedTokenIsAnHTTPError(t *testing.T) {
-	fake := &fakeMuster{unauth: true}
-	srv := httptest.NewServer(fake.handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL).CallTool(context.Background(), "stale", "x_repo_approve_change", nil)
-	var httpErr *HTTPError
+	_, err := muster.NewClient(srv.URL).CallTool(t.Context(), "stale", "x_repo_approve_change", nil)
+	var httpErr *muster.HTTPError
 	require.ErrorAs(t, err, &httpErr)
 	require.Equal(t, http.StatusUnauthorized, httpErr.Status)
 }
 
-func TestCallTool_NoBearerNoCall(t *testing.T) {
-	fake := &fakeMuster{callResult: approved()}
-	srv := httptest.NewServer(fake.handler())
-	defer srv.Close()
+// An answer longer than the client reads fails the call instead of being
+// buffered whole.
+func TestCallTool_OversizedAnswerFails(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_repo_list": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: strings.Repeat("a", 2<<20)}
+		},
+	})
+	defer fake.Close()
 
-	_, err := NewClient(srv.URL).CallTool(context.Background(), "", "x", nil)
+	_, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_list", nil)
 	require.Error(t, err)
-	require.Empty(t, fake.bearers)
+}
+
+func TestCallTool_NoBearerNoCall(t *testing.T) {
+	fake := mustertest.New(nil)
+	defer fake.Close()
+
+	_, err := muster.NewClient(fake.URL).CallTool(t.Context(), "", "x", nil)
+	require.Error(t, err)
+	require.Empty(t, fake.Calls())
+}
+
+// The client declares URL elicitation, so a call that needs a sign-in is
+// answered with the link to open, not run; Accept retries it with the
+// person's accept, echoing muster's request state.
+func TestCallTool_SignInThenAccept(t *testing.T) {
+	fake := mustertest.New(nil)
+	defer fake.Close()
+	fake.CallTools = map[string]func(mustertest.Call) mustertest.Answer{
+		"x_agent-manager_start_session": func(call mustertest.Call) mustertest.Answer {
+			if !call.Accepted {
+				return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to github to continue.", URL: "https://muster.example/oauth/proxy/start?s=1"}}
+			}
+			return mustertest.Answer{Text: `{"session":{"id":"s1"}}`}
+		},
+	}
+	client := muster.NewClient(fake.URL)
+
+	res, err := client.CallTool(t.Context(), personToken, "x_agent-manager_start_session", map[string]any{"requestId": "r1"})
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+	require.Equal(t, "Sign in to github to continue.", res.SignIn.Message)
+	require.Equal(t, "https://muster.example/oauth/proxy/start?s=1", res.SignIn.URL)
+	require.False(t, res.Dispatched)
+
+	res, err = client.Accept(t.Context(), personToken, res.SignIn)
+	require.NoError(t, err)
+	require.Nil(t, res.SignIn)
+	require.Equal(t, muster.Result{Text: `{"session":{"id":"s1"}}`, Dispatched: true}, res)
+
+	calls := fake.Calls()
+	require.Len(t, calls, 2)
+	require.False(t, calls[0].Accepted)
+	require.True(t, calls[1].Accepted, "the retry carries the person's accept")
+	require.Equal(t, "Bearer "+personToken, calls[1].Bearer)
+	require.Equal(t, "x_agent-manager_start_session", calls[1].Tool, "the same call again")
+	require.Equal(t, map[string]any{"requestId": "r1"}, calls[1].Args)
+}
+
+func TestCallTool_UnusableSignInLinkIsAnError(t *testing.T) {
+	for name, link := range map[string]string{
+		"plain http": "http://muster.example/start",
+		"userinfo":   "https://alice@muster.example/start",
+		"relative":   "/oauth/proxy/start",
+		"javascript": "javascript:alert(1)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+				"x_tool": func(map[string]any) mustertest.Answer {
+					return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in.", URL: link}}
+				},
+			})
+			defer fake.Close()
+
+			_, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_tool", nil)
+			require.ErrorIs(t, err, muster.ErrUnusableSignIn)
+		})
+	}
+}
+
+func TestValidateSignInURL(t *testing.T) {
+	for link, ok := range map[string]bool{
+		"https://muster.example/start?s=1":    true,
+		"http://127.0.0.1:8080/start":         true,
+		"http://localhost/start":              true,
+		"http://muster.example/start":         false,
+		"https://a:b@muster.example/":         false,
+		"https:///nohost":                     false,
+		"ftp://muster.example/":               false,
+		"https://muster.example/a b":          false,
+		"https://muster.example/`x`":          false,
+		"https://muster.example/\nx":          false,
+		"https://muster.example/\u202eetadpu": false,
+		"https://muster.example/a\u200bb":     false,
+		"https://muster.example/a\u00a0b":     false,
+		"https://muster.example/<x>":          false,
+		"https://muster.example/\xff":         false,
+		"https://müster.example/start":        true,
+		"https://muster.example/" + strings.Repeat("a", muster.SignInURLMaxBytes-len("https://muster.example/")):   true,
+		"https://muster.example/" + strings.Repeat("a", muster.SignInURLMaxBytes-len("https://muster.example/")+1): false,
+	} {
+		err := muster.ValidateSignInURL(link)
+		if ok {
+			require.NoError(t, err, link)
+		} else {
+			require.ErrorIs(t, err, muster.ErrUnusableSignIn, link)
+		}
+	}
+}
+
+func TestAccept_NoSignIn(t *testing.T) {
+	_, err := muster.NewClient("http://unused").Accept(t.Context(), personToken, nil)
+	require.Error(t, err)
+}
+
+func TestDecline_AnswersTheSignInAndRunsNothing(t *testing.T) {
+	fake := mustertest.New(nil)
+	defer fake.Close()
+	fake.CallTools = map[string]func(mustertest.Call) mustertest.Answer{
+		"x_tool": func(mustertest.Call) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in.", URL: "https://muster.example/s"}}
+		},
+	}
+	client := muster.NewClient(fake.URL)
+	res, err := client.CallTool(t.Context(), personToken, "x_tool", map[string]any{"a": "b"})
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+
+	require.NoError(t, client.Decline(t.Context(), personToken, res.SignIn))
+	calls := fake.Calls()
+	require.Len(t, calls, 2)
+	require.True(t, calls[1].Declined, "the retry carries the person's decline")
+	require.Equal(t, map[string]any{"a": "b"}, calls[1].Args)
+
+	require.Error(t, client.Decline(t.Context(), personToken, nil))
+}
+
+// A muster slower to answer server/discover than mcp-go's legacy-detection
+// probe is still spoken to on 2026-07-28, so its sign-in arrives as a URL
+// elicitation rather than as an error of the older protocol.
+func TestCallTool_SlowDiscoverStillGetsTheSignIn(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_agent-manager_start_session": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in.", URL: "https://muster.example/oauth/proxy/start?s=1"}}
+		},
+	})
+	defer fake.Close()
+	target, err := url.Parse(fake.URL)
+	require.NoError(t, err)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		if bytes.Contains(body, []byte(`"server/discover"`)) {
+			time.Sleep(6 * time.Second)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		proxy.ServeHTTP(w, r)
+	}))
+	defer slow.Close()
+
+	res, err := muster.NewClient(slow.URL).CallTool(t.Context(), personToken, "x_agent-manager_start_session", nil)
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
 }

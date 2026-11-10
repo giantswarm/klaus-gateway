@@ -47,7 +47,8 @@ func TestStartSession_CallsStartSessionAsThePerson(t *testing.T) {
 	require.Len(t, calls, 1)
 	require.Equal(t, tool, calls[0].Tool)
 	require.Equal(t, "Bearer "+bearer, calls[0].Bearer)
-	require.Equal(t, map[string]any{"namespace": "kagent", "name": "sre-agent", "requestId": "req-1", "sessionName": "restart kong"}, calls[0].Args)
+	require.Equal(t, map[string]any{"namespace": "kagent", "name": "sre-agent", "requestId": "req-1", "sessionName": "restart kong", "noWorkspace": true}, calls[0].Args,
+		"a start without a grant says so: agent-manager would otherwise start it in the agent's default workspace")
 }
 
 // A Session started in a workspace carries the grant authorize_workspace
@@ -134,44 +135,31 @@ func TestStartSession_MusterRefusingTheTokenIsNoIdentity(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 }
 
-// muster's own sign-in challenge for the server (the person is signed in but
-// has not connected it) carries the link: the channel's Connect prompt, not
-// the sign-in prompt. The link is read from the structured content, or from
-// the text when the answer is muster refusing the call before any envelope.
-func TestStartSession_MusterSignInChallengeIsConnectRequired(t *testing.T) {
+// The sign-in muster asks for (the person is signed in but has not connected
+// a server the start goes through) is a URL elicitation: the channel's
+// Connect prompt, not the sign-in prompt.
+func TestStartSession_MusterSignInIsConnectRequired(t *testing.T) {
 	const link = "https://muster.example/oauth/proxy/start?state=abc"
-	text := "auth_required: server 'agent-manager' requires authentication before its tools can be called (this session is not authenticated to it).\n\n" +
-		"Authentication Required\n\nServer: agent-manager\nStatus: Authentication required for agent-manager. Please visit the link below to authenticate.\n\n" +
-		"Please sign in to connect to this server:\n\n" + link + "\n\nAfter signing in, run this tool again to complete the connection."
-	for name, answer := range map[string]mustertest.Answer{
-		"structured":   {IsError: true, Text: text, Structured: map[string]any{"status": "auth_required", "server": "agent-manager", "authUrl": link}},
-		"text only":    {IsError: true, Text: text},
-		"undispatched": {IsError: true, Undispatched: true, Text: text},
-	} {
-		t.Run(name, func(t *testing.T) {
-			starter, _ := starterAnswering(t, answer)
-			_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
-			var connect *pkga2a.ConnectRequiredError
-			require.ErrorAs(t, err, &connect)
-			require.Equal(t, "agent-manager", connect.Server)
-			require.Equal(t, link, connect.LoginURL)
-			require.NotErrorIs(t, err, pkga2a.ErrNoIdentity, "a consent the person can give is not a missing identity")
-		})
-	}
-
-	// A challenge that names no server is for the tool's own, the one the
-	// prefix names; a stop after the link is prose, not the link.
-	starter, _ := starterAnswering(t, mustertest.Answer{IsError: true, Undispatched: true, Text: "auth_required: sign in first: " + link + "."})
+	starter, _ := starterAnswering(t, mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to agent-manager to continue.", URL: link}})
 	_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
 	var connect *pkga2a.ConnectRequiredError
 	require.ErrorAs(t, err, &connect)
-	require.Equal(t, &pkga2a.ConnectRequiredError{Server: "agent-manager", LoginURL: link}, connect)
+	require.Equal(t, link, connect.SignIn.URL)
+	require.Equal(t, "Sign in to agent-manager to continue.", connect.SignIn.Message)
+	require.NotErrorIs(t, err, pkga2a.ErrNoIdentity, "a consent the person can give is not a missing identity")
 
 	// agent-manager's own auth_required, without a link, is a caller the
 	// gateway cannot act for: no identity, as before.
 	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "auth_required: auth required: a commit without the caller's GitHub authorization"})
 	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
+
+	// A refusal that names a server and carries a link, without muster's
+	// sign-in markers, is no challenge: the person gets no Connect prompt.
+	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "rate limited by server 'agent-manager', see https://docs.example/limits"})
+	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	require.Error(t, err)
+	require.NotErrorAs(t, err, &connect)
 }
 
 func TestStartSession_RefusesWhatIsNoSession(t *testing.T) {

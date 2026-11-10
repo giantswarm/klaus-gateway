@@ -249,18 +249,29 @@ slack:
   # "About" tab) served when channelMode is "allowlist". Rendered as
   # SLACK_CHANNEL_ALLOWLIST.
   channelAllowlist: []
-  # contextBotIDs lists the Slack bot_ids (B…) whose posts a thread read hands
-  # to the agent: the alerting integrations a conversation is opened under
-  # (Alertmanager, PagerDuty). Every human's message is shared; any other bot's
-  # post is left out, since a display name is whatever a bot posts under.
-  # Rendered as SLACK_CONTEXT_BOT_IDS. Empty shares no bot's post.
+  # slashCommand is the app's slash command as deploy/slack/manifest.yaml
+  # declares it, the way a conversation starts: the help and the notices name
+  # it. Slack sends the name only with an invocation, so the gateway cannot
+  # learn it. Set it when the app's command is not /swarmgeist. Rendered as
+  # SLACK_SLASH_COMMAND. Empty lets the binary default (/swarmgeist).
+  slashCommand: ""
+  # -- The bot_ids (B…) whose posts the thread context hands to the agent:
+  # the alerting integrations a conversation is opened under (Alertmanager,
+  # PagerDuty). Every human's message is shared; a bot's post only when its
+  # bot_id is listed here or its profile name matches `contextBotNames`. The
+  # gateway's own posts never are. A thread is read only in a channel the
+  # gateway's bot is a member of, so the bot is invited to every alert channel
+  # whose posts should reach an agent.
+  # Rendered as SLACK_CONTEXT_BOT_IDS. Empty lists no bot_id.
   contextBotIDs: []
-  # contextBotNames lists patterns (path.Match syntax: *, ?, [..];
-  # case-insensitive) matched against a bot's Slack profile name, the app's own
-  # bot name rather than the name a post sets, whose posts a thread read hands
-  # to the agent beside contextBotIDs'. One entry admits an integration that
-  # runs one Slack app per installation: "*-alertmanager" admits every
-  # installation's Alertmanager. Rendered as SLACK_CONTEXT_BOT_NAMES.
+  # -- Patterns matched against a bot's Slack profile name, the app's own bot
+  # name (`bot_profile.name`), never the name a post sets: `path.Match` syntax
+  # (`*`, `?`, `[...]`), case-insensitive, an invalid pattern fails start-up.
+  # One entry admits an integration that runs one Slack app per installation,
+  # each with its own bot_id: `*-alertmanager` admits every installation's
+  # Alertmanager, a new installation included. Admits beside `contextBotIDs`,
+  # with the same channel-membership requirement. Rendered as
+  # SLACK_CONTEXT_BOT_NAMES. Empty matches no name.
   contextBotNames: []
   # dropStale ignores Slack events older than the gateway's start time, so a
   # restart never replays messages queued while it was down. Rendered as
@@ -374,11 +385,8 @@ obo:
   # Empty uses the gateway's default, 25m. When muster's tokens live shorter,
   # every turn gets a freshly refreshed one.
   minTokenLifetime: ""
-  # connectors enables the reactive Slack connector UX: the gateway detects a
-  # core_auth_login challenge in the agent's response stream and offers a
-  # "Connect <backend>" button from the login link the agent relays. The
-  # gateway does not call muster. Requires muster 5.36.0 or later: the
-  # call_tool result names the tool it ran.
+  # connectors offers muster's grants in the Slack authorize modal (and
+  # Authorize all on Connect prompts).
   connectors:
     enabled: false
 
@@ -404,6 +412,38 @@ reviews:
   # that posts there.
   allowedCallers:
     - system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager
+
+# Egress refusal notices: when the Substrate egress refuses a destination an
+# agent's egress does not declare, the agent's creator (the Agent's
+# agent-platform.giantswarm.io/created-by annotation) gets a direct message
+# from the app, one per agent and destination within `window`; later refusals
+# inside it are counted into that message. The gateway reads the refusal
+# counter from the stats port of every pod behind `egressService` and asks
+# the kagent controller, as its own ServiceAccount (a projected token for
+# audience `kagentAudience`), which Agent a refusing Session runs; the
+# controller must admit this ServiceAccount as its session reader. While on,
+# the chart grants the ServiceAccount `get` on api.kagent.dev agents and
+# `list` on the egress namespace's EndpointSlices. Without slack.enabled it
+# renders nothing.
+refusals:
+  enabled: false
+  # egressService is the Substrate egress's Service, <namespace>/<name>.
+  egressService: ate-system/atenet-egress
+  # statsPort and metricsPath locate each egress pod's metrics.
+  statsPort: 15020
+  metricsPath: /metrics
+  # kagentTarget is the kagent controller's gRPC address (plaintext).
+  kagentTarget: kagent-controller.kagent.svc:8083
+  kagentAudience: kagent
+  # window is how long one notice covers its agent and destination; interval
+  # how often the egress is read.
+  window: 24h
+  interval: 1m
+  # agentURLTemplate opens an agent where its egress is edited, with
+  # {namespace} and {name} replaced: the notice's Edit button, offered for an
+  # agent on the kagent runtime (a coding agent's egress is the platform's).
+  # Empty offers none.
+  agentURLTemplate: ""
 
 # Workspaces: the workspace-manager's tools, which the Slack adapter calls
 # through muster as the linked person (which workspaces the person may pick,

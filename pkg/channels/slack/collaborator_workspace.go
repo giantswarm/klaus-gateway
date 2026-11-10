@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -53,6 +54,9 @@ func (a *Adapter) refuseCollaboratorWorkspace(ctx context.Context, msg channels.
 	a.Logger.Info("slack: collaborator turn refused on the thread's workspace", "record", "workspace_collaborator_refused", "thread", msg.ThreadID, "user", slackUser, "workspace", workspace)
 	if len(denial.connect) == 0 {
 		text := denial.text
+		if denial.refused {
+			text += fmt.Sprintf(collaboratorWorkspaceOwnTail, a.slashCommand())
+		}
 		if len(a.takeWorkspaceConnectHeld(msg.ThreadID, slackUser)) > 0 {
 			text += collaboratorWorkspaceHeldDroppedTail
 		}

@@ -28,9 +28,25 @@ const (
 	// FailurePolicy: a gateway policy refused the request (authorization, a
 	// prompt guard, a rate limit), or the sender may not use the agent.
 	FailurePolicy FailureClass = "policy"
+	// FailureConnectionRequired: the agent's model runs on a provider account
+	// of the person's own (a ChatGPT subscription) that they have not
+	// connected, so the egress refused to lend its credential.
+	FailureConnectionRequired FailureClass = "connection_required"
 	// FailureUnknown: nothing above matched.
 	FailureUnknown FailureClass = "unknown"
 )
+
+// FailureReasoner is a failure that carries the runtime's own class of it,
+// such as the reason kagent sets on a failed task's status message. A reason
+// ClassifyFailure knows wins over the markers in the error's text.
+type FailureReasoner interface {
+	FailureReason() string
+}
+
+// The failure reasons a runtime reports that name a class.
+var failureReasons = map[string]FailureClass{
+	string(FailureConnectionRequired): FailureConnectionRequired,
+}
 
 // The markers ClassifyFailure looks for, lower case. The runtime reports a
 // failure as the text of its error chain, so the wording of the layer that
@@ -67,7 +83,11 @@ var (
 		"authentication_error",
 		"permission_error",
 	}
-	transportMarkers = []string{
+	// The egress gateway refusing to lend a person's provider credential:
+	// "credential provider <authority> denied: <why>". Both words must be
+	// there; the authority between them varies.
+	connectionMarker, connectionDeniedMarker = "credential provider", "denied"
+	transportMarkers                         = []string{
 		"connection reset",
 		"connection refused",
 		"broken pipe",
@@ -78,7 +98,9 @@ var (
 )
 
 // ClassifyFailure returns the class of a turn's failure, FailureNone for a
-// nil error. The order matters: the tool set's failure quotes its transport
+// nil error. The runtime's own reason, when it names a class, decides;
+// otherwise the order of the markers matters: a credential refusal quotes
+// the model call it refused, the tool set's failure quotes its transport
 // error and may quote a refusal, a model call's failure may quote its
 // transport error, and a refusal on the way to the model is a policy's, not
 // the model's.
@@ -89,8 +111,16 @@ func ClassifyFailure(err error) FailureClass {
 	if errors.Is(err, pkga2a.ErrAgentNotPermitted) {
 		return FailurePolicy
 	}
+	var reasoner FailureReasoner
+	if errors.As(err, &reasoner) {
+		if class, ok := failureReasons[reasoner.FailureReason()]; ok {
+			return class
+		}
+	}
 	text := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(text, connectionMarker) && strings.Contains(text, connectionDeniedMarker):
+		return FailureConnectionRequired
 	case containsAny(text, toolSetMarkers):
 		return FailureTools
 	case containsAny(text, policyMarkers):
@@ -111,7 +141,8 @@ func ModelCredentialsRefused(err error) bool {
 
 // Retryable reports whether a second attempt of a turn that failed with
 // class may get past the failure: a connection that broke may hold the next
-// time, a model's or a policy's answer comes back the same.
+// time, a model's or a policy's answer comes back the same, and a provider
+// account stays unconnected until the person connects it.
 func (c FailureClass) Retryable() bool {
 	return c == FailureTools || c == FailurePlatform
 }

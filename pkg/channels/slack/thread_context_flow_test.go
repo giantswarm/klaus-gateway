@@ -174,6 +174,17 @@ func TestThreadContext_ShortcutSharesTheThread(t *testing.T) {
 	require.Less(t, strings.Index(got, "Marta"), strings.Index(got, "Piotr"), "oldest first")
 }
 
+// openOnThread starts a conversation in thread of C1 through the shortcut on
+// its message ts, as U1 picking the SRE agent, with the thread-context
+// checkbox left ticked: the one way a conversation opens inside an existing
+// thread.
+func openOnThread(t *testing.T, srv *httptest.Server, fake *fakeSlackAPI, apiURL, ts, thread, question string) {
+	t.Helper()
+	sendAskAgentShortcut(t, srv, "C1", "U1", ts, thread, apiURL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmissionWithContext(t, srv, "U1", pm, "kagent/sre-agent", question, true)
+}
+
 // withContextBots names the bots whose posts a thread read shares.
 func withContextBots(ids ...string) func(*slackadapter.Adapter) {
 	return func(a *slackadapter.Adapter) { a.ContextBotIDs = ids }
@@ -302,43 +313,6 @@ func TestThreadContext_SlashCommandHasNoThreadToShare(t *testing.T) {
 	require.Empty(t, fake.pathCalls("conversations.replies"), "a thread the command rooted itself is not read")
 }
 
-// `/agent <name> <question>` typed as a reply under an alert opens the
-// conversation in that thread, and the agent gets the thread with it. There is
-// no modal here, so there is no checkbox: the person chose to ask in front of
-// everyone in the thread.
-func TestThreadContext_AgentSelectionReplySharesTheThread(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fake.withThread(alertThread(), 200)
-	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
-	api := fake.server(t)
-	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
-
-	sendEvent(t, srv, mention("U1", "/agent \"SRE Agent\" what happened?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
-
-	msg := dispatched()[0]
-	require.True(t, msg.Opener)
-	require.Contains(t, msg.Context, "[thread context shared by Jose:")
-	require.Contains(t, msg.Context, "Marta: the pod restarts every 40 s")
-}
-
-// A bare mention under an alert opens a conversation with the default agent,
-// and has the same need: the thread comes with it.
-func TestThreadContext_BareMentionReplySharesTheThread(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fake.withThread(alertThread(), 200)
-	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
-	api := fake.server(t)
-	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
-
-	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
-
-	require.Contains(t, dispatched()[0].Context, "Marta: the pod restarts every 40 s")
-}
-
 // The second message of a conversation is a turn of it already: the thread is
 // read once, at the opener, and never again.
 func TestThreadContext_LaterRepliesDoNotReadAgain(t *testing.T) {
@@ -348,7 +322,9 @@ func TestThreadContext_LaterRepliesDoNotReadAgain(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
+	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "what happened here?", true)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 	reads := len(fake.pathCalls("conversations.replies"))
 	require.Positive(t, reads)
@@ -375,7 +351,7 @@ func TestThreadContext_ManyShortMessagesAllFit(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
+	openOnThread(t, srv, fake, api.URL, "900.000", "100.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
@@ -401,7 +377,7 @@ func TestThreadContext_LongMessagesAreCutFromTheOldest(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
+	openOnThread(t, srv, fake, api.URL, "900.000", "100.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
@@ -426,7 +402,7 @@ func TestThreadContext_PagesThroughTheWholeThread(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
+	openOnThread(t, srv, fake, api.URL, "900.000", "100.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
@@ -444,7 +420,7 @@ func TestThreadContext_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
+	openOnThread(t, srv, fake, api.URL, "104.000", "100.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Empty(t, dispatched()[0].Context)
@@ -463,7 +439,7 @@ func TestThreadContext_UnresolvableAuthorFallsBackToTheID(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
+	openOnThread(t, srv, fake, api.URL, "104.000", "100.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
@@ -490,7 +466,7 @@ func TestThreadContext_HangingNameLookupEndsWithTheBudget(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
+	openOnThread(t, srv, fake, api.URL, "104.000", "100.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
 		"the turn runs once the read's budget ends, not once Slack answers")
 
@@ -516,7 +492,7 @@ func TestThreadContext_ThreadTooLongToReadIsLabelledPartial(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
+	openOnThread(t, srv, fake, api.URL, "9000.000", "1000.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
@@ -541,7 +517,7 @@ func TestThreadContext_LongButReadableThreadIsCountedInFull(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
+	openOnThread(t, srv, fake, api.URL, "9000.000", "1000.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
@@ -549,24 +525,6 @@ func TestThreadContext_LongButReadableThreadIsCountedInFull(t *testing.T) {
 	require.Contains(t, got, "line 299 ", "the newest are the ones kept")
 	require.Contains(t, got, "line 0 ", "the root is always kept")
 	require.NotContains(t, got, "line 5 ")
-}
-
-// The assistant pane roots every chat at an anchor of Slack's own, so the
-// first message of a chat is never its own thread root — and reading that
-// thread would only hand the person their own words back. Nothing is read.
-func TestThreadContext_AssistantPaneIsNotRead(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fake.withThread(alertThread(), 50)
-	api := fake.server(t)
-	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL)
-
-	sendEvent(t, srv, dmThreadEvent("U1", "what can you do?", "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
-
-	require.True(t, dispatched()[0].Opener)
-	require.Empty(t, dispatched()[0].Context)
-	require.Empty(t, fake.pathCalls("conversations.replies"), "a DM chat has no thread that predates it")
 }
 
 // userLookups counts the users.info calls made for one Slack user.
@@ -630,7 +588,7 @@ func TestThreadContext_PageFailureMidReadKeepsWhatWasRead(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
-	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
+	openOnThread(t, srv, fake, api.URL, "9000.000", "1000.000", "what happened here?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := dispatched()[0].Context
