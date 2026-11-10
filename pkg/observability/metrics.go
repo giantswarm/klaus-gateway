@@ -24,6 +24,9 @@ const (
 	labelClass   = "failure_class"
 	labelPhase   = "phase"
 	labelEvent   = "event"
+	// labelCallClass is how a Slack Web API call ended: ok, or the class of
+	// its error.
+	labelCallClass = "class"
 )
 
 // turnPhaseBuckets spans a turn's phases: a cache hit in single-digit
@@ -53,6 +56,10 @@ type Metrics struct {
 	// other trace, so this counter is what says whether a workspace is being
 	// throttled at all.
 	SlackRateLimitedTotal *prometheus.CounterVec
+	// SlackCallsTotal counts every Slack Web API call by method and by how it
+	// ended (ok, permanent, retryable, converged), fed by RecordSlackCall, so a
+	// dashboard tells a refusal no retry fixes from an outage.
+	SlackCallsTotal *prometheus.CounterVec
 	// RefusalsTotal counts each agent and destination an egress refusal
 	// observation handled, by outcome (refusals.Outcome*), fed by
 	// RecordRefusal.
@@ -105,13 +112,19 @@ func NewMetrics() *Metrics {
 		Help:      "Slack Web API calls answered with HTTP 429, labelled by method and by what the client did about it (retried, exhausted).",
 	}, []string{labelMethod, labelOutcome})
 
+	slackCalls := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricNamespace,
+		Name:      "slack_call_total",
+		Help:      "Slack Web API calls, labelled by method and by how the call ended (class): ok, permanent (an error no retry fixes), retryable (an error another attempt may fix) or converged (an error that says the call's effect was already in place, counted as done).",
+	}, []string{labelMethod, labelCallClass})
+
 	refusalsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: metricNamespace,
 		Name:      "egress_refusals_total",
 		Help:      "Agents and destinations an egress refusal observation handled, labelled by outcome (noted, failed, no_creator, not_session).",
 	}, []string{labelOutcome})
 
-	reg.MustRegister(reqs, dur, turns, phase, streams, rateLimited, refusalsTotal)
+	reg.MustRegister(reqs, dur, turns, phase, streams, rateLimited, slackCalls, refusalsTotal)
 
 	return &Metrics{
 		Registry:              reg,
@@ -121,6 +134,7 @@ func NewMetrics() *Metrics {
 		TurnPhase:             phase,
 		SlackStreamsTotal:     streams,
 		SlackRateLimitedTotal: rateLimited,
+		SlackCallsTotal:       slackCalls,
 		RefusalsTotal:         refusalsTotal,
 	}
 }
@@ -145,6 +159,12 @@ func (m *Metrics) RecordSlackStream(event string) {
 // the Slack adapter's RateLimitRecorder.
 func (m *Metrics) RecordSlackRateLimit(method, outcome string) {
 	m.SlackRateLimitedTotal.WithLabelValues(method, outcome).Inc()
+}
+
+// RecordSlackCall counts one Slack Web API call under the method and how it
+// ended. It implements the Slack adapter's CallRecorder.
+func (m *Metrics) RecordSlackCall(method, class string) {
+	m.SlackCallsTotal.WithLabelValues(method, class).Inc()
 }
 
 // RecordRefusal counts one agent and destination an egress refusal
