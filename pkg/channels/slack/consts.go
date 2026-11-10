@@ -160,12 +160,12 @@ const (
 // live.
 const sessionConnectSupersededNote = "Sign in with the newer prompt below."
 
-// connectorDoneNotice replaces a Connect prompt once the call it held ran
-// after the person's sign-in; connectorDeclinedNotice once the person chose
-// Not now, which dropped it.
+// connectorContinuingNotice replaces a Connect prompt on the click of its
+// link; connectorDeclinedNotice once the person chose Not now, which dropped
+// what it held.
 const (
-	connectorDoneNotice     = "Signed in."
-	connectorDeclinedNotice = "Not signed in. What waited for the sign-in was not sent; try again when you want to sign in."
+	connectorContinuingNotice = "Opened the sign-in link. What waited for it goes ahead once you're signed in."
+	connectorDeclinedNotice   = "Not signed in. What waited for the sign-in was not sent; try again when you want to sign in."
 )
 
 // signInLinkOpensLead leads the domain a sign-in link opens, shown in bold

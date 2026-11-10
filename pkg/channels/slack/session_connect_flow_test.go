@@ -1,6 +1,7 @@
 package slack_test
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http/httptest"
@@ -182,8 +183,8 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	require.Equal(t, "tok", accepter.bearers[0], "as the person")
 	accepter.mu.Unlock()
 	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Signed in.")
-	}, flowWait, 20*time.Millisecond, "the clicked ephemeral is replaced with the confirmation")
+		return strings.Contains(capturedBody(), "Opened the sign-in link.")
+	}, flowWait, 20*time.Millisecond, "the clicked ephemeral says what the click started")
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> signed in.") &&
 			strings.Contains(allText(updatesIn(fake, "U1")), "Signed in. Your message is on its way to the agent.")
@@ -420,4 +421,31 @@ func TestSessionConnect_NotNowDeclinesAndDropsTheHeldMessage(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, accepter.count(), "the declined prompt's Sign in accepts nothing")
 	require.Equal(t, 1, gw.dispatchCount(), "and the held message never runs")
+}
+
+// An accept that fails says nothing of the sign-in: the surfaces do not claim
+// it, and the replayed start, still asked for a sign-in, prompts again.
+func TestSessionConnect_FailedAcceptDoesNotClaimTheSignIn(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	gw.dispatchErr = sessionConnectChallenge()
+	accepter := &fakeAccepter{err: errors.New("muster unreachable")}
+	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
+
+	gw.openConversation(t, "C1", "180.000", "U1", "test-agent")
+	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "180.000", ""))
+	var stateID string
+	require.Eventually(t, func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	}, flowWait, 20*time.Millisecond, "the prompt is posted")
+
+	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, "")
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond, "the held message is replayed")
+	require.Eventually(t, func() bool {
+		_, refreshed, _, ok := connectButtonIn(updatesIn(fake, "U1"))
+		return ok && refreshed != stateID
+	}, flowWait, 20*time.Millisecond, "the replayed start refreshes the DM card with a fresh prompt")
+	require.NotContains(t, allText(updatesIn(fake, "U1")), "Signed in", "the card claims no sign-in")
+	require.NotContains(t, allText(updatesIn(fake, "C1")), "signed in", "nor does the thread's line")
 }

@@ -577,7 +577,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
 	})
 	require.Empty(t, latestButtons(fake, receipt.TS))
-	waitFor(t, "the prompt says the sign-in is done", func() bool { return strings.Contains(capturedBody(), "Signed in.") })
+	waitFor(t, "the prompt says what the click started", func() bool { return strings.Contains(capturedBody(), "Opened the sign-in link.") })
 
 	// A second click only opens the link again.
 	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
@@ -635,11 +635,14 @@ func TestTeamReview_SignInNotCompletedIsNotLooped(t *testing.T) {
 		_, stateID, ok = connectButton(fake)
 		return ok
 	})
-	sendClick(t, srv, "connector_connect", stateID, "", true)
+	responseSrv, capturedBody := newResponseURLCapture(t)
+	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
 
 	waitFor(t, "the status line says the sign-in did not finish", func() bool {
 		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> did not finish signing in in time")
 	})
+	require.Contains(t, capturedBody(), "Opened the sign-in link.")
+	require.NotContains(t, capturedBody(), "Signed in.", "the prompt never claims a sign-in that did not finish")
 	require.Len(t, tools.recorded(), 2, "one call per attempt, no loop")
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "the one Connect prompt; no second one, no private repeat")
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")

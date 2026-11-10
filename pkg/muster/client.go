@@ -187,7 +187,11 @@ func (c *Client) connect(ctx context.Context, bearer string) (*mcpclient.Client,
 	if err != nil {
 		return nil, fmt.Errorf("muster: transport: %w", err)
 	}
+	// mcp-go reads a server/discover slower than its probe bound as a server
+	// older than 2026-07-28 and falls back to it, where a sign-in is no URL
+	// elicitation this client reads; the call's own deadline bounds it.
 	session := mcpclient.NewClient(t,
+		mcpclient.WithDiscoverTimeout(-1),
 		mcpclient.WithManualInputRoundTrips(),
 		mcpclient.WithClientCapabilities(mcp.ClientCapabilities{
 			Elicitation: &mcp.ElicitationCapability{URL: &struct{}{}},
