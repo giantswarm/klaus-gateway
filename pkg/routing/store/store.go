@@ -389,10 +389,13 @@ type Refusal struct {
 	Agent       string `json:"agent"`
 	DisplayName string `json:"display_name,omitempty"`
 	Creator     string `json:"creator"`
-	Scheme      string `json:"scheme"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	AgentURL    string `json:"agent_url,omitempty"`
+	// Runtime and HarnessTitle are channels.EgressRefusal's.
+	Runtime      string `json:"runtime,omitempty"`
+	HarnessTitle string `json:"harness_title,omitempty"`
+	Scheme       string `json:"scheme"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	AgentURL     string `json:"agent_url,omitempty"`
 	// Count is the requests refused since the notice; Sessions the distinct
 	// Sessions they came from, at most RefusalSessionsMax kept, and
 	// MoreSessions how many beyond those.

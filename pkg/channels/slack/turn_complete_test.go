@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +175,7 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 		{"tool set failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, channels.OutcomeFailed, true, channels.FailureTools},
 		{"share refused", &fakeGateway{Facade: newMemoryRecorder(), sendErr: &pkga2a.ShareRefusedError{SessionID: "session-1", Reason: "cannot be shared"}}, channels.OutcomeShareRefused, true, channels.FailureNone},
 		{"share unavailable", &fakeGateway{Facade: newMemoryRecorder(), sendErr: channels.ErrShareUnavailable}, channels.OutcomeShareRefused, true, channels.FailureNone},
+		{"answered elsewhere", &fakeGateway{Facade: newMemoryRecorder(), sendErr: fmt.Errorf("%w: task task-1 is TASK_STATE_WORKING", channels.ErrNoPendingPrompt)}, channels.OutcomePromptAnswered, true, channels.FailureNone},
 		{"agent not the sender's", &fakeGateway{Facade: newMemoryRecorder(), sendErr: &pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Tenant: "organization acme"}}, channels.OutcomeSendFailed, true, channels.FailurePolicy},
 		{"prompt", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Kind: channels.DeltaPrompt, Content: "approve?", TaskID: "task-1"}}}, channels.OutcomeInputRequired, false, channels.FailureNone},
 	}

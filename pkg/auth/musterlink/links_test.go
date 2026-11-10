@@ -1,10 +1,16 @@
 package musterlink
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +28,13 @@ type flakyStore struct {
 	mu                           sync.Mutex
 	failGet, failPut, failDelete bool
 	gets                         int
+	// conflicts is how many Update calls still answer errStoreConflict, as a
+	// Secret store contended past its retries does.
+	conflicts int
+	// leaseWrites lets an Update that writes a refresh lease through while
+	// failPut fails every other write: the refresh runs, its rotated link is
+	// refused.
+	leaseWrites bool
 }
 
 func newFlakyStore(inner Store) *flakyStore { return &flakyStore{inner: inner} }
@@ -69,6 +82,40 @@ func (f *flakyStore) Delete(id string) error {
 	return f.inner.Delete(id)
 }
 
+// Update fails like a read when reads fail and like a write when writes fail:
+// it does both.
+func (f *flakyStore) Update(id string, fn func(*Link) (*Link, bool)) error {
+	f.mu.Lock()
+	failRead, failWrite, leaseWrites := f.failGet, f.failPut, f.leaseWrites
+	conflict := f.conflicts > 0
+	if conflict {
+		f.conflicts--
+	}
+	f.mu.Unlock()
+	if failRead {
+		return errStoreDown
+	}
+	if conflict {
+		return fmt.Errorf("secret: conflict retry limit exceeded: %w", errStoreConflict)
+	}
+	refused := false
+	if err := f.inner.Update(id, func(current *Link) (*Link, bool) {
+		refused = false
+		next, write := fn(current)
+		if write && failWrite && (!leaseWrites || next == nil || next.Lease == nil) {
+			refused = true
+			return nil, false
+		}
+		return next, write
+	}); err != nil {
+		return err
+	}
+	if refused {
+		return errStoreDown
+	}
+	return nil
+}
+
 // clock is a movable now for the linker: advancing it past the id_token's
 // lifetime forces a refresh, past cacheTTL a store re-read.
 type clock struct {
@@ -96,6 +143,14 @@ func (s *musterStub) presented() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastRefresh
+}
+
+// reuses counts the rotated refresh tokens presented again, each of which
+// revoked its family.
+func (s *musterStub) reuses() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reused
 }
 
 func (s *musterStub) issued() int {
@@ -191,7 +246,7 @@ func TestTokenForKeepsRotatedTokenWhenStoreWriteFails(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	mem, fs := seeded(t)
 	l, clk := newFlakyLinker(t, stub, fs, nil)
-	fs.set(func(f *flakyStore) { f.failPut = true })
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 
 	tok, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err, "muster minted the token; only the store failed")
@@ -226,7 +281,7 @@ func TestTokenForRetriesFailedWriteInBackground(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	mem, fs := seeded(t)
 	l, _ := newFlakyLinker(t, stub, fs, nil)
-	fs.set(func(f *flakyStore) { f.failPut = true })
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
@@ -245,7 +300,7 @@ func TestCloseFlushesPendingWrites(t *testing.T) {
 
 	mem, fs := seeded(t)
 	l := newTestLinker(t, stub, fs, nil)
-	fs.set(func(f *flakyStore) { f.failPut = true })
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
 	fs.set(func(f *flakyStore) { f.failPut = false })
@@ -257,7 +312,7 @@ func TestCloseFlushesPendingWrites(t *testing.T) {
 	stub2 := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	mem2, fs2 := seeded(t)
 	l2 := newTestLinker(t, stub2, fs2, nil)
-	fs2.set(func(f *flakyStore) { f.failPut = true })
+	fs2.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 	_, err = l2.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
 	err = l2.Close()
@@ -266,11 +321,12 @@ func TestCloseFlushesPendingWrites(t *testing.T) {
 	require.Equal(t, "refresh-0", storedRefresh(t, mem2))
 }
 
-// invalid_grant on the copy's refresh token is not yet a dead link: another
-// writer (a second replica here) may have rotated it since this process last
-// read the store. The store is re-read and the stored token retried; only when
-// the store agrees is the link dropped (TestTokenForInvalidGrantDropsLink).
-func TestTokenForInvalidGrantRereadsStoreBeforeDroppingLink(t *testing.T) {
+// A replica whose copy of the link is stale never presents the token another
+// replica has rotated: muster would take that replay for theft and revoke the
+// whole family, the rotated token included. The lease compares against the
+// store first, so the stale replica adopts the stored link and refreshes with
+// its token.
+func TestTokenForAdoptsLinkRotatedByAnotherReplica(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
 	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
@@ -283,7 +339,7 @@ func TestTokenForInvalidGrantRereadsStoreBeforeDroppingLink(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "refresh-1", storedRefresh(t, store))
 
-	// Replica b serves the same person after the id_token expired: it spends
+	// Replica b serves the same person after the id_token expired: it presents
 	// refresh-1 and writes refresh-2.
 	b := newTestLinker(t, stub, store, nil)
 	clkB := newClock()
@@ -294,14 +350,291 @@ func TestTokenForInvalidGrantRereadsStoreBeforeDroppingLink(t *testing.T) {
 	require.Equal(t, "refresh-1", stub.presented())
 	require.Equal(t, "refresh-2", storedRefresh(t, store))
 
-	// a's copy still says refresh-1, which muster now rejects. a must not burn
-	// the link: it re-reads the store and retries with refresh-2.
+	// a's copy still says refresh-1. Presenting it would revoke the family.
 	clkA.advance(2 * time.Hour)
-	tok, err := a.TokenFor(context.Background(), "U1")
-	require.NoError(t, err, "a token rotated by another replica is retried, not burned")
-	require.Equal(t, "muster-sub", jwtSub(t, tok))
+	idToken, err := a.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "muster-sub", jwtSub(t, idToken))
+	require.Equal(t, 0, stub.reuses(), "the rotated token was never presented again")
 	require.Equal(t, "refresh-2", stub.presented())
 	require.Equal(t, "refresh-3", storedRefresh(t, store))
+}
+
+// Two replicas whose copies expire together (both background refreshers
+// sweep the same person, or two messages land on two pods) refresh once:
+// the second finds the first one's lease, waits for its rotated link and
+// serves its id_token.
+func TestTokenForReplicasRefreshOnce(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+	entered, release := make(chan struct{}), make(chan struct{})
+	var holdFirst, releaseOnce sync.Once
+	releaseFirst := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFirst) // runs before the stub's server closes, even when the test fails
+	stub.mu.Lock()
+	stub.onRefresh = func() {
+		holdFirst.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	stub.mu.Unlock()
+
+	a := newTestLinker(t, stub, store, nil)
+	b := newTestLinker(t, stub, store, nil)
+	b.leasePoll = time.Millisecond
+
+	type result struct {
+		idToken string
+		err     error
+	}
+	fromA, fromB := make(chan result, 1), make(chan result, 1)
+	go func() {
+		idToken, err := a.TokenFor(context.Background(), "U1")
+		fromA <- result{idToken, err}
+	}()
+	<-entered // a holds the lease and is at muster
+	go func() {
+		idToken, err := b.TokenFor(context.Background(), "U1")
+		fromB <- result{idToken, err}
+	}()
+	require.Eventually(t, func() bool {
+		got, err := store.Get("U1")
+		return err == nil && got.Lease != nil && got.Lease.Holder == a.leaseHolder
+	}, 2*time.Second, time.Millisecond)
+	releaseFirst()
+
+	resultA, resultB := <-fromA, <-fromB
+	require.NoError(t, resultA.err)
+	require.NoError(t, resultB.err)
+	require.Equal(t, resultA.idToken, resultB.idToken, "b serves the id_token a obtained")
+	require.Equal(t, 0, stub.reuses())
+	require.Equal(t, 1, stub.issued(), "muster saw one refresh")
+	got, err := store.Get("U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-1", got.RefreshToken)
+	require.Nil(t, got.Lease, "the rotated link is written without the lease")
+}
+
+// A lease whose holder died mid-refresh expires: the token is refreshed by the
+// next process once the lease has expired.
+func TestTokenForTakesOverExpiredLease(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{
+		Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0",
+		Lease: &RefreshLease{Holder: "gone", Until: time.Now().Add(-time.Second)},
+	}))
+	l := newTestLinker(t, stub, store, nil)
+
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-0", stub.presented())
+	require.Equal(t, "refresh-1", storedRefresh(t, store))
+}
+
+// A lease that holds past the wait fails the turn as transient and leaves
+// the token alone: presenting it could revoke the family the holder is
+// rotating.
+func TestTokenForGivesUpOnLiveLease(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{
+		Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0",
+		Lease: &RefreshLease{Holder: "other", Until: time.Now().Add(time.Hour)},
+	}))
+	l := newTestLinker(t, stub, store, nil)
+	l.leaseWait, l.leasePoll = 20*time.Millisecond, time.Millisecond
+
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, errRefreshContended)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	require.Equal(t, 0, stub.issued(), "nothing was presented at muster")
+	require.Equal(t, "refresh-0", storedRefresh(t, store))
+}
+
+// A lease write that stays contended is retried, never skipped: contention is
+// other processes writing the link, the moment a refresh without a lease
+// could present the same token as one of them. Once the store takes the lease
+// the refresh runs under it.
+func TestTokenForRetriesContendedLease(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	l, _ := newFlakyLinker(t, stub, fs, nil)
+	l.leasePoll = time.Millisecond
+	fs.set(func(f *flakyStore) { f.conflicts = 3 })
+	var leased *RefreshLease
+	stub.mu.Lock()
+	stub.onRefresh = func() {
+		if got, err := mem.Get("U1"); err == nil {
+			leased = got.Lease
+		}
+	}
+	stub.mu.Unlock()
+
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.NotNil(t, leased, "the token was presented under a lease")
+	require.Equal(t, l.leaseHolder, leased.Holder)
+	require.Equal(t, "refresh-1", storedRefresh(t, mem))
+}
+
+// A store contended past the wait fails the turn as transient and presents
+// nothing at muster.
+func TestTokenForGivesUpOnContendedLease(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	l, _ := newFlakyLinker(t, stub, fs, nil)
+	l.leaseWait, l.leasePoll = 20*time.Millisecond, time.Millisecond
+	fs.set(func(f *flakyStore) { f.conflicts = 1 << 30 })
+
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, errRefreshContended)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	require.Equal(t, 0, stub.issued(), "nothing was presented at muster")
+	require.Equal(t, "refresh-0", storedRefresh(t, mem))
+}
+
+// A store this replica cannot reach is no licence to present the token: the
+// store holds it, and a replica that can reach the store may have rotated it.
+// The refresh fails as transient and nothing is presented, so the other
+// replica's rotation survives.
+func TestTokenForStoreFailureDuringLeaseIsTransient(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	a, clkA := newFlakyLinker(t, stub, fs, nil)
+	a.cacheTTL = 24 * time.Hour
+	_, err := a.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+
+	b := newTestLinker(t, stub, mem, nil)
+	clkB := newClock()
+	clkB.advance(2 * time.Hour)
+	b.now = clkB.now
+	_, err = b.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-2", storedRefresh(t, mem))
+
+	fs.set(func(f *flakyStore) { f.failGet = true })
+	clkA.advance(2 * time.Hour)
+	before := stub.issued()
+	_, err = a.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, errStoreDown)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	require.Equal(t, before, stub.issued(), "nothing was presented at muster")
+	require.Equal(t, 0, stub.reuses())
+
+	clkB.advance(2 * time.Hour)
+	_, err = b.TokenFor(context.Background(), "U1")
+	require.NoError(t, err, "the other replica's rotation survived")
+}
+
+// A rotated link whose write was refused is written later only while the
+// store still holds the token it was rotated from: a sign-in that landed in
+// the meantime is kept, not overwritten by the older sign-in's rotation.
+func TestFlushKeepsSignInThatLandedWhileDirty(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	l, _ := newFlakyLinker(t, stub, fs, nil)
+	l.retryDelay, l.nextDelay = time.Hour, time.Hour
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-0", storedRefresh(t, mem))
+
+	relinked := &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "relinked"}
+	require.NoError(t, mem.Put("U1", relinked))
+	fs.set(func(f *flakyStore) { f.failPut = false })
+	require.Equal(t, 0, l.Flush())
+	require.Equal(t, "relinked", storedRefresh(t, mem))
+	link, err := l.load("U1")
+	require.NoError(t, err)
+	require.Equal(t, "relinked", link.RefreshToken, "this process serves the sign-in too")
+}
+
+// invalid_grant on a rotated token the store never took kills the link
+// without presenting the token it was rotated from: that one is spent too,
+// and presenting it again would only replay it.
+func TestTokenForInvalidGrantOnDirtyLinkDoesNotReplayStoredToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	l, clk := newFlakyLinker(t, stub, fs, nil)
+	l.retryDelay, l.nextDelay = time.Hour, time.Hour
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	fs.set(func(f *flakyStore) { f.failPut = false })
+
+	stub.mu.Lock()
+	stub.revoked[stub.family["refresh-1"]] = true
+	requests := stub.refreshRequests
+	stub.mu.Unlock()
+	clk.advance(2 * time.Hour)
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, ErrNotLinked)
+	stub.mu.Lock()
+	require.Equal(t, requests+1, stub.refreshRequests, "only the rotated token was presented")
+	stub.mu.Unlock()
+	_, err = mem.Get("U1")
+	require.ErrorIs(t, err, ErrNotLinked, "the dead link is dropped from the store")
+}
+
+// A refresh request, once sent, is not cut short by its caller: muster may
+// rotate the token whatever the caller does, and a request abandoned halfway
+// would leave the store holding the token muster just spent.
+func TestTokenForFinishesRefreshRequestAfterCallerCancels(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+	ctx, cancel := context.WithCancel(t.Context())
+	stub.mu.Lock()
+	stub.onRefresh = cancel
+	stub.mu.Unlock()
+	l := newTestLinker(t, stub, store, nil)
+
+	_, err := l.TokenFor(ctx, "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-1", storedRefresh(t, store), "the rotated token muster issued is kept")
+}
+
+// A sign-in that lands while this process refreshes the old link wins: the
+// rotated old link is not written over it, and the new link's id_token is
+// served.
+func TestTokenForKeepsSignInThatLandsDuringRefresh(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+	relinked := &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "relinked", IDToken: makeIDToken("muster-sub", time.Now().Add(time.Hour)), Expiry: time.Now().Add(time.Hour)}
+	stub.mu.Lock()
+	stub.onRefresh = func() { _ = store.Put("U1", relinked) }
+	stub.mu.Unlock()
+	l := newTestLinker(t, stub, store, nil)
+
+	idToken, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, relinked.IDToken, idToken)
+	require.Equal(t, "relinked", storedRefresh(t, store))
+}
+
+// invalid_grant drops the link only while the store holds the refused token:
+// a sign-in that landed meanwhile is kept and its id_token served instead of
+// a sign-in prompt.
+func TestTokenForInvalidGrantKeepsSignInThatLandedMeanwhile(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.failRefresh = true
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "dead"}))
+	relinked := &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "relinked", IDToken: makeIDToken("muster-sub", time.Now().Add(time.Hour)), Expiry: time.Now().Add(time.Hour)}
+	stub.mu.Lock()
+	stub.onRefresh = func() { _ = store.Put("U1", relinked) }
+	stub.mu.Unlock()
+	l := newTestLinker(t, stub, store, nil)
+
+	idToken, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, relinked.IDToken, idToken)
+	require.Equal(t, "relinked", storedRefresh(t, store))
 }
 
 // A sign-in whose link the store refuses to take still signs the person in
@@ -384,4 +717,166 @@ func TestTokenForCollapsesStoreReadsWithinTTL(t *testing.T) {
 	_, err = l.TokenFor(context.Background(), "U2")
 	require.ErrorIs(t, err, ErrNotLinked)
 	require.Greater(t, fs.reads(), after)
+}
+
+// syncBuffer is a log sink safe for the linker's background goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+type tokenRefreshRecord struct {
+	Record          string `json:"record"`
+	Source          string `json:"source"`
+	RefreshRequests int    `json:"refresh_requests"`
+}
+
+func (b *syncBuffer) tokenRefreshRecords(t *testing.T) []tokenRefreshRecord {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var records []tokenRefreshRecord
+	for _, line := range strings.Split(strings.TrimSpace(b.buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record tokenRefreshRecord
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		if record.Record == recordTokenRefresh {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func newLoggingLinker(t *testing.T, stub *musterStub, store Store, logs *syncBuffer) *Linker {
+	t.Helper()
+	l, err := New(Config{
+		BaseURL:      stub.server.URL,
+		ClientID:     stub.clientID,
+		ClientSecret: "secret",
+		RedirectURL:  "https://gw.example.com" + CallbackPath,
+		StateKey:     []byte("hmac-state-key"),
+		Store:        store,
+		Logger:       slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, l.Close()) })
+	return l
+}
+
+func TestTokenRefreshRecordNamesItsSource(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+
+	var logsA, logsB syncBuffer
+	a := newLoggingLinker(t, stub, store, &logsA)
+	a.cacheTTL = 24 * time.Hour
+	_, _, ok := a.LinkedIdentity("U1")
+	require.True(t, ok, "a holds the link without a token")
+
+	b := newLoggingLinker(t, stub, store, &logsB)
+	_, err := b.TokenFor(t.Context(), "U1")
+	require.NoError(t, err)
+
+	_, err = a.TokenFor(t.Context(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.issued(), "only b sent a refresh request")
+	require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: refreshSourceRequest, RefreshRequests: 1}}, logsB.tokenRefreshRecords(t))
+	require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: refreshSourceStore}}, logsA.tokenRefreshRecords(t))
+}
+
+func TestTokenRefreshRecordBeforeRequestFailure(t *testing.T) {
+	for _, failure := range []string{"discovery", "store", "lease", "signout"} {
+		t.Run(failure, func(t *testing.T) {
+			stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+			store, flaky := seeded(t)
+			var logs syncBuffer
+			linker := newLoggingLinker(t, stub, flaky, &logs)
+			linker.cacheTTL = 24 * time.Hour
+			_, _, linked := linker.LinkedIdentity("U1")
+			require.True(t, linked)
+
+			switch failure {
+			case "discovery":
+				stub.server.Close()
+			case "store":
+				flaky.set(func(store *flakyStore) { store.failGet = true })
+			case "lease":
+				require.NoError(t, store.Update("U1", func(link *Link) (*Link, bool) {
+					link.Lease = &RefreshLease{Holder: "other", Until: time.Now().Add(time.Hour)}
+					return link, true
+				}))
+				linker.leaseWait, linker.leasePoll = time.Millisecond, time.Millisecond
+			case "signout":
+				require.NoError(t, store.Delete("U1"))
+			}
+
+			_, err := linker.TokenFor(t.Context(), "U1")
+			require.Error(t, err)
+			require.Zero(t, stub.issued())
+			require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: "none"}}, logs.tokenRefreshRecords(t))
+		})
+	}
+}
+
+func TestTokenRefreshRecordAfterRequest(t *testing.T) {
+	for _, outcome := range []string{"success", "refused", "unavailable", "missing_id_token", "relinked", "refused_relinked", "signout", "contended"} {
+		t.Run(outcome, func(t *testing.T) {
+			stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+			store, _ := seeded(t)
+			var logs syncBuffer
+			linker := newLoggingLinker(t, stub, store, &logs)
+			source := "none"
+			wantError := true
+			wantRequests := 1
+			var requests atomic.Int64
+			stub.mu.Lock()
+			stub.onRefresh = func() {
+				requestNumber := requests.Add(1)
+				switch outcome {
+				case "relinked", "refused_relinked":
+					_ = store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "relinked", IDToken: makeIDToken("muster-sub", time.Now().Add(time.Hour)), Expiry: time.Now().Add(time.Hour)})
+				case "signout":
+					_ = store.Delete("U1")
+				case "contended":
+					_ = store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: fmt.Sprintf("relinked-%d", requestNumber)})
+				}
+			}
+			switch outcome {
+			case "success":
+				source, wantError = refreshSourceRequest, false
+			case "refused":
+				stub.failRefresh = true
+			case "unavailable":
+				stub.failRefresh5xx = true
+			case "missing_id_token":
+				stub.omitIDToken = true
+			case "refused_relinked":
+				stub.failRefresh = true
+				source, wantError = refreshSourceStore, false
+			case "relinked":
+				source, wantError = refreshSourceStore, false
+			case "contended":
+				wantRequests = refreshAttempts
+			}
+			stub.mu.Unlock()
+
+			_, err := linker.TokenFor(t.Context(), "U1")
+			if wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.EqualValues(t, wantRequests, requests.Load())
+			require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: source, RefreshRequests: wantRequests}}, logs.tokenRefreshRecords(t))
+		})
+	}
 }

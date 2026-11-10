@@ -548,6 +548,63 @@ func TestFacade_SendCompletionViaA2A_AuthRequired_EmitsPromptDelta(t *testing.T)
 	require.Equal(t, channels.DeltaPrompt, deltas[0].Kind)
 }
 
+func signInStatus(t *testing.T) *a2apkg.Message {
+	t.Helper()
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("Sign in to github: https://gateway.example/oauth/proxy/start?s=1"))
+	require.NoError(t, pkga2a.AttachHITL(msg, pkga2a.URLElicitationRequest{
+		Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", Server: "github",
+		Message: "Sign in to github", URL: "https://gateway.example/oauth/proxy/start?s=1",
+	}))
+	return msg
+}
+
+func TestFacade_SignInPauseEmitsASignInPrompt(t *testing.T) {
+	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateInputRequired, signInStatus(t)))
+	f, _ := newA2AFacade(agent)
+
+	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
+	require.NoError(t, err)
+	deltas := drain(t, ch)
+	require.Len(t, deltas, 1)
+	require.Equal(t, channels.DeltaPrompt, deltas[0].Kind)
+	require.Equal(t, &channels.HitlSignIn{ID: "sign-in-1", Server: "github", Message: "Sign in to github", URL: "https://gateway.example/oauth/proxy/start?s=1"}, deltas[0].Prompt.SignIn)
+	require.Empty(t, agent.canceled, "a paused task is left paused, not canceled")
+}
+
+func TestFacade_SignInDecisionResumesThePausedTask(t *testing.T) {
+	for _, test := range []struct {
+		decision string
+		action   string
+	}{
+		{decision: channels.DecisionApprove, action: pkga2a.URLElicitationAccept},
+		{decision: channels.DecisionReject, action: pkga2a.URLElicitationDecline},
+	} {
+		t.Run(test.decision, func(t *testing.T) {
+			agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+			agent.tasks[taskInfo.TaskID] = &a2apkg.Task{
+				ID: taskInfo.TaskID, ContextID: taskInfo.ContextID,
+				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateInputRequired, Message: signInStatus(t)},
+			}
+			f, routes := newA2AFacade(agent)
+			require.NoError(t, storetest.Put(t.Context(), routes, store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+				store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
+
+			msg := slackMsg("I've signed in to github, continue")
+			msg.TaskID = string(taskInfo.TaskID)
+			msg.Decision = &channels.HitlDecision{Type: test.decision}
+			ch, err := f.SendCompletion(t.Context(), msg)
+			require.NoError(t, err)
+			drain(t, ch)
+
+			sent := agent.lastStreamed()
+			require.Equal(t, taskInfo.TaskID, sent.TaskID)
+			payload, ok := sent.Metadata[pkga2a.HITLExtensionURI].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, map[string]any{"type": pkga2a.HITLTypeURLElicitationResponse, "id": "sign-in-1", "action": test.action}, payload)
+		})
+	}
+}
+
 // A HITL decision resumes the paused task in place: the message carries the
 // paused task's id, and the typed response is built against the request that
 // task is paused on (the defect of #215 cannot recur on this transport).
@@ -601,6 +658,45 @@ func TestFacade_HitlResumeRefusedWhenTheTaskIsNotPaused(t *testing.T) {
 	_, err := f.SendCompletion(t.Context(), msg)
 	require.ErrorIs(t, err, channels.ErrNoPendingPrompt)
 	require.Empty(t, agent.streamed)
+}
+
+// A decision names the request it answers. Once the task was answered
+// elsewhere and paused again on another request, the late decision is refused
+// instead of answering the new request.
+func TestFacade_HitlResumeRefusedForAnotherRequest(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		requestID string
+		refused   bool
+	}{
+		{name: "same request", requestID: "sign-in-1"},
+		{name: "unbound decision", requestID: ""},
+		{name: "another request", requestID: "sign-in-0", refused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+			agent.tasks[taskInfo.TaskID] = &a2apkg.Task{
+				ID: taskInfo.TaskID, ContextID: taskInfo.ContextID,
+				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateInputRequired, Message: signInStatus(t)},
+			}
+			f, routes := newA2AFacade(agent)
+			require.NoError(t, storetest.Put(t.Context(), routes, store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+				store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
+
+			msg := slackMsg("I've signed in, continue")
+			msg.TaskID = string(taskInfo.TaskID)
+			msg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove, RequestID: test.requestID}
+			ch, err := f.SendCompletion(t.Context(), msg)
+			if test.refused {
+				require.ErrorIs(t, err, channels.ErrNoPendingPrompt)
+				require.Empty(t, agent.streamed)
+				return
+			}
+			require.NoError(t, err)
+			drain(t, ch)
+			require.Len(t, agent.streamed, 1)
+		})
+	}
 }
 
 // Stopping a turn cancels the task at the controller, not only the client

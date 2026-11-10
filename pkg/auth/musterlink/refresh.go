@@ -22,6 +22,11 @@ const (
 	// refreshTriggerAhead one the refresher ran ahead of expiry.
 	refreshTriggerTurn  = "turn"
 	refreshTriggerAhead = "ahead"
+	// The source describes the returned token, independently of how many
+	// refresh requests this process attempted.
+	refreshSourceNone    = "none"
+	refreshSourceRequest = "request"
+	refreshSourceStore   = "store"
 
 	// refreshSweepInterval is how often the refresher looks for due tokens. A
 	// token is due one interval before it drops below the turn minimum, so the

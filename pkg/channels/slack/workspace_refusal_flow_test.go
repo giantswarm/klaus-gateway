@@ -160,7 +160,6 @@ func TestWorkspaceRefusal_ConnectPromptThenTheNextClickStarts(t *testing.T) {
 func TestWorkspaceRefusal_ProviderConnectPromptOffersNoAuthorizeAll(t *testing.T) {
 	f := newRefusalFlow(t, withGrants(&recordingTools{}), func(a *slackadapter.Adapter) {
 		a.ConnectorPrompts = true
-		a.PublicBaseURL = "https://gw.example"
 	})
 	sendWorkspaceClick(t, f.srv, "U001", "100.000", "gitlab-ws")
 	require.Eventually(t, func() bool { return len(f.ephemerals("U001")) == 1 }, flowWait, 20*time.Millisecond)
@@ -235,8 +234,8 @@ func TestWorkspaceRefusal_NotSyncedStartsNothing(t *testing.T) {
 	require.Contains(t, f.log.String(), "record=workspace_unavailable")
 }
 
-// A pick muster answers with its sign-in challenge for the workspace-manager
-// gets the Connect prompt with muster's link, starts nothing and keeps the
+// A pick muster answers with its sign-in for the workspace-manager gets the
+// Connect prompt with muster's message and link, starts nothing and keeps the
 // message for the next pick or mention.
 func TestWorkspaceRefusal_SignInChallengeOnTheAuthorizationGetsTheConnectPrompt(t *testing.T) {
 	f := newRefusalFlow(t)
@@ -245,7 +244,7 @@ func TestWorkspaceRefusal_SignInChallengeOnTheAuthorizationGetsTheConnectPrompt(
 	require.Eventually(t, func() bool { return len(f.ephemerals("U001")) == 1 }, flowWait, 20*time.Millisecond)
 
 	prompt := allBlockText(f.ephemerals("U001"))
-	require.Contains(t, prompt, "Connect *workspace-manager* first, so the agent can work in workspace *platform* as you.")
+	require.Contains(t, prompt, "*muster* asks you to sign in before the agent can work in workspace *platform* as you:\n>Sign in to workspace-manager to continue.")
 	require.Contains(t, prompt, `"`+workspaceManagerSignInLink+`"`, "muster's sign-in link")
 	require.Contains(t, prompt, `"connector_connect"`)
 	require.Contains(t, f.log.String(), "record=workspace_connect_required")

@@ -2,8 +2,8 @@ package slack_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,68 +17,8 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
-
-// authChallengeOutput is the free text a core_auth_login result carries: a
-// human-readable challenge with the backend name and the login URL.
-const authChallengeOutput = "Authentication Required\n\n" +
-	"Server: mcp-pro\nStatus: needs sign-in\n\n" +
-	"Please sign in to connect to this server:\n\n" +
-	"https://pro.example.com/authorize?state=abc\n\n" +
-	"After signing in, run this tool again to complete the connection."
-
-// authLoginResult is a stream delta modelling a core_auth_login tool result.
-func authLoginResult(output string) channels.OutboundDelta {
-	return channels.OutboundDelta{
-		Kind: channels.DeltaToolActivity,
-		Tool: &channels.ToolActivity{
-			Name:     "core_auth_login",
-			Kind:     channels.ToolResult,
-			Response: map[string]any{"output": output},
-		},
-	}
-}
-
-// callToolLoginTurn models how the auth challenge actually reaches the stream
-// on a live install: the agent invokes muster's call_tool meta-tool with the
-// inner tool in the arguments, and the result (named call_tool, no arguments)
-// is muster's envelope, serialized into an MCP-style content list: the inner
-// result with the challenge text, and the tool muster dispatched.
-func callToolLoginTurn(t *testing.T, dispatched, output string) []channels.OutboundDelta {
-	t.Helper()
-	envelope, err := json.Marshal(map[string]any{
-		"isError": false,
-		"content": []any{map[string]any{"type": "text", "text": output}},
-		"tool":    map[string]any{"name": dispatched},
-	})
-	require.NoError(t, err)
-	return []channels.OutboundDelta{
-		{
-			Kind: channels.DeltaToolActivity,
-			Tool: &channels.ToolActivity{
-				Name:   "call_tool",
-				Kind:   channels.ToolCall,
-				CallID: "call-1",
-				Args: map[string]any{
-					"name":      dispatched,
-					"arguments": map[string]any{"server": "mcp-pro"},
-				},
-			},
-		},
-		{
-			Kind: channels.DeltaToolActivity,
-			Tool: &channels.ToolActivity{
-				Name:   "call_tool",
-				Kind:   channels.ToolResult,
-				CallID: "call-1",
-				Response: map[string]any{
-					"content": []any{map[string]any{"type": "text", "text": string(envelope)}},
-					"isError": false,
-				},
-			},
-		},
-	}
-}
 
 // ephemeralJSON returns the JSON of every chat.postEphemeral call, for
 // asserting on Block Kit contents.
@@ -104,243 +44,24 @@ func connectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.S
 	return fake, srv
 }
 
-// A core_auth_login result in the turn's stream yields one ephemeral Connect
-// prompt carrying the parsed backend name and login URL.
-func TestConnectorPrompt_PostedFromToolResult(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := connectorAdapter(t, gw)
-
-	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "use the pro tools", "100.000"))
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(ephemeralJSON(fake), "connector_connect")
-	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
-
-	blob := ephemeralJSON(fake)
-	require.Contains(t, blob, "mcp-pro")
-	require.Contains(t, blob, "connector_dismiss")
-	require.Contains(t, blob, "https://pro.example.com/authorize?state=abc")
-}
-
-// The challenge arriving through muster's call_tool meta-tool (the shape live
-// agents produce: result named call_tool, inner tool only in the call
-// arguments, text nested in an MCP content list) also yields the prompt.
-func TestConnectorPrompt_PostedFromCallToolResult(t *testing.T) {
-	gw := &stubGateway{deltas: append(
-		callToolLoginTurn(t, "core_auth_login", authChallengeOutput),
-		channels.OutboundDelta{Content: "ok"}, channels.OutboundDelta{Done: true},
-	)}
-	fake, srv := connectorAdapter(t, gw)
-
-	gw.openConversation(t, "D1", "101.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "use the pro tools", "101.000"))
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(ephemeralJSON(fake), "connector_connect")
-	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
-
-	blob := ephemeralJSON(fake)
-	require.Contains(t, blob, "mcp-pro")
-	require.Contains(t, blob, "https://pro.example.com/authorize?state=abc")
-}
-
-// A call_tool result whose dispatched tool is not core_auth_login yields
-// no prompt, even when its payload happens to carry a URL.
-func TestConnectorPrompt_CallToolOtherToolNoPrompt(t *testing.T) {
-	turn := callToolLoginTurn(t, "list_tools", "see https://pro.example.com/docs for details")
-	gw := &stubGateway{deltas: append(turn,
-		channels.OutboundDelta{Content: "ok"}, channels.OutboundDelta{Done: true},
-	)}
-	fake, srv := connectorAdapter(t, gw)
-
-	gw.openConversation(t, "D1", "105.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "hi", "105.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
-		flowWait, 20*time.Millisecond)
-	time.Sleep(100 * time.Millisecond)
-	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
-}
-
-// The cooldown bounds re-prompts: two turns that both report the same backend
-// yield a single Connect prompt.
-func TestConnectorPrompt_Cooldown(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := connectorAdapter(t, gw)
-
-	gw.openConversation(t, "D1", "102.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
-	require.Eventually(t, func() bool {
-		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
-	}, flowWait, 20*time.Millisecond, "first turn posts the prompt")
-
-	dispatchTurn(t, srv, gw, 2, "two", "102.000")
-	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, 1, strings.Count(ephemeralJSON(fake), "connector_connect"),
-		"a repeat challenge with the same URL within the cooldown must not re-prompt")
-}
-
-// dispatchTurn delivers a follow-up message until it actually starts a turn.
-// The thread slot is released a beat after the previous turn's stream
-// completes, so an event racing that release is answered with a busy notice
-// and dropped; retrying with a fresh ts converges, as a real user would.
-func dispatchTurn(t *testing.T, srv *httptest.Server, gw *stubGateway, wantDispatches int, text, threadTS string) {
-	t.Helper()
-	for i := 0; ; i++ {
-		require.Less(t, i, 20, "turn never dispatched past the busy thread slot")
-		sendEvent(t, srv, dmThreadEvent("U1", text, fmt.Sprintf("777.%03d", i), threadTS))
-		deadline := time.Now().Add(250 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			if gw.dispatchCount() >= wantDispatches {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-}
-
-// A result without a login URL yields no prompt.
-func TestConnectorPrompt_NoURLNoPrompt(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult("Authentication Required\n\nServer: pro\n(no link yet)"),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := connectorAdapter(t, gw)
-
-	gw.openConversation(t, "D1", "104.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "hi", "104.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
-		flowWait, 20*time.Millisecond)
-	time.Sleep(100 * time.Millisecond)
-	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
-}
-
-// The ephemeral Connect prompt must be addressed to the RAW Slack user ID, not
-// the resolved workspace email. dispatch rewrites msg.Subject to the email
-// before the stream runs; chat.postEphemeral's user param requires a "U…" Slack
-// ID, so an email would fail with user_not_found and (via clearConnectorPrompted)
-// re-fail every turn. Resolve an email for the user, drive a challenge, and
-// assert the prompt still targets "U1".
-func TestConnectorPrompt_AddressedToRawSlackUserID(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := connectorAdapter(t, gw)
-	// Make users.info resolve an email so dispatch rewrites msg.Subject to it
-	// before the connector prompt posts. Before the fix this email leaked into
-	// the chat.postEphemeral user param.
-	fake.setResponse("users.info", `{"ok":true,"user":{"profile":{"email":"u1@example.com"}}}`)
-
-	gw.openConversation(t, "D1", "120.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "use the pro tools", "120.000"))
-
-	var connect *recordedCall
-	require.Eventually(t, func() bool {
-		for _, c := range fake.pathCalls("chat.postEphemeral") {
-			raw, _ := json.Marshal(c.params)
-			if strings.Contains(string(raw), "connector_connect") {
-				cc := c
-				connect = &cc
-				return true
-			}
-		}
-		return false
-	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
-
-	require.Equal(t, "U1", connect.params["user"], "prompt must target the raw Slack user ID")
-	require.NotEqual(t, "u1@example.com", connect.params["user"], "the resolved email must not be used as the ephemeral user")
-}
-
-// A challenge whose login link is not https is rejected: the Connect button
-// opens agent/tool-controlled text as a browser URL, so a non-https link yields
-// no prompt rather than a button that would navigate over http.
-func TestConnectorPrompt_NonHTTPSNoPrompt(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult("Authentication Required\n\nServer: pro\n\nSign in: http://pro.example.com/authorize"),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := connectorAdapter(t, gw)
-
-	gw.openConversation(t, "D1", "106.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "hi", "106.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
-		flowWait, 20*time.Millisecond)
-	time.Sleep(100 * time.Millisecond)
-	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
-}
-
-// A "Not now" click replaces the ephemeral prompt with an acknowledgement.
-func TestConnectorDismissInteraction(t *testing.T) {
-	var captured struct {
-		mu   sync.Mutex
-		body string
-	}
-	responseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		captured.mu.Lock()
-		captured.body += string(raw)
-		captured.mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(responseSrv.Close)
-
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	_, srv := connectorAdapter(t, gw)
-
-	sendConnectorInteractionURL(t, srv, "connector_dismiss", "mcp-pro", responseSrv.URL)
-
-	require.Eventually(t, func() bool {
-		captured.mu.Lock()
-		defer captured.mu.Unlock()
-		return strings.Contains(captured.body, "Not asked again")
-	}, flowWait, 20*time.Millisecond, "the prompt is replaced with an acknowledgement")
-}
-
-// An oversized or empty backend name in the button value is dropped (no
-// response_url update).
-func TestConnectorDismissInteraction_InvalidServer(t *testing.T) {
-	var captured struct {
-		mu   sync.Mutex
-		body string
-	}
-	responseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		captured.mu.Lock()
-		captured.body += string(raw)
-		captured.mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(responseSrv.Close)
-
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	_, srv := connectorAdapter(t, gw)
-
-	sendConnectorInteractionURL(t, srv, "connector_dismiss", strings.Repeat("x", 200), responseSrv.URL)
-	sendConnectorInteractionURL(t, srv, "connector_dismiss", "", responseSrv.URL)
-
-	time.Sleep(100 * time.Millisecond)
-	captured.mu.Lock()
-	defer captured.mu.Unlock()
-	require.Empty(t, captured.body)
-}
-
 // sendConnectorInteractionURL posts a signed block_actions interaction (user
-// U1, channel D1) whose button value carries a backend name. A non-empty
-// responseURL is attached as the interaction's response_url.
-func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, server, responseURL string) {
+// U1, channel D1) on an ephemeral prompt, with the button's value. A
+// non-empty responseURL is attached as the interaction's response_url.
+func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, value, responseURL string) {
+	t.Helper()
+	sendClick(t, srv, actionID, value, responseURL, true)
+}
+
+// sendClick posts a signed block_actions interaction (user U1, channel D1)
+// with the button's value, on an ephemeral prompt or on a message.
+func sendClick(t *testing.T, srv *httptest.Server, actionID, value, responseURL string, ephemeral bool) {
 	t.Helper()
 	inner := map[string]any{
-		"type":    "block_actions",
-		"user":    map[string]any{"id": "U1"},
-		"channel": map[string]any{"id": "D1"},
-		"actions": []any{map[string]any{"action_id": actionID, "value": server}},
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U1"},
+		"channel":   map[string]any{"id": "D1"},
+		"container": map[string]any{"type": "message", "is_ephemeral": ephemeral},
+		"actions":   []any{map[string]any{"action_id": actionID, "value": value}},
 	}
 	if responseURL != "" {
 		inner["response_url"] = responseURL
@@ -356,21 +77,6 @@ func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, s
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
-}
-
-// decoratedConnectorAdapter is connectorAdapter with a public base URL, so
-// Connect buttons carry the post-login redirect and completion state. Kept
-// separate: q.Encode() reorders query params, so tests asserting the raw
-// login URL stay on the undecorated adapter.
-func decoratedConnectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.Server) {
-	t.Helper()
-	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
-		a.OBO = &fakeOBO{linkedUser: "U1", token: "tok"}
-		a.ConnectorPrompts = true
-		a.PublicBaseURL = "https://gw.example"
-	})
-	return fake, srv
 }
 
 // connectButton walks the recorded ephemeral posts for the Connect button and
@@ -394,20 +100,6 @@ func connectButton(fake *fakeSlackAPI) (buttonURL, buttonValue string, ok bool) 
 	return "", "", false
 }
 
-// promptConnector drives one auth-challenge turn on a decorated adapter and
-// returns the posted Connect button's url and completion-state value.
-func promptConnector(t *testing.T, fake *fakeSlackAPI, srv *httptest.Server, gw *stubGateway, ts string) (buttonURL, stateID string) {
-	t.Helper()
-	gw.openConversation(t, "D1", ts, "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "use the pro tools", ts))
-	var ok bool
-	require.Eventually(t, func() bool {
-		buttonURL, stateID, ok = connectButton(fake)
-		return ok
-	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
-	return buttonURL, stateID
-}
-
 // newResponseURLCapture returns a server standing in for a Slack interaction
 // response_url, and an accessor for everything POSTed to it.
 func newResponseURLCapture(t *testing.T) (*httptest.Server, func() string) {
@@ -429,154 +121,8 @@ func newResponseURLCapture(t *testing.T) (*httptest.Server, func() string) {
 	}
 }
 
-// A decorated Connect button carries the post-login redirect back to the
-// gateway landing, keyed by the completion state in the button value, while
-// the login URL's own query params survive.
-func TestConnectorPrompt_DecoratedURLAndStateValue(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := decoratedConnectorAdapter(t, gw)
-
-	buttonURL, stateID := promptConnector(t, fake, srv, gw, "130.000")
-
-	require.NotEqual(t, "mcp-pro", stateID, "the button value is the state ID, not the server name")
-	parsed, err := url.Parse(buttonURL)
-	require.NoError(t, err)
-	require.Equal(t, "abc", parsed.Query().Get("state"), "the login URL's own params survive decoration")
-	require.Equal(t, "https://gw.example/connectors/complete?s="+stateID, parsed.Query().Get("redirect"))
-}
-
-// The full completion flow: click records the response_url, the browser lands
-// on /connectors/complete, the ephemeral prompt is rewritten to the signed-in
-// confirmation, and a synthetic continuation turn is dispatched into the
-// thread.
-func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
-	var dispatched struct {
-		mu    sync.Mutex
-		texts []string
-	}
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	gw.onDispatch = func(msg channels.InboundMessage) {
-		dispatched.mu.Lock()
-		dispatched.texts = append(dispatched.texts, msg.Text)
-		dispatched.mu.Unlock()
-	}
-	fake, srv := decoratedConnectorAdapter(t, gw)
-	responseSrv, capturedBody := newResponseURLCapture(t)
-
-	_, stateID := promptConnector(t, fake, srv, gw, "131.000")
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
-
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=mcp-pro")
-	require.NoError(t, err)
-	page, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Contains(t, string(page), "Signed in to mcp-pro")
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Signed in to mcp-pro")
-	}, flowWait, 20*time.Millisecond, "the ephemeral prompt is rewritten via the response_url")
-	require.Eventually(t, func() bool {
-		dispatched.mu.Lock()
-		defer dispatched.mu.Unlock()
-		for _, text := range dispatched.texts {
-			if strings.Contains(text, "I've signed in to mcp-pro, continue") {
-				return true
-			}
-		}
-		return false
-	}, flowWait, 20*time.Millisecond, "the synthetic continuation is dispatched into the thread")
-}
-
-// The completion redirect can outrun Slack's interaction delivery: the landing
-// still resumes the turn, and the late click performs the prompt rewrite.
-func TestConnectorComplete_LandingBeforeClick(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := decoratedConnectorAdapter(t, gw)
-	responseSrv, capturedBody := newResponseURLCapture(t)
-
-	_, stateID := promptConnector(t, fake, srv, gw, "132.000")
-
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Eventually(t, func() bool { return gw.dispatchCount() >= 2 },
-		flowWait, 20*time.Millisecond, "the landing resumes even before the click is delivered")
-
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
-	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Signed in to mcp-pro")
-	}, flowWait, 20*time.Millisecond, "the late click owns the prompt rewrite")
-}
-
-// An unknown or expired state renders the graceful expired page and dispatches
-// nothing.
-func TestConnectorComplete_UnknownState(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	_, srv := decoratedConnectorAdapter(t, gw)
-
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=bogus")
-	require.NoError(t, err)
-	page, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusNotFound, resp.StatusCode)
-	require.Contains(t, string(page), "Link expired")
-
-	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.dispatchCount(), "nothing is dispatched for an unknown state")
-}
-
-// Reloading the landing page must not re-dispatch the continuation.
-func TestConnectorComplete_ReloadIdempotent(t *testing.T) {
-	var resumes struct {
-		mu    sync.Mutex
-		count int
-	}
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	gw.onDispatch = func(msg channels.InboundMessage) {
-		if strings.Contains(msg.Text, "I've signed in") {
-			resumes.mu.Lock()
-			resumes.count++
-			resumes.mu.Unlock()
-		}
-	}
-	fake, srv := decoratedConnectorAdapter(t, gw)
-
-	_, stateID := promptConnector(t, fake, srv, gw, "133.000")
-
-	for range 2 {
-		resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
-		require.NoError(t, err)
-		_ = resp.Body.Close()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-	}
-
-	require.Eventually(t, func() bool {
-		resumes.mu.Lock()
-		defer resumes.mu.Unlock()
-		return resumes.count >= 1
-	}, flowWait, 20*time.Millisecond)
-	time.Sleep(200 * time.Millisecond)
-	resumes.mu.Lock()
-	defer resumes.mu.Unlock()
-	require.Equal(t, 1, resumes.count, "a reload must not dispatch a second continuation")
-}
-
-// A Connect click whose value is a plain server name (a button posted without
-// a post-login redirect) stays a no-op.
+// A Connect click whose value is no completion state (a conversation's or a
+// provider's prompt, or one minted before a restart) stays a no-op.
 func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	_, srv := connectorAdapter(t, gw)
@@ -588,34 +134,41 @@ func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
 	require.Empty(t, capturedBody(), "a legacy Connect click must not touch the response_url")
 }
 
-// A second auth challenge carries a NEW single-use login URL: the auth server
-// invalidated the old one, so the cooldown must not suppress the fresh button
-// (observed live: the scrubbed prose said "use the Connect button above" while
-// the only button carried a dead auth session).
-func TestConnectorPrompt_NewURLSupersedesCooldown(t *testing.T) {
-	secondChallenge := strings.ReplaceAll(authChallengeOutput, "state=abc", "state=def")
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		authLoginResult(authChallengeOutput),
-		{Content: "ok"}, {Done: true},
-	}}
-	fake, srv := connectorAdapter(t, gw)
+// fakeAccepter records the sign-ins the adapter accepts and answers each with
+// result.
+type fakeAccepter struct {
+	mu       sync.Mutex
+	result   muster.Result
+	err      error
+	accepted []*muster.SignIn
+	declined []*muster.SignIn
+	bearers  []string
+}
 
-	gw.openConversation(t, "D1", "102.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
-	require.Eventually(t, func() bool {
-		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
-	}, flowWait, 20*time.Millisecond, "first turn posts the prompt")
+func (f *fakeAccepter) Decline(_ context.Context, bearer string, signIn *muster.SignIn) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.declined = append(f.declined, signIn)
+	f.bearers = append(f.bearers, bearer)
+	return nil
+}
 
-	gw.mu.Lock()
-	gw.deltas = []channels.OutboundDelta{
-		authLoginResult(secondChallenge),
-		{Content: "ok"}, {Done: true},
-	}
-	gw.mu.Unlock()
+func (f *fakeAccepter) declines() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.declined)
+}
 
-	dispatchTurn(t, srv, gw, 2, "two", "102.000")
-	require.Eventually(t, func() bool {
-		return strings.Count(ephemeralJSON(fake), "connector_connect") >= 2
-	}, flowWait, 20*time.Millisecond, "a challenge with a new URL must post a fresh button")
-	require.Contains(t, ephemeralJSON(fake), "state=def", "the fresh button carries the new URL")
+func (f *fakeAccepter) Accept(_ context.Context, bearer string, signIn *muster.SignIn) (muster.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accepted = append(f.accepted, signIn)
+	f.bearers = append(f.bearers, bearer)
+	return f.result, f.err
+}
+
+func (f *fakeAccepter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.accepted)
 }
