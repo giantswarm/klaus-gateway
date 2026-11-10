@@ -159,21 +159,25 @@ func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletio
 }
 
 // continueAfterConsent runs what a Connect prompt holds once its person agreed
-// to open the link. A runtime's sign-in resumes its paused task with accept:
+// to open the link. The prompt is replaced at once, since the click says
+// nothing of how the sign-in ends: each continuation reports its outcome on
+// its own surface. A runtime's sign-in resumes its paused task with accept:
 // the runtime retries its own call. The gateway's own call is accepted: muster
 // waits for the sign-in, then runs the call. Blocking, so it runs on the
 // adapter lifecycle context via background.
 func (a *Adapter) continueAfterConsent(ctx context.Context, entry connectorCompletion, responseURL string) {
+	notice := connectorContinuingNotice
 	if entry.signInTask != "" {
-		if responseURL != "" {
-			if err := respondURL(ctx, responseURL, entry.threadTS, signInContinuingNotice); err != nil {
-				a.Logger.Warn("slack: rewrite sign-in prompt after consent failed", "thread", entry.threadTS, "error", err)
-			}
+		notice = signInContinuingNotice
+	}
+	if responseURL != "" {
+		if err := respondURL(ctx, responseURL, entry.threadTS, notice); err != nil {
+			a.Logger.Warn("slack: rewrite connect prompt after consent failed", "thread", entry.threadTS, "error", err)
 		}
-		a.resumeSignInTask(ctx, entry)
-		return
 	}
 	switch {
+	case entry.signInTask != "":
+		a.resumeSignInTask(ctx, entry)
 	case entry.conversation != "":
 		a.resumeConversationReply(ctx, entry)
 	case entry.answer != nil:
@@ -182,13 +186,6 @@ func (a *Adapter) continueAfterConsent(ctx context.Context, entry connectorCompl
 		a.resumeTeamReviewDecision(ctx, entry)
 	case entry.held != nil:
 		a.resumeHeldStart(ctx, entry)
-	default:
-		return
-	}
-	if responseURL != "" {
-		if err := respondURL(ctx, responseURL, entry.threadTS, connectorDoneNotice); err != nil {
-			a.Logger.Warn("slack: rewrite connect prompt after consent failed", "thread", entry.threadTS, "error", err)
-		}
 	}
 }
 
@@ -216,10 +213,11 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 // resumeHeldStart accepts the sign-in a Session start was asked for, which
 // waits for it, then runs the held message as the thread's first turn. The
 // replayed start names the same request, so it finds the Session the accepted
-// start made; a sign-in that did not complete in time is asked for again by
-// that start.
+// start made. The surfaces settle as delivered only when the accept ran the
+// start; otherwise the replayed start settles them or, still asked for the
+// sign-in, refreshes them with a new prompt.
 func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion) {
-	if res, ok := a.acceptSignIn(ctx, entry); !ok || res.SignIn == nil {
+	if res, ok := a.acceptSignIn(ctx, entry); ok && res.SignIn == nil {
 		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
 	}
 	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {

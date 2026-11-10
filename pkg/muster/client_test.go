@@ -1,10 +1,15 @@
 package muster_test
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -218,4 +223,33 @@ func TestDecline_AnswersTheSignInAndRunsNothing(t *testing.T) {
 	require.Equal(t, map[string]any{"a": "b"}, calls[1].Args)
 
 	require.Error(t, client.Decline(t.Context(), personToken, nil))
+}
+
+// A muster slower to answer server/discover than mcp-go's legacy-detection
+// probe is still spoken to on 2026-07-28, so its sign-in arrives as a URL
+// elicitation rather than as an error of the older protocol.
+func TestCallTool_SlowDiscoverStillGetsTheSignIn(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_agent-manager_start_session": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in.", URL: "https://muster.example/oauth/proxy/start?s=1"}}
+		},
+	})
+	defer fake.Close()
+	target, err := url.Parse(fake.URL)
+	require.NoError(t, err)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		if bytes.Contains(body, []byte(`"server/discover"`)) {
+			time.Sleep(6 * time.Second)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		proxy.ServeHTTP(w, r)
+	}))
+	defer slow.Close()
+
+	res, err := muster.NewClient(slow.URL).CallTool(t.Context(), personToken, "x_agent-manager_start_session", nil)
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
 }

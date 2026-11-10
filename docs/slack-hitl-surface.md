@@ -356,8 +356,9 @@ person has signed in, the line reads "@Jose signed in." and the card is a confir
 "Signed in. Your message is on its way to the agent." when the click ran the held message,
 "Signed in." when their next turn that starts the Session found them signed in and the held
 message stays unsent. Every surface's button carries the prompt's completion state in its
-`value`; a click on the ephemeral rewrites it through its `response_url` (Slack marks the
-click `container.is_ephemeral`), the cards are rewritten in place.
+`value`; a click on the ephemeral replaces it at once through its `response_url` (Slack marks the
+click `container.is_ephemeral`) with "Opened the sign-in link. What waited for it goes ahead
+once you're signed in.", the cards are rewritten in place once the start settled.
 
 ```json
 {

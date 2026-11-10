@@ -139,6 +139,7 @@ func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
 type fakeAccepter struct {
 	mu       sync.Mutex
 	result   muster.Result
+	err      error
 	accepted []*muster.SignIn
 	declined []*muster.SignIn
 	bearers  []string
@@ -163,7 +164,7 @@ func (f *fakeAccepter) Accept(_ context.Context, bearer string, signIn *muster.S
 	defer f.mu.Unlock()
 	f.accepted = append(f.accepted, signIn)
 	f.bearers = append(f.bearers, bearer)
-	return f.result, nil
+	return f.result, f.err
 }
 
 func (f *fakeAccepter) count() int {
