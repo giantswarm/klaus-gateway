@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/klaus-gateway/pkg/auth/satoken"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
@@ -157,7 +158,7 @@ func TestIdempotencyKey_ConcurrentRequestsPostOnce(t *testing.T) {
 			}
 
 			running := postWithKey(t, replicaTwo, "/reviews", "good", "k1", body)
-			require.Equal(t, http.StatusServiceUnavailable, running.StatusCode)
+			requireProblem(t, running, http.StatusConflict)
 			require.Equal(t, "1", running.Header.Get("Retry-After"))
 
 			release()
@@ -197,7 +198,7 @@ func TestIdempotencyKey_ACallerThatHangsUpFindsItsAnswer(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	callerCtx, hangUp := context.WithCancel(context.Background())
+	callerCtx, hangUp := context.WithCancel(t.Context())
 	req := newRequest(t, srv, "/reviews", "good", "k1", validReview()).WithContext(callerCtx)
 	go func() {
 		if resp, err := http.DefaultClient.Do(req); err == nil {
@@ -251,12 +252,13 @@ func TestIdempotencyKey_AnUncheckedKeyPostsNothing(t *testing.T) {
 	poster := &recordingPoster{}
 	srv := newHandlerServer(t, keyedHandler(failingReceipts{}, poster))
 
-	require.Equal(t, http.StatusServiceUnavailable, postWithKey(t, srv, "/reviews", "good", "k1", validReview()).StatusCode)
+	requireProblem(t, postWithKey(t, srv, "/reviews", "good", "k1", validReview()), http.StatusServiceUnavailable)
 	require.Empty(t, poster.reviews)
 }
 
 // A key belongs to the first request sent with it: the key on another
-// request is a conflict, and a key past its bound is refused; neither posts.
+// request is refused as already used, and a key past its bound is invalid;
+// neither posts.
 func TestIdempotencyKey_Refusals(t *testing.T) {
 	poster := &recordingPoster{}
 	srv := newHandlerServer(t, keyedHandler(memoryReceipts(t), poster))
@@ -269,19 +271,12 @@ func TestIdempotencyKey_Refusals(t *testing.T) {
 		body      map[string]any
 		status    int
 	}{
-		"another body":  {"/reviews", "k1", otherText, http.StatusConflict},
-		"another route": {"/notices", "k1", map[string]any{"team": "team-bumblebee", "channel": "C0123ABCDE", "text": "x"}, http.StatusConflict},
+		"another body":  {"/reviews", "k1", otherText, http.StatusUnprocessableEntity},
+		"another route": {"/notices", "k1", map[string]any{"team": "team-bumblebee", "channel": "C0123ABCDE", "text": "x"}, http.StatusUnprocessableEntity},
 		"key too long":  {"/reviews", strings.Repeat("k", idempotencyKeyMax+1), validReview(), http.StatusBadRequest},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := postWithKey(t, srv, tc.path, "good", tc.key, tc.body)
-			require.Equal(t, tc.status, resp.StatusCode)
-			if tc.status == http.StatusConflict {
-				require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-				var refusal struct{ Error string }
-				require.NoError(t, json.NewDecoder(resp.Body).Decode(&refusal))
-				require.NotEmpty(t, refusal.Error)
-			}
+			requireProblem(t, postWithKey(t, srv, tc.path, "good", tc.key, tc.body), tc.status)
 		})
 	}
 	require.Len(t, poster.reviews, 1, "only the first request posted")
@@ -312,12 +307,73 @@ func TestIdempotencyKey_AnAbandonedClaimRunsAgain(t *testing.T) {
 	body := validReview()
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
-	require.NoError(t, receipts.UpdateReceipt(context.Background(), receiptID(managerSA, "k1"), func(r *store.Receipt, _ bool) bool {
-		*r = store.Receipt{Hash: requestHash(http.MethodPost, "/reviews", payload), ClaimedAt: time.Now().Add(-claimAbandoned - time.Minute), TTL: receiptTTL}
+	require.NoError(t, receipts.UpdateReceipt(t.Context(), receiptID(satoken.Identity{Username: managerSA}, "k1"), func(r *store.Receipt, _ bool) bool {
+		*r = store.Receipt{Fingerprint: requestFingerprint(http.MethodPost, "/reviews", payload), ClaimedAt: time.Now().Add(-claimAbandoned - time.Minute), TTL: receiptTTL}
 		return true
 	}))
 
 	resp := postWithKey(t, srv, "/reviews", "good", "k1", body)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	require.Len(t, poster.reviews, 1)
+}
+
+// requireProblem asserts an RFC 9457 problem detail with status that points at
+// the published idempotency specification.
+func requireProblem(t *testing.T, resp *http.Response, status int) {
+	t.Helper()
+	require.Equal(t, status, resp.StatusCode)
+	require.Equal(t, "application/problem+json", resp.Header.Get("Content-Type"))
+	var got problem
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Equal(t, idempotencyDocs, got.Type)
+	require.Equal(t, status, got.Status)
+	require.NotEmpty(t, got.Title)
+}
+
+// The header is an RFC 9651 Item whose value is a String: anything else is
+// refused before the request runs, and posts nothing.
+func TestIdempotencyKey_MalformedFieldIsRefused(t *testing.T) {
+	poster := &recordingPoster{}
+	srv := newHandlerServer(t, keyedHandler(memoryReceipts(t), poster))
+	for name, fieldLines := range map[string][]string{
+		"token, not a String": {"review-4711-1"},
+		"empty String":        {`""`},
+		"no closing quote":    {`"k1`},
+		"parameters":          {`"k1";a=1`},
+		"two field lines":     {`"k1"`, `"k2"`},
+		"non-ASCII":           {"\"k\u00e9\""},
+		"invalid escape":      {`"k\n"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := newRequest(t, srv, "/reviews", "good", "", validReview())
+			req.Header[idempotencyKeyHeader] = fieldLines
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			requireProblem(t, resp, http.StatusBadRequest)
+		})
+	}
+	require.Empty(t, poster.reviews)
+}
+
+func TestParseIdempotencyKey(t *testing.T) {
+	for value, want := range map[string]string{
+		`"review-4711-1"`:       "review-4711-1",
+		`  "k1"  `:              "k1",
+		`"a \"quoted\" \\ key"`: `a "quoted" \ key`,
+		`"` + strings.Repeat("k", idempotencyKeyMax) + `"`: strings.Repeat("k", idempotencyKeyMax),
+	} {
+		got, err := parseIdempotencyKey(value)
+		require.NoError(t, err, value)
+		require.Equal(t, want, got)
+	}
+}
+
+// A ServiceAccount deleted and created again under its name gets a new UID,
+// and with it receipts of its own.
+func TestReceiptID_ScopedToTheServiceAccountUID(t *testing.T) {
+	before := satoken.Identity{Username: managerSA, UID: "6a1c"}
+	after := satoken.Identity{Username: managerSA, UID: "93fe"}
+	require.NotEqual(t, receiptID(before, "k1"), receiptID(after, "k1"))
+	require.Equal(t, receiptID(before, "k1"), receiptID(before, "k1"))
 }

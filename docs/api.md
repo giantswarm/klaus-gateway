@@ -42,42 +42,54 @@ volumes:
 | No bearer token, or one the API server does not vouch for | 401 (`WWW-Authenticate: Bearer`) |
 | ServiceAccount not in the allow-list | 403 |
 | API server unreachable for the review | 503 |
-| Invalid body (see below), or an `Idempotency-Key` longer than 128 bytes | 400 |
+| Invalid body (see below), or an invalid `Idempotency-Key` (see below) | 400 |
 | A result for a review the gateway does not hold (unknown, or past its seven days) | 404 |
-| An `Idempotency-Key` sent before with another request (see below) | 409 |
+| The request with this `Idempotency-Key` is still running (see below) | 409 (`Retry-After`) |
+| An `Idempotency-Key` sent before with another request (see below) | 422 |
 | Slack refused the post | 502 |
-| The request with this `Idempotency-Key` is still running (see below) | 503 (`Retry-After`) |
 | The `Idempotency-Key` could not be checked: the routing store did not answer | 503 |
 
 ### Retries: `Idempotency-Key`
 
-Every POST of this page — the team reviews, the decisions and the conversations — takes an
-`Idempotency-Key` header: an opaque value of the caller's choosing, new for every request (a UUID
-does), at most 128 bytes; a longer one is refused with `400`.
+Every POST of this page (the team reviews, the decisions and the conversations) takes an
+`Idempotency-Key` header as defined by
+[draft-ietf-httpapi-idempotency-key-header](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/):
+a Structured Field String ([RFC 9651](https://www.rfc-editor.org/rfc/rfc9651#section-3.3.3)),
+so in double quotes, of the caller's choosing and new for every request (a UUID does). The key
+is 1 to 128 bytes of printable ASCII, with no parameters; anything else, a bare unquoted value
+included, is refused with `400`.
 
 ```http
-Idempotency-Key: <a new UUID for every request>
+Idempotency-Key: "<a new UUID for every request>"
 ```
 
-With a key, a request can be sent again as often as needed — after a timeout, a lost connection,
-a restart of the caller — and Slack sees it once:
+With a key, a request can be sent again as often as needed (after a timeout, a lost connection,
+a restart of the caller) and Slack sees it once:
 
 - The first request with a key runs, and when it succeeds its answer is kept for **seven days**.
   The same request sent again with the key in that time posts nothing and gets that answer, the
   same status and body byte for byte, with `Idempotency-Replayed: true`.
 - A request is the same when its method and path are and its body is, byte for byte: a body
   encoded again with its fields in another order is another request. The key on another request
-  answers `409` with `{"error": "…"}` and posts nothing. A key is its caller's own: two
-  ServiceAccounts never share one.
-- The same request sent while the first is still running answers `503` with `Retry-After: 1` and
-  `{"error": "…"}`, and posts nothing; send it again after that.
-- Only a success is kept. Any other answer — an invalid body, a review the gateway does not hold,
-  Slack refusing the post — frees the key, and the request sent again runs again, as it does
+  answers `422` and posts nothing. A key is its caller's own: two ServiceAccounts never share
+  one, nor do two ServiceAccounts of one name that were deleted and created again in between.
+- The same request sent while the first is still running answers `409` with `Retry-After: 1`
+  and posts nothing; send it again after that.
+- Only a success is kept. Any other answer (an invalid body, a review the gateway does not hold,
+  Slack refusing the post) frees the key, and the request sent again runs again, as it does
   without one.
 - A request with a key keeps running when its caller hangs up, so the retry finds its answer. A
   gateway that stops between taking the key and answering (a restart, a crash), or cannot save
-  the answer, leaves the key taken: for five minutes the same request answers `503`, then it runs
+  the answer, leaves the key taken: for five minutes the same request answers `409`, then it runs
   again, although the first attempt may have reached Slack.
+
+Every refusal of a key (`400`, `409`, `422`, and `503` when the store did not answer) is an
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem detail, `application/problem+json`,
+whose `type` links this section:
+
+```json
+{"type": "https://github.com/giantswarm/klaus-gateway/blob/main/docs/api.md#retries-idempotency-key", "title": "Idempotency-Key is already used", "status": 422, "detail": "…"}
+```
 
 A request without the header runs every time it is sent. The keys live in the routing store
 (`--store`, chart `routing.store`) beside the reviews: on `valkey` one key per request,

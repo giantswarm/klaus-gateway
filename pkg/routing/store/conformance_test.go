@@ -370,8 +370,8 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		// A request claims its key, then keeps its answer under it; an answer
 		// that is not kept is written expired, which frees the key.
 		s := factory(t)
-		ctx := context.Background()
-		claim := store.Receipt{Hash: "h1", ClaimedAt: time.Now(), TTL: time.Hour}
+		ctx := t.Context()
+		claim := store.Receipt{Fingerprint: "h1", ClaimedAt: time.Now(), TTL: time.Hour}
 		require.NoError(t, s.UpdateReceipt(ctx, "k1", func(r *store.Receipt, found bool) bool {
 			require.False(t, found)
 			require.Equal(t, store.Receipt{}, *r)
@@ -381,7 +381,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		const answer = `{"id":"rv1","channel":"C1","ts":"1.000"}` + "\n"
 		require.NoError(t, s.UpdateReceipt(ctx, "k1", func(r *store.Receipt, found bool) bool {
 			require.True(t, found)
-			require.Equal(t, "h1", r.Hash)
+			require.Equal(t, "h1", r.Fingerprint)
 			require.True(t, claim.ClaimedAt.Equal(r.ClaimedAt))
 			r.Status, r.Body = 201, answer
 			return true
@@ -403,7 +403,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		// Every request sent with one key tries to claim it at once; the
 		// store is the arbiter and exactly one claim lands.
 		s := factory(t)
-		ctx := context.Background()
+		ctx := t.Context()
 		const requests = 32
 		var wg sync.WaitGroup
 		wins := make([]bool, requests)
@@ -417,7 +417,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 					if found {
 						return false
 					}
-					*r = store.Receipt{Hash: fmt.Sprintf("h%02d", i), ClaimedAt: time.Now(), TTL: time.Hour}
+					*r = store.Receipt{Fingerprint: fmt.Sprintf("h%02d", i), ClaimedAt: time.Now(), TTL: time.Hour}
 					return true
 				})
 			}()
@@ -433,7 +433,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Len(t, winners, 1, "one claim lands, every other request finds it")
 		got, found := receiptAt(t, s, "k1")
 		require.True(t, found)
-		require.Equal(t, fmt.Sprintf("h%02d", winners[0]), got.Hash)
+		require.Equal(t, fmt.Sprintf("h%02d", winners[0]), got.Fingerprint)
 	})
 
 	t.Run("ttl-expired-filtered", func(t *testing.T) {
@@ -477,7 +477,7 @@ func receiptAt(t *testing.T, s store.Store, id string) (store.Receipt, bool) {
 	t.Helper()
 	var got store.Receipt
 	var found bool
-	require.NoError(t, s.UpdateReceipt(context.Background(), id, func(r *store.Receipt, ok bool) bool {
+	require.NoError(t, s.UpdateReceipt(t.Context(), id, func(r *store.Receipt, ok bool) bool {
 		got, found = *r, ok
 		return false
 	}))

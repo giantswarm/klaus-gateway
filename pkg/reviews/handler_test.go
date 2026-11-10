@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -97,7 +98,8 @@ func post(t *testing.T, srv *httptest.Server, path, bearer string, body any) *ht
 	return postWithKey(t, srv, path, bearer, "", body)
 }
 
-// postWithKey is post with an Idempotency-Key, unless key is empty.
+// postWithKey is post with key as its Idempotency-Key String, unless key is
+// empty.
 func postWithKey(t *testing.T, srv *httptest.Server, path, bearer, key string, body any) *http.Response {
 	t.Helper()
 	resp, err := http.DefaultClient.Do(newRequest(t, srv, path, bearer, key, body))
@@ -116,7 +118,7 @@ func newRequest(t *testing.T, srv *httptest.Server, path, bearer, key string, bo
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	if key != "" {
-		req.Header.Set("Idempotency-Key", key)
+		req.Header.Set("Idempotency-Key", strconv.Quote(key))
 	}
 	return req
 }

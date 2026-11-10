@@ -170,8 +170,8 @@ func TestReviewKeyLayout(t *testing.T) {
 func TestReceiptKeyLayout(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
-	require.NoError(t, s.UpdateReceipt(context.Background(), "3a7f", func(r *store.Receipt, _ bool) bool {
-		*r = store.Receipt{Hash: "h", Status: 201, Body: "{}\n", ClaimedAt: time.Now().Add(-24 * time.Hour), TTL: 7 * 24 * time.Hour}
+	require.NoError(t, s.UpdateReceipt(t.Context(), "3a7f", func(r *store.Receipt, _ bool) bool {
+		*r = store.Receipt{Fingerprint: "h", Status: 201, Body: "{}\n", ClaimedAt: time.Now().Add(-24 * time.Hour), TTL: 7 * 24 * time.Hour}
 		return true
 	}))
 	require.Equal(t, []string{"klaus-gateway:receipt:3a7f"}, m.Keys())

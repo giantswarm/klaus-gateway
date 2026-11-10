@@ -427,12 +427,14 @@ const (
 )
 
 // Receipt is the answer the gateway gave a service request sent with an
-// Idempotency-Key (pkg/reviews): the same request sent again is answered from
-// it instead of posting to Slack a second time.
+// Idempotency-Key (pkg/reviews, draft-ietf-httpapi-idempotency-key-header):
+// the same request sent again is answered from it instead of posting to Slack
+// a second time. The draft leaves the stored answer unnamed; "receipt" is this
+// repository's word for it.
 type Receipt struct {
-	// Hash identifies the request the key was first sent with: its method,
-	// path and body.
-	Hash string `json:"hash"`
+	// Fingerprint is the idempotency fingerprint of the request the key was
+	// first sent with: a digest of its method, path and body.
+	Fingerprint string `json:"fingerprint"`
 	// Status and Body are the answer; Status is 0 while the request that
 	// claimed the key has not answered.
 	Status int    `json:"status,omitempty"`
