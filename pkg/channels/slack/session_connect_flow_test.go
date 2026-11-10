@@ -16,6 +16,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
+	"github.com/giantswarm/klaus-gateway/pkg/muster/mustertest"
 )
 
 const sessionConnectLink = "https://muster.example/oauth/proxy/start?state=abc"
@@ -277,6 +278,128 @@ func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, accepter.count(), "the stale prompt's state is gone")
 	require.Equal(t, 2, gw.dispatchCount(), "the held message is not run after the fact")
+}
+
+// musterSignIn is the sign-in a muster client reads when muster answers a
+// call of tool with one.
+func musterSignIn(t *testing.T, tool string) *muster.SignIn {
+	t.Helper()
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		tool: func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to continue.", URL: sessionConnectLink}}
+		},
+	})
+	t.Cleanup(fake.Close)
+	res, err := muster.NewClient(fake.URL).CallTool(t.Context(), "tok", tool, nil)
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+	return res.SignIn
+}
+
+// The sign-in is the person's, not the thread's: a person who started two
+// threads before signing in has a prompt, a line, a DM card and a held message
+// in each. The click on either prompt, once the accept ran its start, settles
+// both lines and both cards and runs each held message as the person in its
+// own thread, once; a stale button of either thread then runs nothing. The
+// person's thread waiting on another tool and another person's thread are not
+// touched.
+func TestSessionConnect_SignInSettlesThePersonsOtherThreads(t *testing.T) {
+	for _, clickedThread := range []string{"300.000", "310.000"} {
+		t.Run("click in thread "+clickedThread, func(t *testing.T) {
+			var dispatched struct {
+				mu   sync.Mutex
+				msgs []channels.InboundMessage
+			}
+			startSignIn := &pkga2a.ConnectRequiredError{SignIn: musterSignIn(t, "x_agent-manager_start_session")}
+			otherSignIn := &pkga2a.ConnectRequiredError{SignIn: musterSignIn(t, "x_other-manager_start_session")}
+			gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+			gw.dispatchErr = startSignIn
+			gw.onDispatch = func(msg channels.InboundMessage) {
+				dispatched.mu.Lock()
+				dispatched.msgs = append(dispatched.msgs, msg)
+				dispatched.mu.Unlock()
+			}
+			accepter := &fakeAccepter{}
+			fake, srv, _ := sessionConnectAdapter(t, gw, accepter, func(a *slackadapter.Adapter) {
+				a.OBO = perUserOBO{tokens: map[string]string{"U1": "tok", "U2": "tok-2"}}
+			})
+			challenge := func(signIn *pkga2a.ConnectRequiredError) {
+				gw.mu.Lock()
+				gw.dispatchErr = signIn
+				gw.mu.Unlock()
+			}
+			mentionAndWaitForPrompt := func(user, text, threadTS string, prompts int) {
+				gw.openConversation(t, "C1", threadTS, user, "test-agent")
+				sendEvent(t, srv, mention(user, text, threadTS, ""))
+				require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postEphemeral")) == prompts },
+					flowWait, 20*time.Millisecond, "the prompt of thread %s is posted", threadTS)
+			}
+			mentionAndWaitForPrompt("U1", "how many nodes in gazelle?", "300.000", 1)
+			mentionAndWaitForPrompt("U1", "and in glean?", "310.000", 2)
+			challenge(otherSignIn)
+			mentionAndWaitForPrompt("U1", "list my repositories", "320.000", 3)
+			challenge(startSignIn)
+			mentionAndWaitForPrompt("U2", "who is on call?", "330.000", 4)
+			require.Len(t, postsTo(fake, "U1"), 3, "a DM card for each of the person's threads")
+			require.Len(t, postsTo(fake, "U2"), 1)
+
+			states := map[string]string{}
+			for _, c := range fake.pathCalls("chat.postEphemeral") {
+				_, value, _, ok := connectButtonIn([]recordedCall{c})
+				require.True(t, ok)
+				threadTS, _ := c.params["thread_ts"].(string)
+				states[threadTS] = value
+			}
+
+			gw.mu.Lock()
+			gw.dispatchErr = nil
+			gw.mu.Unlock()
+			sendConnectorInteractionURL(t, srv, "connector_connect", states[clickedThread], "")
+
+			signedInLines := func() []recordedCall {
+				var calls []recordedCall
+				for _, c := range updatesIn(fake, "C1") {
+					if strings.Contains(allText([]recordedCall{c}), "<@U1> signed in.") {
+						calls = append(calls, c)
+					}
+				}
+				return calls
+			}
+			require.Eventually(t, func() bool {
+				return len(signedInLines()) == 2 &&
+					strings.Count(allText(updatesIn(fake, "U1")), "Signed in. Your message is on its way to the agent.") == 2
+			}, flowWait, 20*time.Millisecond, "both lines and both cards are rewritten")
+			require.NotEqual(t, signedInLines()[0].params["ts"], signedInLines()[1].params["ts"], "each thread's own line")
+			require.Eventually(t, func() bool {
+				dispatched.mu.Lock()
+				defer dispatched.mu.Unlock()
+				return len(dispatched.msgs) == 6
+			}, flowWait, 20*time.Millisecond, "both held messages run")
+			dispatched.mu.Lock()
+			replays := map[string]channels.InboundMessage{}
+			for _, msg := range dispatched.msgs[4:] {
+				replays[msg.ThreadID] = msg
+			}
+			dispatched.mu.Unlock()
+			require.Len(t, replays, 2, "each held message once, in its own thread")
+			require.Equal(t, "how many nodes in gazelle?", replays["300.000"].Text)
+			require.Equal(t, "and in glean?", replays["310.000"].Text)
+			for _, msg := range replays {
+				require.Equal(t, "U1", msg.SenderID, "run as the person")
+			}
+			require.Equal(t, 1, accepter.count(), "only the clicked prompt's sign-in is accepted")
+
+			for _, thread := range []string{"300.000", "310.000"} {
+				sendConnectorInteractionURL(t, srv, "connector_connect", states[thread], "")
+			}
+			time.Sleep(100 * time.Millisecond)
+			require.Equal(t, 1, accepter.count(), "a stale button accepts nothing")
+			require.Equal(t, 6, gw.dispatchCount(), "and runs nothing")
+			require.Len(t, updatesIn(fake, "C1"), 2, "each line is rewritten once, the other tool's line not at all")
+			require.Len(t, updatesIn(fake, "U1"), 2, "the other tool's card is not touched")
+			require.Empty(t, updatesIn(fake, "U2"), "another person's card is not touched")
+		})
+	}
 }
 
 // In a direct message with the app the Connect card is a message of the

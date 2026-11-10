@@ -131,6 +131,7 @@ func TestCallTool_SignInThenAccept(t *testing.T) {
 	require.NotNil(t, res.SignIn)
 	require.Equal(t, "Sign in to github to continue.", res.SignIn.Message)
 	require.Equal(t, "https://muster.example/oauth/proxy/start?s=1", res.SignIn.URL)
+	require.Equal(t, "x_agent-manager_start_session", res.SignIn.Tool(), "the tool whose call asked for it")
 	require.False(t, res.Dispatched)
 
 	res, err = client.Accept(t.Context(), personToken, res.SignIn)
