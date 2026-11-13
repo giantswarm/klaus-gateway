@@ -49,18 +49,29 @@ and it decides nothing about which Agents anyone sees or may use.
 ## Agents: the Agent roster
 
 An agent is an `Agent` (`api.kagent.dev/v1alpha3`) in any namespace the caller may list:
-`a2a.namespace` (default `kagent`) is the platform tenant, and an Organization's `org-<name>`
-namespace is that organization's tenant. It is the runnable pairing of an AgentTemplate (referenced by `templateRef`, or embedded as `template`)
+`a2a.namespace` (default `kagent`) is the platform tenant, an Organization's `org-<name>`
+parent namespace is that organization's tenant, and an Agent Platform organization's
+organization namespace (`agents-<name>-<random>`) is that organization's tenant. It is the runnable pairing of an AgentTemplate (referenced by `templateRef`, or embedded as `template`)
 and a Harness (`harnessRef`, or embedded). The roster a channel offers is derived from
 `ListAgents`, with `ListAgentTemplates` for what an Agent takes from the template it
 references:
 
-- technical name and namespace from the Agent's ref, and the tenant from the namespace
-  (`platform` for `a2a.namespace`, `organization <name>` for `org-<name>`), which the roster
-  and the picker show beside each agent; `a2a.defaultAgent` is a bare name in the platform
+- technical name and namespace from the Agent's ref, and the tenant from the namespace,
+  which the roster, the picker and the refusal of an agent show beside each agent: `platform`
+  for `a2a.namespace`, `organization <name>` for `org-<name>`, `organization <name>
+  (<parent>)` for an organization namespace, and `namespace <namespace>` for any other.
+  `a2a.defaultAgent` is a bare name in the platform
   tenant's namespace (or `namespace/name`). An Agent of the platform tenant is referred to in
   the default agent's shape, so the refs live threads carry keep their spelling; an Agent of
   any other namespace is always `namespace/name`;
+- the organization of an organization namespace from its labels, which agent-platform-operator
+  writes: `<name>` is `agent-platform.giantswarm.io/organization`, `<parent>` is
+  `agent-platform.giantswarm.io/parent` (an organization's name is unique only in its parent
+  namespace, so the parent is part of the label; without the parent label it reads
+  `organization <name>`). The gateway watches the namespaces that carry the organization label
+  with its ServiceAccount (list and watch on namespaces, rendered with `a2a.enabled`) and never
+  parses a namespace's name. Until its first list completes, or without a Kubernetes client,
+  an organization namespace reads `namespace <namespace>`;
 - display name from the `ui.giantswarm.io/display-name` annotation, icon from
   `ui.giantswarm.io/icon-url`, read on the Agent first and on its AgentTemplate when the Agent
   carries none (falling back to `a2a.fallbackIconUrlTemplate` with `{agent}` replaced by the
