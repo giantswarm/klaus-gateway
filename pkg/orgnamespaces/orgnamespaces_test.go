@@ -19,7 +19,8 @@ func namespace(name string, labels map[string]string) *corev1.Namespace {
 // without the label, with an empty one, or not known at all is not one.
 func TestDirectory_Organization(t *testing.T) {
 	client := fake.NewClientset(
-		namespace("agents-payments-x7k2p", map[string]string{orgnamespaces.OrganizationLabel: "payments", "agent-platform.giantswarm.io/parent": "org-acme"}),
+		namespace("agents-payments-x7k2p", map[string]string{orgnamespaces.OrganizationLabel: "payments", orgnamespaces.ParentLabel: "org-acme"}),
+		namespace("agents-orphan-d4e5f", map[string]string{orgnamespaces.OrganizationLabel: "orphan"}),
 		namespace("agents-empty-a1b2c", map[string]string{orgnamespaces.OrganizationLabel: ""}),
 		namespace("org-acme", map[string]string{"giantswarm.io/organization": "acme"}),
 		namespace("other", nil),
@@ -28,12 +29,18 @@ func TestDirectory_Organization(t *testing.T) {
 	dir.Start(t.Context())
 	require.True(t, dir.WaitForSync(t.Context()))
 
-	name, ok := dir.Organization("agents-payments-x7k2p")
+	name, parent, ok := dir.Organization("agents-payments-x7k2p")
 	require.True(t, ok)
 	require.Equal(t, "payments", name)
+	require.Equal(t, "org-acme", parent)
+
+	name, parent, ok = dir.Organization("agents-orphan-d4e5f")
+	require.True(t, ok, "a missing parent label still names the organization")
+	require.Equal(t, "orphan", name)
+	require.Empty(t, parent)
 
 	for _, ns := range []string{"agents-empty-a1b2c", "org-acme", "other", "missing"} {
-		_, ok := dir.Organization(ns)
+		_, _, ok := dir.Organization(ns)
 		require.False(t, ok, ns)
 	}
 }
@@ -44,6 +51,6 @@ func TestDirectory_OrganizationBeforeStart(t *testing.T) {
 	client := fake.NewClientset(namespace("agents-payments-x7k2p", map[string]string{orgnamespaces.OrganizationLabel: "payments"}))
 	dir := orgnamespaces.New(client)
 
-	_, ok := dir.Organization("agents-payments-x7k2p")
+	_, _, ok := dir.Organization("agents-payments-x7k2p")
 	require.False(t, ok)
 }

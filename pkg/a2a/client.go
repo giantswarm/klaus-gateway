@@ -204,8 +204,9 @@ type Config struct {
 // by its AgentPlatformOrganization. *orgnamespaces.Directory satisfies it.
 type OrganizationNames interface {
 	// Organization is the name of the organization whose namespace namespace
-	// is; ok is false when it is not one, or is not known yet.
-	Organization(namespace string) (name string, ok bool)
+	// is, and the parent namespace the organization lives in (empty when not
+	// known); ok is false when it is not one, or is not known yet.
+	Organization(namespace string) (name, parent string, ok bool)
 }
 
 // SessionStarter starts the Session of a conversation as the person bearer
@@ -341,8 +342,11 @@ func (c *Client) Namespace() string { return c.namespace }
 
 // Tenant is the tenant an Agent of namespace belongs to: PlatformTenant for
 // the served namespace, the organization's name for an org-<name> parent
-// namespace and for an organization namespace Organizations knows, the
-// namespace itself otherwise.
+// namespace, the organization's name and its parent namespace for an
+// organization namespace Organizations knows, the namespace itself otherwise.
+// An organization's name is unique only in its parent namespace, so the
+// parent is part of its label: two organizations named alike, or one named
+// like its parent's Giant Swarm organization, never read the same.
 func (c *Client) Tenant(namespace string) string {
 	if namespace == c.namespace {
 		return PlatformTenant
@@ -351,8 +355,11 @@ func (c *Client) Tenant(namespace string) string {
 		return "organization " + org
 	}
 	if c.organizations != nil {
-		if org, ok := c.organizations.Organization(namespace); ok {
-			return "organization " + org
+		if org, parent, ok := c.organizations.Organization(namespace); ok {
+			if parent == "" {
+				return "organization " + org
+			}
+			return "organization " + org + " (" + parent + ")"
 		}
 	}
 	return "namespace " + namespace

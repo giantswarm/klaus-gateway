@@ -15,9 +15,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// OrganizationLabel is on an organization namespace: the name of its
-// AgentPlatformOrganization.
-const OrganizationLabel = "agent-platform.giantswarm.io/organization"
+const (
+	// OrganizationLabel is on an organization namespace: the name of its
+	// AgentPlatformOrganization.
+	OrganizationLabel = "agent-platform.giantswarm.io/organization"
+	// ParentLabel is on an organization namespace: the parent namespace its
+	// AgentPlatformOrganization lives in.
+	ParentLabel = "agent-platform.giantswarm.io/parent"
+)
 
 // Directory watches the namespaces labelled OrganizationLabel with the
 // gateway's ServiceAccount (list and watch on namespaces). It decides nothing
@@ -41,22 +46,28 @@ func (d *Directory) Start(ctx context.Context) {
 	d.factory.Start(ctx.Done())
 }
 
-// WaitForSync waits for the first list; false when ctx ends first.
+// WaitForSync waits for the first list; false when ctx ends first. The
+// gateway does not wait: Organization answers ok false until then. It is for
+// a caller that must, such as a test.
 func (d *Directory) WaitForSync(ctx context.Context) bool {
 	return cache.WaitForCacheSync(ctx.Done(), d.synced)
 }
 
-// Organization is the name of the organization whose namespace namespace is.
+// Organization is the name of the organization whose namespace namespace is,
+// and its parent namespace (ParentLabel; empty when the label is missing).
 // ok is false for a namespace without a non-empty OrganizationLabel, and for
 // every namespace until the first list has completed.
-func (d *Directory) Organization(namespace string) (string, bool) {
+func (d *Directory) Organization(namespace string) (name, parent string, ok bool) {
 	if !d.synced() {
-		return "", false
+		return "", "", false
 	}
 	ns, err := d.lister.Get(namespace)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
-	name := ns.Labels[OrganizationLabel]
-	return name, name != ""
+	name = ns.Labels[OrganizationLabel]
+	if name == "" {
+		return "", "", false
+	}
+	return name, ns.Labels[ParentLabel], true
 }
