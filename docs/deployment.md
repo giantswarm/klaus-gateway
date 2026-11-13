@@ -2,7 +2,9 @@
 
 `klaus-gateway` ships as a Helm chart at `helm/klaus-gateway/`. The chart renders the gateway
 itself (`Deployment`, `Service`, `ServiceAccount`, `ServiceMonitor`) and, with the features
-below, the OBO link Secret and RBAC, the team-review RBAC and a PodDisruptionBudget. It renders
+below, the OBO link Secret and RBAC, the team-review RBAC, the read of organization namespaces
+(with `a2a.enabled`: list and watch on namespaces, see [the roster](kagent-a2a.md#agents-the-agent-roster))
+and a PodDisruptionBudget. It renders
 no Gateway API resources: the routes that carry `/channels/slack` and `/auth/slack/` into the
 gateway belong to the agent-platform-connectivity chart.
 

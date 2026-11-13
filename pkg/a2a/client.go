@@ -193,7 +193,19 @@ type Config struct {
 	// called through muster as the person. Without one StartSession refuses
 	// with ErrNoStarter.
 	Starter SessionStarter
-	Logger  *slog.Logger
+	// Organizations names an Agent Platform organization namespace by its
+	// organization. Nil, or a namespace it does not know, leaves the
+	// namespace's own label (Tenant).
+	Organizations OrganizationNames
+	Logger        *slog.Logger
+}
+
+// OrganizationNames names an organization namespace (agents-<name>-<random>)
+// by its AgentPlatformOrganization. *orgnamespaces.Directory satisfies it.
+type OrganizationNames interface {
+	// Organization is the name of the organization whose namespace namespace
+	// is; ok is false when it is not one, or is not known yet.
+	Organization(namespace string) (name string, ok bool)
 }
 
 // SessionStarter starts the Session of a conversation as the person bearer
@@ -217,10 +229,11 @@ type Client struct {
 	models    apiv1alpha1.ModelServiceClient
 	starter   SessionStarter
 
-	namespace    string
-	iconTemplate string
-	logger       *slog.Logger
-	closeConn    func() error
+	organizations OrganizationNames
+	namespace     string
+	iconTemplate  string
+	logger        *slog.Logger
+	closeConn     func() error
 
 	looks agentLooks
 }
@@ -304,16 +317,17 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("a2a: build A2A client: %w", err)
 	}
 	return &Client{
-		a2a:          a2aClient,
-		agents:       apiv1alpha1.NewAgentServiceClient(conn),
-		templates:    apiv1alpha1.NewAgentTemplateServiceClient(conn),
-		sessions:     apiv1alpha1.NewSessionServiceClient(conn),
-		models:       apiv1alpha1.NewModelServiceClient(conn),
-		starter:      cfg.Starter,
-		namespace:    cfg.Namespace,
-		iconTemplate: cfg.FallbackIconURLTemplate,
-		logger:       logger,
-		closeConn:    func() error { return nil },
+		a2a:           a2aClient,
+		agents:        apiv1alpha1.NewAgentServiceClient(conn),
+		templates:     apiv1alpha1.NewAgentTemplateServiceClient(conn),
+		sessions:      apiv1alpha1.NewSessionServiceClient(conn),
+		models:        apiv1alpha1.NewModelServiceClient(conn),
+		starter:       cfg.Starter,
+		organizations: cfg.Organizations,
+		namespace:     cfg.Namespace,
+		iconTemplate:  cfg.FallbackIconURLTemplate,
+		logger:        logger,
+		closeConn:     func() error { return nil },
 	}, nil
 }
 
@@ -326,14 +340,20 @@ func (c *Client) Close() error {
 func (c *Client) Namespace() string { return c.namespace }
 
 // Tenant is the tenant an Agent of namespace belongs to: PlatformTenant for
-// the served namespace, the organization's name for an org-<name> namespace,
-// the namespace itself otherwise.
+// the served namespace, the organization's name for an org-<name> parent
+// namespace and for an organization namespace Organizations knows, the
+// namespace itself otherwise.
 func (c *Client) Tenant(namespace string) string {
 	if namespace == c.namespace {
 		return PlatformTenant
 	}
 	if org, ok := strings.CutPrefix(namespace, organizationPrefix); ok && org != "" {
 		return "organization " + org
+	}
+	if c.organizations != nil {
+		if org, ok := c.organizations.Organization(namespace); ok {
+			return "organization " + org
+		}
 	}
 	return "namespace " + namespace
 }

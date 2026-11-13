@@ -31,6 +31,7 @@ import (
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/observability"
+	"github.com/giantswarm/klaus-gateway/pkg/orgnamespaces"
 	"github.com/giantswarm/klaus-gateway/pkg/refusals"
 	"github.com/giantswarm/klaus-gateway/pkg/reviews"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
@@ -293,6 +294,7 @@ func run(args []string) error {
 		kagentClient, err := pkga2a.Dial(pkga2a.Config{
 			Target:                  cfg.A2A.URL,
 			Starter:                 starter,
+			Organizations:           organizationNames(ctx, logger),
 			CAFile:                  cfg.A2A.CAFile,
 			Namespace:               cfg.A2A.Namespace,
 			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
@@ -605,6 +607,25 @@ func refusalWatcher(cfg config.RefusalsConfig, notifier channels.RefusalNotifier
 		Logger:   logger,
 		Record:   metrics.RecordRefusal,
 	}, func() { _ = conn.Close() }, nil
+}
+
+// organizationNames watches the organization namespaces, so the roster names
+// their Agents by the organization. Without a Kubernetes client it returns
+// nil, and those Agents keep their namespace's label.
+func organizationNames(ctx context.Context, logger *slog.Logger) pkga2a.OrganizationNames {
+	restCfg, err := buildKubeConfig()
+	if err != nil {
+		logger.Warn("organization namespaces are labelled by namespace: no Kubernetes client", "error", err)
+		return nil
+	}
+	kclient, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		logger.Warn("organization namespaces are labelled by namespace: no Kubernetes client", "error", err)
+		return nil
+	}
+	dir := orgnamespaces.New(kclient)
+	dir.Start(ctx)
+	return dir
 }
 
 // buildKubeConfig returns a *rest.Config using in-cluster config when running

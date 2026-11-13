@@ -49,15 +49,21 @@ and it decides nothing about which Agents anyone sees or may use.
 ## Agents: the Agent roster
 
 An agent is an `Agent` (`api.kagent.dev/v1alpha3`) in any namespace the caller may list:
-`a2a.namespace` (default `kagent`) is the platform tenant, and an Organization's `org-<name>`
-namespace is that organization's tenant. It is the runnable pairing of an AgentTemplate (referenced by `templateRef`, or embedded as `template`)
+`a2a.namespace` (default `kagent`) is the platform tenant, an Organization's `org-<name>`
+parent namespace is that organization's tenant, and an Agent Platform organization's
+organization namespace (`agents-<name>-<random>`) is that organization's. It is the runnable pairing of an AgentTemplate (referenced by `templateRef`, or embedded as `template`)
 and a Harness (`harnessRef`, or embedded). The roster a channel offers is derived from
 `ListAgents`, with `ListAgentTemplates` for what an Agent takes from the template it
 references:
 
 - technical name and namespace from the Agent's ref, and the tenant from the namespace
-  (`platform` for `a2a.namespace`, `organization <name>` for `org-<name>`), which the roster
-  and the picker show beside each agent; `a2a.defaultAgent` is a bare name in the platform
+  (`platform` for `a2a.namespace`, `organization <name>` for `org-<name>`, `namespace
+  <namespace>` for any other), which the roster, the picker and the refusal of an agent show
+  beside each agent. An organization namespace reads `organization <name>`, `<name>` its
+  `agent-platform.giantswarm.io/organization` label, which agent-platform-operator writes; the
+  gateway watches the namespaces that carry the label with its ServiceAccount (list and watch
+  on namespaces, rendered with `a2a.enabled`), never parses the namespace's name, and keeps
+  `namespace <namespace>` until its first list completes or when it has no Kubernetes client; `a2a.defaultAgent` is a bare name in the platform
   tenant's namespace (or `namespace/name`). An Agent of the platform tenant is referred to in
   the default agent's shape, so the refs live threads carry keep their spelling; an Agent of
   any other namespace is always `namespace/name`;

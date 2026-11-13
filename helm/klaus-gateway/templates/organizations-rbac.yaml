@@ -1,0 +1,32 @@
+{{- if .Values.a2a.enabled }}
+# The roster names an Agent Platform organization namespace's agents by the
+# organization: it watches the namespaces labelled
+# agent-platform.giantswarm.io/organization and reads that label. Without
+# this read those agents keep their namespace's label. The ClusterRole is
+# named per release namespace so two releases do not collide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "resource.default.name" . }}-{{ include "resource.default.namespace" . }}-organization-namespaces
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "resource.default.name" . }}-{{ include "resource.default.namespace" . }}-organization-namespaces
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "resource.default.name" . }}-{{ include "resource.default.namespace" . }}-organization-namespaces
+subjects:
+- kind: ServiceAccount
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+{{- end }}
