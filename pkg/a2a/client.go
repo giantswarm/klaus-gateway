@@ -352,7 +352,9 @@ func (c *Client) Namespace() string { return c.namespace }
 // <namespace>" otherwise. An Agent Platform organization's name is unique
 // only in its parent namespace: when two organizations Organizations knows
 // share the name, the parent follows it without its org- prefix
-// ("payments, acme"), so the two never read the same.
+// ("payments, acme"), so the two never read the same. An organization named
+// like PlatformTenant gets its parent too, so it never reads like the
+// platform.
 func (c *Client) Tenant(namespace string) string {
 	tenant, _ := c.tenantOf(namespace)
 	return tenant
@@ -368,11 +370,11 @@ func (c *Client) tenantOf(namespace string) (tenant, admin string) {
 	}
 	if c.organizations != nil {
 		if org, parent, ok := c.organizations.Organization(namespace); ok {
-			admin = "the organization " + org
-			if parent == "" || !c.organizations.Shared(org) {
-				return org, admin
+			if parent == "" || (org != PlatformTenant && !c.organizations.Shared(org)) {
+				return org, "the organization " + org
 			}
-			return org + ", " + strings.TrimPrefix(parent, organizationPrefix), admin
+			parent = strings.TrimPrefix(parent, organizationPrefix)
+			return org + ", " + parent, "the organization " + org + " (" + parent + ")"
 		}
 	}
 	return "namespace " + namespace, "the namespace " + namespace

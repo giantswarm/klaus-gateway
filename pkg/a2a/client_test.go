@@ -611,7 +611,8 @@ func organizationsFake(t *testing.T) *fakeKagent {
 // name alone, never by the namespace; two organizations of one name add
 // their parent without its org- prefix, so they never read the same. The
 // parent namespace org-<name> and any other namespace keep their labels, and
-// so does an organization namespace whose organization is not known.
+// so does an organization namespace whose organization is not known. An
+// organization named like the platform tenant adds its parent too.
 func TestClient_ListAgents_NamesAnOrganizationNamespaceByItsOrganization(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -637,6 +638,13 @@ func TestClient_ListAgents_NamesAnOrganizationNamespaceByItsOrganization(t *test
 			"agents-payments-x7k2p/ledger payments",
 			"agents-payments-b3c4d/ledger payments, beta",
 			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
+			"other/helper namespace other",
+		}},
+		{"organization named like the platform", organizationNames{"agents-payments-x7k2p": {pkga2a.PlatformTenant, "org-acme"}, "agents-acme-q9w8e": {pkga2a.PlatformTenant, ""}}, []string{
+			"org-acme/billing organization acme",
+			"agents-payments-x7k2p/ledger platform, acme",
+			"agents-payments-b3c4d/ledger namespace agents-payments-b3c4d",
+			"agents-acme-q9w8e/billing platform",
 			"other/helper namespace other",
 		}},
 		{"organization not known", organizationNames{}, []string{
@@ -670,7 +678,7 @@ func TestClient_StartSession_RefusesAnOrganizationsAgentByItsName(t *testing.T) 
 
 	for ref, want := range map[string]pkga2a.AgentNotPermittedError{
 		"agents-acme-q9w8e/billing":    {Ref: "agents-acme-q9w8e/billing", Name: "billing", Tenant: "acme", Admin: "the organization acme"},
-		"agents-payments-b3c4d/ledger": {Ref: "agents-payments-b3c4d/ledger", Name: "ledger", Tenant: "payments, beta", Admin: "the organization payments"},
+		"agents-payments-b3c4d/ledger": {Ref: "agents-payments-b3c4d/ledger", Name: "ledger", Tenant: "payments, beta", Admin: "the organization payments (beta)"},
 		"other/helper":                 {Ref: "other/helper", Name: "helper", Tenant: "namespace other", Admin: "the namespace other"},
 	} {
 		_, err := client.StartSession(asUser(t.Context(), "bob"), ref, "req-1", "", workspaces.Grant{})
