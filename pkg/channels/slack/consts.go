@@ -737,9 +737,9 @@ func notPermittedNote(err error) (string, bool) {
 	if tenant == "" {
 		tenant = pkga2a.PlatformTenant
 	}
-	admin := "the " + tenant
-	if tenant == pkga2a.PlatformTenant {
-		admin = "the platform"
+	admin := np.Admin
+	if admin == "" {
+		admin = "the " + tenant
 	}
 	return fmt.Sprintf(agentNotPermittedNotice, escapeMrkdwn(name), escapeMrkdwn(tenant), escapeMrkdwn(admin)), true
 }
