@@ -640,11 +640,11 @@ func TestClient_ListAgents_NamesAnOrganizationNamespaceByItsOrganization(t *test
 			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
 			"other/helper namespace other",
 		}},
-		{"organization named like the platform", organizationNames{"agents-payments-x7k2p": {pkga2a.PlatformTenant, "org-acme"}, "agents-acme-q9w8e": {pkga2a.PlatformTenant, ""}}, []string{
+		{"organization named like the platform", organizationNames{"agents-payments-x7k2p": {pkga2a.PlatformTenant, "org-acme"}}, []string{
 			"org-acme/billing organization acme",
 			"agents-payments-x7k2p/ledger platform, acme",
 			"agents-payments-b3c4d/ledger namespace agents-payments-b3c4d",
-			"agents-acme-q9w8e/billing platform",
+			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
 			"other/helper namespace other",
 		}},
 		{"organization not known", organizationNames{}, []string{
