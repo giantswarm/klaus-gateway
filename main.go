@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -622,45 +623,35 @@ func organizationNames(ctx context.Context, kube *kubeClients, logger *slog.Logg
 // that fails fails every ask the same way; each feature decides whether that
 // stops the start.
 type kubeClients struct {
-	load func() (*rest.Config, error)
-
-	loaded  bool
-	cfg     *rest.Config
-	client  kubernetes.Interface
-	dynamic dynamic.Interface
-	err     error
+	clientset func() (kubernetes.Interface, error)
+	dynamic   func() (dynamic.Interface, error)
 }
 
 func newKubeClients(load func() (*rest.Config, error)) *kubeClients {
-	return &kubeClients{load: load}
+	config := sync.OnceValues(load)
+	return &kubeClients{
+		clientset: sync.OnceValues(func() (kubernetes.Interface, error) {
+			cfg, err := config()
+			if err != nil {
+				return nil, err
+			}
+			return kubernetes.NewForConfig(cfg)
+		}),
+		dynamic: sync.OnceValues(func() (dynamic.Interface, error) {
+			cfg, err := config()
+			if err != nil {
+				return nil, err
+			}
+			return dynamic.NewForConfig(cfg)
+		}),
+	}
 }
 
 // Clientset is the shared typed client.
-func (k *kubeClients) Clientset() (kubernetes.Interface, error) {
-	if !k.loaded {
-		k.loaded = true
-		k.cfg, k.err = k.load()
-		if k.err == nil {
-			k.client, k.err = kubernetes.NewForConfig(k.cfg)
-		}
-	}
-	return k.client, k.err
-}
+func (k *kubeClients) Clientset() (kubernetes.Interface, error) { return k.clientset() }
 
 // Dynamic is the shared dynamic client, built from the same configuration.
-func (k *kubeClients) Dynamic() (dynamic.Interface, error) {
-	if _, err := k.Clientset(); err != nil {
-		return nil, err
-	}
-	if k.dynamic == nil {
-		d, err := dynamic.NewForConfig(k.cfg)
-		if err != nil {
-			return nil, err
-		}
-		k.dynamic = d
-	}
-	return k.dynamic, nil
-}
+func (k *kubeClients) Dynamic() (dynamic.Interface, error) { return k.dynamic() }
 
 // buildKubeConfig returns a *rest.Config using in-cluster config when running
 // inside Kubernetes, falling back to the local kubeconfig otherwise.
