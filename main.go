@@ -131,6 +131,11 @@ func run(args []string) error {
 
 	publicMux := chi.NewRouter()
 
+	// The Kubernetes clients are built on the first feature's ask and shared by
+	// every feature after it: the link store's Secret, the team-review
+	// endpoint, the refusal watcher and the organization directory.
+	kube := newKubeClients(buildKubeConfig)
+
 	// One muster client serves every tool the gateway calls as the linked
 	// person: agent-manager's start_session, the workspace-manager's tools and
 	// a team review's approval.
@@ -191,7 +196,7 @@ func run(args []string) error {
 			slackEmail = slackAdapter.LookupUserEmail
 			onLinked = slackAdapter.OnUserLinked
 		}
-		linker, closeLinker, err := buildOBOLinker(cfg.OBO, logger, slackEmail, onLinked)
+		linker, closeLinker, err := buildOBOLinker(cfg.OBO, kube, logger, slackEmail, onLinked)
 		if err != nil {
 			return fmt.Errorf("build obo linker: %w", err)
 		}
@@ -236,11 +241,7 @@ func run(args []string) error {
 		// the manager's tool through muster as the clicking, linked member. The
 		// same surface puts decisions to a person or a team (POST /decisions)
 		// and holds conversations with a person (POST /conversations).
-		restCfg, err := buildKubeConfig()
-		if err != nil {
-			return fmt.Errorf("team reviews: %w", err)
-		}
-		kclient, err := kubernetes.NewForConfig(restCfg)
+		kclient, err := kube.Clientset()
 		if err != nil {
 			return fmt.Errorf("team reviews: %w", err)
 		}
@@ -264,7 +265,7 @@ func run(args []string) error {
 
 	if cfg.Refusals.Enabled {
 		slackAdapter.RefusalWindow = cfg.Refusals.Window
-		watcher, closeWatcher, err := refusalWatcher(cfg.Refusals, slackAdapter, metrics, logger)
+		watcher, closeWatcher, err := refusalWatcher(cfg.Refusals, kube, slackAdapter, metrics, logger)
 		if err != nil {
 			return fmt.Errorf("egress refusals: %w", err)
 		}
@@ -294,7 +295,7 @@ func run(args []string) error {
 		kagentClient, err := pkga2a.Dial(pkga2a.Config{
 			Target:                  cfg.A2A.URL,
 			Starter:                 starter,
-			Organizations:           organizationNames(ctx, logger),
+			Organizations:           organizationNames(ctx, kube, logger),
 			CAFile:                  cfg.A2A.CAFile,
 			Namespace:               cfg.A2A.Namespace,
 			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
@@ -424,7 +425,7 @@ func valkeyPassword(cfg config.ValkeyConfig) (string, error) {
 // the Slack adapter uses it to replace the sign-in prompt. The OAuth client_id
 // and redirect URI are derived from CallbackBaseURL by musterlink (CIMD); an
 // explicit cfg.ClientID overrides it.
-func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
+func buildOBOLinker(cfg config.OBOConfig, kube *kubeClients, logger *slog.Logger,
 	slackEmail func(context.Context, string) (string, error),
 	onLinked func(ctx context.Context, slackUserID, email string),
 ) (*musterlink.Linker, func() error, error) {
@@ -433,7 +434,7 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		return nil, nil, fmt.Errorf("read obo state key: %w", err)
 	}
 
-	store, cleanup, err := buildOBOStore(cfg, logger)
+	store, cleanup, err := buildOBOStore(cfg, kube, logger)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -495,7 +496,7 @@ func buildShareSealer(cfg config.OBOConfig, logger *slog.Logger) (*seal.Sealer, 
 // unlinked; when a bolt file is configured next to it, its links are imported
 // first (the file is read, never written) so nobody signs in again after the
 // move off the volume.
-func buildOBOStore(cfg config.OBOConfig, logger *slog.Logger) (musterlink.Store, func() error, error) {
+func buildOBOStore(cfg config.OBOConfig, kube *kubeClients, logger *slog.Logger) (musterlink.Store, func() error, error) {
 	noop := func() error { return nil }
 	switch backend := cfg.ResolvedStore(); backend {
 	case config.OBOStoreMemory:
@@ -515,11 +516,7 @@ func buildOBOStore(cfg config.OBOConfig, logger *slog.Logger) (musterlink.Store,
 		if err != nil {
 			return nil, nil, fmt.Errorf("read obo store key: %w", err)
 		}
-		restCfg, err := buildKubeConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("obo secret store: %w", err)
-		}
-		kclient, err := kubernetes.NewForConfig(restCfg)
+		kclient, err := kube.Clientset()
 		if err != nil {
 			return nil, nil, fmt.Errorf("obo secret store: %w", err)
 		}
@@ -579,16 +576,12 @@ func podNamespace() string {
 // refusalWatcher builds the egress refusal watcher: the egress pods read
 // through the Kubernetes API, the kagent controller asked as this gateway's
 // ServiceAccount, the notices posted by the Slack adapter.
-func refusalWatcher(cfg config.RefusalsConfig, notifier channels.RefusalNotifier, metrics *observability.Metrics, logger *slog.Logger) (*refusals.Watcher, func(), error) {
-	restCfg, err := buildKubeConfig()
+func refusalWatcher(cfg config.RefusalsConfig, kube *kubeClients, notifier channels.RefusalNotifier, metrics *observability.Metrics, logger *slog.Logger) (*refusals.Watcher, func(), error) {
+	kclient, err := kube.Clientset()
 	if err != nil {
 		return nil, nil, err
 	}
-	kclient, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	dclient, err := dynamic.NewForConfig(restCfg)
+	dclient, err := kube.Dynamic()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -612,13 +605,8 @@ func refusalWatcher(cfg config.RefusalsConfig, notifier channels.RefusalNotifier
 // organizationNames watches the organization namespaces, so the roster names
 // their Agents by the organization. Without a Kubernetes client it returns
 // nil, and those Agents keep their namespace's label.
-func organizationNames(ctx context.Context, logger *slog.Logger) pkga2a.OrganizationNames {
-	restCfg, err := buildKubeConfig()
-	if err != nil {
-		logger.Warn("organization namespaces are labelled by namespace: no Kubernetes client", "error", err)
-		return nil
-	}
-	kclient, err := kubernetes.NewForConfig(restCfg)
+func organizationNames(ctx context.Context, kube *kubeClients, logger *slog.Logger) pkga2a.OrganizationNames {
+	kclient, err := kube.Clientset()
 	if err != nil {
 		logger.Warn("organization namespaces are labelled by namespace: no Kubernetes client", "error", err)
 		return nil
@@ -626,6 +614,52 @@ func organizationNames(ctx context.Context, logger *slog.Logger) pkga2a.Organiza
 	dir := orgnamespaces.New(kclient)
 	dir.Start(ctx)
 	return dir
+}
+
+// kubeClients builds the gateway's Kubernetes configuration and clients on the
+// first ask, once, and hands the same ones to every feature that needs them. A
+// gateway whose features never ask makes no Kubernetes access at all. A build
+// that fails fails every ask the same way; each feature decides whether that
+// stops the start.
+type kubeClients struct {
+	load func() (*rest.Config, error)
+
+	loaded  bool
+	cfg     *rest.Config
+	client  kubernetes.Interface
+	dynamic dynamic.Interface
+	err     error
+}
+
+func newKubeClients(load func() (*rest.Config, error)) *kubeClients {
+	return &kubeClients{load: load}
+}
+
+// Clientset is the shared typed client.
+func (k *kubeClients) Clientset() (kubernetes.Interface, error) {
+	if !k.loaded {
+		k.loaded = true
+		k.cfg, k.err = k.load()
+		if k.err == nil {
+			k.client, k.err = kubernetes.NewForConfig(k.cfg)
+		}
+	}
+	return k.client, k.err
+}
+
+// Dynamic is the shared dynamic client, built from the same configuration.
+func (k *kubeClients) Dynamic() (dynamic.Interface, error) {
+	if _, err := k.Clientset(); err != nil {
+		return nil, err
+	}
+	if k.dynamic == nil {
+		d, err := dynamic.NewForConfig(k.cfg)
+		if err != nil {
+			return nil, err
+		}
+		k.dynamic = d
+	}
+	return k.dynamic, nil
 }
 
 // buildKubeConfig returns a *rest.Config using in-cluster config when running
