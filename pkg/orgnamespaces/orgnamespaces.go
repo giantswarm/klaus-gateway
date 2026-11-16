@@ -9,6 +9,7 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -70,4 +71,22 @@ func (d *Directory) Organization(namespace string) (name, parent string, ok bool
 		return "", "", false
 	}
 	return name, ns.Labels[ParentLabel], true
+}
+
+// Shared is true when more than one organization the directory knows is
+// named name: organization namespaces labelled name with more than one parent.
+// It is false for every name until the first list has completed.
+func (d *Directory) Shared(name string) bool {
+	if name == "" || !d.synced() {
+		return false
+	}
+	namespaces, err := d.lister.List(labels.SelectorFromSet(labels.Set{OrganizationLabel: name}))
+	if err != nil {
+		return false
+	}
+	parents := map[string]bool{}
+	for _, ns := range namespaces {
+		parents[ns.Labels[ParentLabel]] = true
+	}
+	return len(parents) > 1
 }

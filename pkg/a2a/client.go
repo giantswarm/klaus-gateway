@@ -117,8 +117,10 @@ type AgentNotPermittedError struct {
 	// Name is the Agent's name, and DisplayName its display name when the
 	// gateway has seen one.
 	Name, DisplayName string
-	// Tenant is the tenant of the Agent's namespace (Tenant).
-	Tenant string
+	// Tenant is the tenant of the Agent's namespace (Tenant), and Admin who
+	// grants access to it, as a refusal names them ("the organization acme");
+	// an empty Admin is "the " and the tenant.
+	Tenant, Admin string
 	// Cause is the controller's or agent-manager's refusal, nil for an Agent
 	// the caller's roster does not list.
 	Cause error
@@ -207,6 +209,9 @@ type OrganizationNames interface {
 	// is, and the parent namespace the organization lives in (empty when not
 	// known); ok is false when it is not one, or is not known yet.
 	Organization(namespace string) (name, parent string, ok bool)
+	// Shared is true when more than one organization the source knows is
+	// named name.
+	Shared(name string) bool
 }
 
 // SessionStarter starts the Session of a conversation as the person bearer
@@ -341,28 +346,38 @@ func (c *Client) Close() error {
 func (c *Client) Namespace() string { return c.namespace }
 
 // Tenant is the tenant an Agent of namespace belongs to: PlatformTenant for
-// the served namespace, the organization's name for an org-<name> parent
-// namespace, the organization's name and its parent namespace for an
-// organization namespace Organizations knows, the namespace itself otherwise.
-// An organization's name is unique only in its parent namespace, so the
-// parent is part of its label: two organizations named alike, or one named
-// like its parent's Giant Swarm organization, never read the same.
+// the served namespace, "organization <name>" for a Giant Swarm
+// Organization's org-<name> namespace, the organization's name alone for an
+// Agent Platform organization namespace Organizations knows, and "namespace
+// <namespace>" otherwise. An Agent Platform organization's name is unique
+// only in its parent namespace: when two organizations Organizations knows
+// share the name, the parent follows it without its org- prefix
+// ("payments, acme"), so the two never read the same. An organization named
+// like PlatformTenant gets its parent too, so it never reads like the
+// platform.
 func (c *Client) Tenant(namespace string) string {
+	tenant, _ := c.tenantOf(namespace)
+	return tenant
+}
+
+// tenantOf is Tenant, and who grants access to it as a refusal names them.
+func (c *Client) tenantOf(namespace string) (tenant, admin string) {
 	if namespace == c.namespace {
-		return PlatformTenant
+		return PlatformTenant, "the platform"
 	}
 	if org, ok := strings.CutPrefix(namespace, organizationPrefix); ok && org != "" {
-		return "organization " + org
+		return "organization " + org, "the organization " + org
 	}
 	if c.organizations != nil {
 		if org, parent, ok := c.organizations.Organization(namespace); ok {
-			if parent == "" {
-				return "organization " + org
+			if parent == "" || (org != PlatformTenant && !c.organizations.Shared(org)) {
+				return org, "the organization " + org
 			}
-			return "organization " + org + " (" + parent + ")"
+			parent = strings.TrimPrefix(parent, organizationPrefix)
+			return org + ", " + parent, "the organization " + org + " (" + parent + ")"
 		}
 	}
-	return "namespace " + namespace
+	return "namespace " + namespace, "the namespace " + namespace
 }
 
 func transportCredentials(useTLS bool, hostPort, caFile string) (credentials.TransportCredentials, error) {

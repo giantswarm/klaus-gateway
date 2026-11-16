@@ -58,18 +58,23 @@ references:
 
 - technical name and namespace from the Agent's ref, and the tenant from the namespace,
   which the roster, the picker and the refusal of an agent show beside each agent: `platform`
-  for `a2a.namespace`, `organization <name>` for `org-<name>`, `organization <name>
-  (<parent>)` for an organization namespace, and `namespace <namespace>` for any other.
+  for `a2a.namespace`, `organization <name>` for `org-<name>`, the organization's name alone
+  for an organization namespace (`Cluster Manager (bumblebee)`), and `namespace <namespace>`
+  for any other. The refusal sends the person to an admin of `the organization <name>` for an
+  organization namespace, with `(<parent>)` after it when the text shows the parent.
   `a2a.defaultAgent` is a bare name in the platform
   tenant's namespace (or `namespace/name`). An Agent of the platform tenant is referred to in
   the default agent's shape, so the refs live threads carry keep their spelling; an Agent of
   any other namespace is always `namespace/name`;
 - the organization of an organization namespace from its labels, which agent-platform-operator
   writes: `<name>` is `agent-platform.giantswarm.io/organization`, `<parent>` is
-  `agent-platform.giantswarm.io/parent` (an organization's name is unique only in its parent
-  namespace, so the parent is part of the label; without the parent label it reads
-  `organization <name>`). The gateway watches the namespaces that carry the organization label
-  with its ServiceAccount (list and watch on namespaces, rendered with `a2a.enabled`) and never
+  `agent-platform.giantswarm.io/parent`. An organization's name is unique only in its parent
+  namespace: when two organizations the gateway knows have the same name, the parent follows
+  the name without its `org-` prefix (`Cluster Manager (bumblebee, giantswarm)`), and so it
+  does for an organization named `platform`, which would otherwise read like the platform
+  tenant. An organization without the parent label shows its name alone. The text of an
+  agent can change on the day a second organization of its name appears. The gateway
+  watches the namespaces that carry the organization label with its ServiceAccount (list and watch on namespaces, rendered with `a2a.enabled`) and never
   parses a namespace's name. Until its first list completes, or without a Kubernetes client,
   an organization namespace reads `namespace <namespace>`;
 - display name from the `ui.giantswarm.io/display-name` annotation, icon from

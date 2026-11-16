@@ -154,3 +154,17 @@ func TestAskAgentModal_Preselect(t *testing.T) {
 	_, _, initial = modalOptions(t, view)
 	require.Equal(t, "kagent/a", initial)
 }
+
+// An Agent Platform organization's agent shows its organization's name in
+// brackets, the same text in the picker and in the roster's text list.
+func TestAgentTenant_OrganizationsNameInBrackets(t *testing.T) {
+	agents := []pkga2a.AgentInfo{
+		{Name: "cluster-manager", Namespace: "agents-bumblebee-x7k2p", DisplayName: "Cluster Manager", Tenant: "bumblebee"},
+		{Name: "cluster-manager", Namespace: "agents-bumblebee-b3c4d", DisplayName: "Cluster Manager", Tenant: "bumblebee, giantswarm"},
+	}
+	view, err := pickerAdapter("").askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1"}, nil)
+	require.NoError(t, err)
+	labels, _, _ := modalOptions(t, view)
+	require.Equal(t, []string{"Cluster Manager (bumblebee)", "Cluster Manager (bumblebee, giantswarm)"}, labels)
+	require.Equal(t, "*Available agents*:\n• *Cluster Manager* (bumblebee)\n• *Cluster Manager* (bumblebee, giantswarm)", rosterText(agents))
+}

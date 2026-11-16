@@ -178,7 +178,8 @@ func (c *Client) Agent(ctx context.Context, agentRef string) (AgentInfo, error) 
 func (c *Client) notPermitted(agentRef string, cause error) *AgentNotPermittedError {
 	e := &AgentNotPermittedError{Ref: agentRef, Name: agentRef, Cause: cause}
 	if namespace, name, err := c.splitRef(agentRef); err == nil {
-		e.Name, e.Tenant = name, c.Tenant(namespace)
+		e.Name = name
+		e.Tenant, e.Admin = c.tenantOf(namespace)
 		// The controller's refusal names an Agent the caller already reached;
 		// a roster miss shows nothing another caller's roster listed, so it
 		// does not tell an Agent that exists from one that does not.

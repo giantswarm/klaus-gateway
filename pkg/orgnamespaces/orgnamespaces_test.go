@@ -54,3 +54,21 @@ func TestDirectory_OrganizationBeforeStart(t *testing.T) {
 	_, _, ok := dir.Organization("agents-payments-x7k2p")
 	require.False(t, ok)
 }
+
+// Two organizations share a name when organization namespaces of that name
+// have different parents; one organization, or a name not known, does not.
+func TestDirectory_Shared(t *testing.T) {
+	client := fake.NewClientset(
+		namespace("agents-payments-x7k2p", map[string]string{orgnamespaces.OrganizationLabel: "payments", orgnamespaces.ParentLabel: "org-acme"}),
+		namespace("agents-payments-b3c4d", map[string]string{orgnamespaces.OrganizationLabel: "payments", orgnamespaces.ParentLabel: "org-beta"}),
+		namespace("agents-billing-d4e5f", map[string]string{orgnamespaces.OrganizationLabel: "billing", orgnamespaces.ParentLabel: "org-acme"}),
+	)
+	dir := orgnamespaces.New(client)
+	require.False(t, dir.Shared("payments"), "nothing is known before the first list")
+
+	dir.Start(t.Context())
+	require.True(t, dir.WaitForSync(t.Context()))
+	require.True(t, dir.Shared("payments"))
+	require.False(t, dir.Shared("billing"))
+	require.False(t, dir.Shared("missing"))
+}

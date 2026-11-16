@@ -83,6 +83,9 @@ func TestFailureNote_AgentNotPermitted(t *testing.T) {
 	require.Equal(t, "You cannot use *sre-agent* (platform): it is not one of the agents you have access to. Nothing was sent to it. Ask an admin of the platform for access, or mention the bot with `agents` to list the agents you can use.",
 		failureNote(&pkga2a.AgentNotPermittedError{Ref: "sre-agent", Name: "sre-agent", Tenant: pkga2a.PlatformTenant}),
 		"no display name seen: the technical name")
+	require.Equal(t, "You cannot use *Cluster Manager* (bumblebee): it is not one of the agents you have access to. Nothing was sent to it. Ask an admin of the organization bumblebee for access, or mention the bot with `agents` to list the agents you can use.",
+		failureNote(&pkga2a.AgentNotPermittedError{Ref: "agents-bumblebee-x7k2p/cluster-manager", Name: "cluster-manager", DisplayName: "Cluster Manager", Tenant: "bumblebee", Admin: "the organization bumblebee"}),
+		"an Agent Platform organization's agent: its name in brackets, its admin named as an organization's")
 	require.Equal(t, slog.LevelInfo, failureLogLevel(acme))
 }
 

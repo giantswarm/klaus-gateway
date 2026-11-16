@@ -537,7 +537,7 @@ func TestClient_StartSession_RefusesAnotherTenantsAgent(t *testing.T) {
 	_, err = client.StartSession(asUser(t.Context(), "bob"), "org-acme/billing", "req-1", "", workspaces.Grant{})
 	var refused *pkga2a.AgentNotPermittedError
 	require.ErrorAs(t, err, &refused)
-	require.Equal(t, pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", Tenant: "organization acme"}, *refused,
+	require.Equal(t, pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", Tenant: "organization acme", Admin: "the organization acme"}, *refused,
 		"no display name another caller's roster listed: the refusal does not say the Agent exists")
 	require.Empty(t, f.muster.Calls(), "nothing is started")
 
@@ -570,62 +570,94 @@ func (o organizationNames) Organization(namespace string) (string, string, bool)
 	return org[0], org[1], ok
 }
 
-// knownOrganizations names the two organization namespaces of
-// organizationsFake: payments, and acme, named like its parent's Giant
-// Swarm organization.
+func (o organizationNames) Shared(name string) bool {
+	parents := map[string]bool{}
+	for _, org := range o {
+		if org[0] == name {
+			parents[org[1]] = true
+		}
+	}
+	return len(parents) > 1
+}
+
+// knownOrganizations names the organization namespaces of organizationsFake:
+// payments in org-acme and payments in org-beta, two organizations of one
+// name, and acme, named like its parent's Giant Swarm organization.
 var knownOrganizations = organizationNames{
 	"agents-payments-x7k2p": {"payments", "org-acme"},
+	"agents-payments-b3c4d": {"payments", "org-beta"},
 	"agents-acme-q9w8e":     {"acme", "org-acme"},
 }
 
 // organizationsFake is a fake controller with alice permitted an Agent of
 // the parent namespace org-acme, one of each of the organization namespaces
-// agents-payments-x7k2p and agents-acme-q9w8e, and one of a plain namespace.
+// agents-payments-x7k2p, agents-payments-b3c4d and agents-acme-q9w8e, and
+// one of a plain namespace.
 func organizationsFake(t *testing.T) *fakeKagent {
 	t.Helper()
 	f := newFakeKagent()
 	f.agents = []*apiv1alpha1.Agent{
 		inNamespace(agent(t, "billing", nil, "acme-template", "kagent", readyCondition(true, "Ready", "")), "org-acme"),
 		inNamespace(agent(t, "ledger", nil, "payments-template", "kagent", readyCondition(true, "Ready", "")), "agents-payments-x7k2p"),
+		inNamespace(agent(t, "ledger", nil, "payments-template", "kagent", readyCondition(true, "Ready", "")), "agents-payments-b3c4d"),
 		inNamespace(agent(t, "billing", nil, "acme-template", "kagent", readyCondition(true, "Ready", "")), "agents-acme-q9w8e"),
 		inNamespace(agent(t, "helper", nil, "other-template", "kagent", readyCondition(true, "Ready", "")), "other"),
 	}
-	f.permitted = map[string][]string{"Bearer alice": {"org-acme", "agents-payments-x7k2p", "agents-acme-q9w8e", "other"}}
+	f.permitted = map[string][]string{"Bearer alice": {"org-acme", "agents-payments-x7k2p", "agents-payments-b3c4d", "agents-acme-q9w8e", "other"}}
 	return f
 }
 
 // An Agent of an organization namespace is labelled by its organization's
-// name and parent namespace, never by the namespace, so an organization named
-// like its parent's Giant Swarm organization does not read like the parent;
-// the parent namespace org-<name> and any other namespace keep their labels,
-// and so does an organization namespace whose organization is not known.
+// name alone, never by the namespace; two organizations of one name add
+// their parent without its org- prefix, so they never read the same. The
+// parent namespace org-<name> and any other namespace keep their labels, and
+// so does an organization namespace whose organization is not known. An
+// organization named like the platform tenant adds its parent too.
 func TestClient_ListAgents_NamesAnOrganizationNamespaceByItsOrganization(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		organizations pkga2a.OrganizationNames
 		want          []string
 	}{
-		{"organization known", knownOrganizations, []string{
+		{"organizations known", knownOrganizations, []string{
 			"org-acme/billing organization acme",
-			"agents-payments-x7k2p/ledger organization payments (org-acme)",
-			"agents-acme-q9w8e/billing organization acme (org-acme)",
+			"agents-payments-x7k2p/ledger payments, acme",
+			"agents-payments-b3c4d/ledger payments, beta",
+			"agents-acme-q9w8e/billing acme",
 			"other/helper namespace other",
 		}},
-		{"parent not known", organizationNames{"agents-payments-x7k2p": {"payments", ""}}, []string{
+		{"name not shared", organizationNames{"agents-payments-x7k2p": {"payments", "org-acme"}, "agents-acme-q9w8e": {"acme", "org-acme"}}, []string{
 			"org-acme/billing organization acme",
-			"agents-payments-x7k2p/ledger organization payments",
+			"agents-payments-x7k2p/ledger payments",
+			"agents-payments-b3c4d/ledger namespace agents-payments-b3c4d",
+			"agents-acme-q9w8e/billing acme",
+			"other/helper namespace other",
+		}},
+		{"parent not known", organizationNames{"agents-payments-x7k2p": {"payments", ""}, "agents-payments-b3c4d": {"payments", "beta"}}, []string{
+			"org-acme/billing organization acme",
+			"agents-payments-x7k2p/ledger payments",
+			"agents-payments-b3c4d/ledger payments, beta",
+			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
+			"other/helper namespace other",
+		}},
+		{"organization named like the platform", organizationNames{"agents-payments-x7k2p": {pkga2a.PlatformTenant, "org-acme"}}, []string{
+			"org-acme/billing organization acme",
+			"agents-payments-x7k2p/ledger platform, acme",
+			"agents-payments-b3c4d/ledger namespace agents-payments-b3c4d",
 			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
 			"other/helper namespace other",
 		}},
 		{"organization not known", organizationNames{}, []string{
 			"org-acme/billing organization acme",
 			"agents-payments-x7k2p/ledger namespace agents-payments-x7k2p",
+			"agents-payments-b3c4d/ledger namespace agents-payments-b3c4d",
 			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
 			"other/helper namespace other",
 		}},
 		{"no source", nil, []string{
 			"org-acme/billing organization acme",
 			"agents-payments-x7k2p/ledger namespace agents-payments-x7k2p",
+			"agents-payments-b3c4d/ledger namespace agents-payments-b3c4d",
 			"agents-acme-q9w8e/billing namespace agents-acme-q9w8e",
 			"other/helper namespace other",
 		}},
@@ -639,15 +671,21 @@ func TestClient_ListAgents_NamesAnOrganizationNamespaceByItsOrganization(t *test
 	}
 }
 
-// The refusal of an organization namespace's Agent names the organization,
-// as the roster does.
-func TestClient_Agent_RefusalNamesTheOrganization(t *testing.T) {
+// The refusal of an organization's Agent names it as the roster does, and
+// sends the person to an admin of the organization.
+func TestClient_StartSession_RefusesAnOrganizationsAgentByItsName(t *testing.T) {
 	client := organizationsFake(t).serve(t, pkga2a.Config{Organizations: knownOrganizations})
 
-	_, err := client.Agent(asUser(t.Context(), "bob"), "agents-payments-x7k2p/ledger")
-	var refused *pkga2a.AgentNotPermittedError
-	require.ErrorAs(t, err, &refused)
-	require.Equal(t, "organization payments (org-acme)", refused.Tenant)
+	for ref, want := range map[string]pkga2a.AgentNotPermittedError{
+		"agents-acme-q9w8e/billing":    {Ref: "agents-acme-q9w8e/billing", Name: "billing", Tenant: "acme", Admin: "the organization acme"},
+		"agents-payments-b3c4d/ledger": {Ref: "agents-payments-b3c4d/ledger", Name: "ledger", Tenant: "payments, beta", Admin: "the organization payments (beta)"},
+		"other/helper":                 {Ref: "other/helper", Name: "helper", Tenant: "namespace other", Admin: "the namespace other"},
+	} {
+		_, err := client.StartSession(asUser(t.Context(), "bob"), ref, "req-1", "", workspaces.Grant{})
+		var refused *pkga2a.AgentNotPermittedError
+		require.ErrorAs(t, err, &refused, ref)
+		require.Equal(t, want, *refused, ref)
+	}
 }
 
 // How an Agent looks is the one thing kept between calls: it labels a reply
