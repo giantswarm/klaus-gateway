@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
 
@@ -48,6 +49,50 @@ func TestConnectorConsent_DroppedStateContinuesNothing(t *testing.T) {
 	a.dropConnectorCompletions([]string{stateID})
 	_, ok := a.takeConnectorAnswer("U1", stateID)
 	require.False(t, ok)
+}
+
+// A thread's held message is its latest prompt's, while that state is alive
+// and unanswered; a click that already continues any of the thread's states
+// runs its own message, so none is handed out. Every state is forgotten.
+func TestConnectorConsent_TakeHeldStart(t *testing.T) {
+	mint := func(a *Adapter, text string) string {
+		return a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", held: &heldMessage{SlackChannel: "C1", Msg: channels.InboundMessage{Text: text}}})
+	}
+	expire := func(a *Adapter, stateID string) {
+		a.connectorCompletionsMu.Lock()
+		defer a.connectorCompletionsMu.Unlock()
+		stored := a.connectorCompletions[stateID]
+		stored.expires = time.Now().Add(-time.Second)
+		a.connectorCompletions[stateID] = stored
+	}
+
+	t.Run("the latest prompt's message", func(t *testing.T) {
+		a := &Adapter{}
+		states := []string{mint(a, "first"), mint(a, "second")}
+		held, continuing := a.takeHeldStart(states)
+		require.False(t, continuing)
+		require.NotNil(t, held)
+		require.Equal(t, "second", held.Msg.Text)
+		_, ok := a.takeConnectorAnswer("U1", states[0])
+		require.False(t, ok, "every state is forgotten")
+	})
+	t.Run("expired", func(t *testing.T) {
+		a := &Adapter{}
+		states := []string{mint(a, "first"), mint(a, "second")}
+		expire(a, states[1])
+		held, continuing := a.takeHeldStart(states)
+		require.False(t, continuing)
+		require.Nil(t, held, "an earlier prompt's message is not run in its place")
+	})
+	t.Run("a click continues it", func(t *testing.T) {
+		a := &Adapter{}
+		states := []string{mint(a, "first"), mint(a, "second")}
+		_, ok := a.takeConnectorAnswer("U1", states[0])
+		require.True(t, ok)
+		held, continuing := a.takeHeldStart(states)
+		require.True(t, continuing)
+		require.Nil(t, held, "the click's continuation runs its own message")
+	})
 }
 
 func TestSignInLinkText(t *testing.T) {

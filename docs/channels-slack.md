@@ -144,9 +144,11 @@ creates one, which a turn that switches agents does mid-thread.
   the app)"). A later message of the person's before they sign in posts the ephemeral again
   and refreshes the DM card in place; the line stays. Once the person has signed in, the line
   reads "@Jose signed in." and the card is a confirmation: the click's continuation does it and
-  runs the held message ("Signed in. Your message is on its way to the agent."), and so does
-  the person's next turn in the thread that starts its Session, however they signed in, when
-  the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
+  runs the held message ("Signed in. Your message is on its way to the agent."). The same
+  click settles every other thread where the person waits for a sign-in to the same muster
+  tool and runs that thread's held message there; a thread whose held message expired gets
+  "Signed in." alone. So does the person's next turn in the thread that starts its Session,
+  however they signed in, when the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
   Every surface's button carries the completion state; the ephemeral is replaced at the click
   through its `response_url` ("Opened the sign-in link. ..."), the cards are rewritten in place. A
   collaborator whose turn would start the

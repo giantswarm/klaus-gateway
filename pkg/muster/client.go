@@ -69,6 +69,10 @@ type SignIn struct {
 	requestState string
 }
 
+// Tool is the muster tool whose call asked for the sign-in. A tool belongs to
+// one server, so two sign-ins of the same tool wait for the same server.
+func (s *SignIn) Tool() string { return s.tool }
+
 // ErrUnusableSignIn is a sign-in muster asked for that the gateway will not
 // show: not one URL mode elicitation, or a link that is not https (http only
 // on a loopback host) or that carries credentials.
