@@ -10,7 +10,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/giantswarm/pagekit v0.3.8
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/mark3labs/mcp-go v1.5.0
+	github.com/mark3labs/mcp-go v1.6.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/prometheus/common v0.74.0
