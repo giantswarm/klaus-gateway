@@ -189,9 +189,11 @@ app-test-suite, `tests/`, installed with the branch's own dev image) and `push-c
 to the test catalog). A PR can be tried on an installation by pinning its dev tag. On a `v*` tag:
 `push-to-registries-release` (multi-arch image to gsoci and gsociprivate; `sync-china-registry`
 mirrors to Aliyun without gating the chart) and `push-chart-release` (chart to the giantswarm
-catalog). Every merge to `main` with a releasable commit (any type but `docs` and `style`, see
-`cliff.toml`) cuts a pre-release `vX.Y.Z-rc.N` (Auto Release workflow); a stable `vX.Y.Z` is cut only
-by running that workflow with `release-type: stable`, which promotes the latest candidate since the
-last stable tag. Installations without `gitops.prereleases` follow stable tags only. Release images
+catalog). `cliff.toml` skips `ci`, `chore`, `docs`, `style` and `test` commits for version bumps and
+release notes. A merge containing only skipped types starts no release cycle; a new `test:` commit
+can advance an existing candidate without changing its target version or notes. The Auto Release
+workflow tags patch bumps as stable `vX.Y.Z` directly and minor or major bumps as `vX.Y.Z-rc.N`.
+Running it with `release-type: stable` promotes the latest candidate since the last stable tag.
+Installations without `gitops.prereleases` follow stable tags only. Release images
 and charts are never published by hand. Required checks on `main`: semantic PR title, pre-commit,
 values schema, `go-build`, `build-chart`, `execute-chart-tests`.

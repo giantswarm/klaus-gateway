@@ -40,9 +40,7 @@ func captureDispatch(rec *slackadapter.MemoryRecorder) (*stubGateway, func() []c
 	}
 }
 
-// A message parked while its sender signs in survives a restart between the
-// sign-in prompt and the callback: the sign-in completed on the new process
-// replays it (klaus-gateway#132).
+// Messages durably parked for sign-in replay in arrival order after a restart.
 func TestRestart_LoginParkedMessageReplaysAfterSignIn(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
@@ -52,9 +50,13 @@ func TestRestart_LoginParkedMessageReplaysAfterSignIn(t *testing.T) {
 	a1.OBO = &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
 	openConversationIn(t, shared, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv1, mention("U123", "what failed on prod?", "100.000", ""))
-	sendEvent(t, srv1, mention("U123", "and on staging?", "101.000", "100.000"))
 	fake.waitForPath(t, "chat.postMessage", 1)
-	require.NoError(t, a1.Stop(context.Background()))
+	sendEvent(t, srv1, mention("U123", "and on staging?", "101.000", "100.000"))
+	require.Eventually(t, func() bool {
+		row, _, err := shared.ThreadRecord(t.Context(), "slack", "C1", "100.000")
+		return err == nil && strings.Contains(string(row.Held), "what failed on prod?") && strings.Contains(string(row.Held), "and on staging?")
+	}, flowWait, 20*time.Millisecond, "both parked messages reach the thread's row")
+	require.NoError(t, a1.Stop(t.Context()))
 	require.True(t, heldIn(t, shared, "C1", "100.000"), "the parked messages are in the thread's row")
 
 	gw2, captured := captureDispatch(shared)
