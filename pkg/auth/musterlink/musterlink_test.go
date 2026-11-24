@@ -516,6 +516,7 @@ func TestTokenForTransientRefreshErrorKeepsLink(t *testing.T) {
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrNotLinked)
+	require.ErrorIs(t, err, ErrRefreshFailed, "the caller can tell a refused refresh from a store that is away")
 	got, err := store.Get("U1")
 	require.NoError(t, err, "a transient refresh failure must retain the link")
 	require.Equal(t, "refresh-0", got.RefreshToken)

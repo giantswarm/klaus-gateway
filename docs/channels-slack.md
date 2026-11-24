@@ -1108,8 +1108,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Transient sign-in failures.** When a linked person's token cannot be minted right now —
   muster's token endpoint or the gateway's link store not answering — they get an ephemeral
   "Your Giant Swarm sign-in could not be refreshed" notice and their message is not held;
-  the sign-in prompt is reserved for people with no link. `login` answers the same way, and
-  `logout` reports a sign-out the link store refused instead of confirming it. The gateway
+  the sign-in prompt is reserved for people with no link. `login` answers the same way when the
+  link store is not answering. When muster's token endpoint does not renew the sign-in, `login`
+  says so and posts the sign-in prompt: a new sign-in issues a new refresh token and does not
+  depend on the stored one. `logout` reports a sign-out the link store refused instead of confirming it. The gateway
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").

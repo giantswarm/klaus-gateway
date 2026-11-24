@@ -114,6 +114,12 @@ const DefaultMinTokenLifetime = 25 * time.Minute
 // callers report it as such rather than prompting a sign-in.
 var ErrNotLinked = errors.New("musterlink: slack user is not linked to a muster identity")
 
+// ErrRefreshFailed is wrapped by the TokenFor error when muster's token endpoint
+// answered the refresh with something other than invalid_grant, or did not
+// answer. The link is kept, but a new sign-in issues a new refresh token and
+// does not depend on the stored one, so the login command offers one.
+var ErrRefreshFailed = errors.New("musterlink: refresh token for slack user")
+
 // Config configures a Linker.
 type Config struct {
 	// BaseURL is the muster authorization server base URL. RFC 8414 discovery
@@ -852,7 +858,7 @@ func (l *Linker) sendRefreshRequest(ctx context.Context, slackUserID string, lin
 			l.logger.Warn("musterlink: refresh request failed, the refresh token's state at muster is unknown", "slackUser", slackUserID, "err", err)
 			l.releaseRefreshLease(slackUserID, link.RefreshToken)
 		}
-		return "", time.Time{}, nil, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
+		return "", time.Time{}, nil, fmt.Errorf("%w: %w", ErrRefreshFailed, err)
 	}
 	// The refresh succeeded, so muster has already rotated the refresh token
 	// server-side; persist it even when the response is unusable, or the stored
