@@ -963,19 +963,9 @@ func (s signInAnchor) addressable() bool { return s.ts != "" || s.ephemeral }
 //
 // trigger is what asked for the prompt; it picks the card's last line.
 func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string, supersedes bool, trigger signInTrigger) {
-	url := a.OBO.LinkURL(slackUser)
-	if url == "" {
-		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
-		a.clearSignInReservation(slackUser, threadID)
+	if !a.postSignInCard(ctx, slackChannel, threadID, slackUser, supersedes, trigger) {
 		return
 	}
-	anchor, err := a.postSignInPrompt(ctx, slackChannel, threadID, slackUser, url, supersedes, trigger)
-	if err != nil {
-		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
-		a.clearSignInReservation(slackUser, threadID)
-		return
-	}
-	a.recordSignInAnchor(slackUser, threadID, anchor)
 	// The post ran outside any lock, so a link callback may have drained the
 	// anchors while the prompt was in flight; the just-recorded anchor would
 	// then keep a live sign-in button for an already-linked user and suppress
@@ -983,6 +973,29 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err == nil {
 		a.updateSignInAnchors(ctx, slackUser)
 	}
+}
+
+// postSignInCard posts the sign-in prompt and records its anchor, without the
+// re-check postSignIn ends with. It reports whether the prompt was posted. The
+// login command calls it directly for a link whose refresh muster's token
+// endpoint just failed: the re-check would send that endpoint a second refresh,
+// hold the person's lock while it waits, and could present a token muster
+// already rotated.
+func (a *Adapter) postSignInCard(ctx context.Context, slackChannel, threadID, slackUser string, supersedes bool, trigger signInTrigger) bool {
+	url := a.OBO.LinkURL(slackUser)
+	if url == "" {
+		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
+		a.clearSignInReservation(slackUser, threadID)
+		return false
+	}
+	anchor, err := a.postSignInPrompt(ctx, slackChannel, threadID, slackUser, url, supersedes, trigger)
+	if err != nil {
+		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
+		a.clearSignInReservation(slackUser, threadID)
+		return false
+	}
+	a.recordSignInAnchor(slackUser, threadID, anchor)
+	return true
 }
 
 // postSignInPrompt posts the prompt on the terms of its surface and returns

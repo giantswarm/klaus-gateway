@@ -398,9 +398,13 @@ func TestHandleCommand_LoginStoreDownRepliesTransientNotice(t *testing.T) {
 
 // refreshFailedOBO is a linked identity whose stored refresh token muster's
 // token endpoint will not renew (a 503, say): retrying gives the same answer.
-type refreshFailedOBO struct{ identOBO }
+type refreshFailedOBO struct {
+	identOBO
+	mints atomic.Int32
+}
 
-func (refreshFailedOBO) TokenFor(context.Context, string) (string, error) {
+func (o *refreshFailedOBO) TokenFor(context.Context, string) (string, error) {
+	o.mints.Add(1)
 	return "", fmt.Errorf("%w: %w", musterlink.ErrRefreshFailed, errors.New("oauth2: cannot fetch token: 503 Service Unavailable"))
 }
 
@@ -409,9 +413,12 @@ func (refreshFailedOBO) TokenFor(context.Context, string) (string, error) {
 // "try again" notice that sends the person back to /login.
 func TestHandleCommand_LoginRefreshFailedRepromptsSignIn(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	a.OBO = refreshFailedOBO{}
+	obo := &refreshFailedOBO{}
+	a.OBO = obo
 
 	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(1), obo.mints.Load(),
+		"one refresh attempt: a second one waits on the failing endpoint and may replay a rotated token")
 	require.Equal(t, int32(2), srv.ephemerals.Load(), "the reason and the sign-in prompt reach the caller only")
 	srv.mu.Lock()
 	defer srv.mu.Unlock()

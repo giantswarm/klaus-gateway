@@ -389,7 +389,7 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		if errors.Is(err, musterlink.ErrRefreshFailed) {
 			a.Logger.Warn("slack: login probe could not refresh, prompting sign-in", "user", slackUser, "error", err)
 			reply(loginRefreshFailedNotice)
-			a.postSignIn(ctx, slackChannel, threadID, slackUser, false, signInForLogin)
+			a.postSignInCard(ctx, slackChannel, threadID, slackUser, false, signInForLogin)
 			return true
 		}
 		if !errors.Is(err, musterlink.ErrNotLinked) {
