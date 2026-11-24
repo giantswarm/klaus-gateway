@@ -441,7 +441,10 @@ from still waits for its own *Sign in*.
 
 ## 8. OBO sign-in (act-as-user account linking)
 
-Posted when a turn needs the user's token but they haven't linked their account. In a
+Posted when a turn needs the user's token but they haven't linked their account, and by
+`login` for a linked user whose sign-in muster's token endpoint would not renew; there the
+card follows the ephemeral line "Your Giant Swarm sign-in could not be refreshed, so here is
+a new sign-in link." In a
 channel it is ephemeral to that user, and the same card, led by "Asked in a thread in
 #channel." (the thread linked), goes to the user's DM, where it waits for a Slack client that
 was closed; a later message in the thread re-issues the ephemeral and refreshes the DM card in

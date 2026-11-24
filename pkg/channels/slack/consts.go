@@ -387,6 +387,10 @@ const storeUnavailableNotice = "The thread state could not be read, so your mess
 
 const tokenErrorNotice = "Your Giant Swarm sign-in could not be refreshed. Try again in a moment. If it keeps failing, mention the bot with `login` to sign in again."
 
+// loginRefreshFailedNotice is shown (ephemerally) before the sign-in prompt
+// when login finds a sign-in that muster's token endpoint would not renew.
+const loginRefreshFailedNotice = "Your Giant Swarm sign-in could not be refreshed, so here is a new sign-in link."
+
 // logoutFailedNotice is shown (ephemerally) when logout could not remove the
 // link from the store, so the person does not believe they are signed out.
 const logoutFailedNotice = "The sign-out failed: your sign-in could not be removed. Mention the bot with `logout` again in a moment."

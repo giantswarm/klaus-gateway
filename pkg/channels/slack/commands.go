@@ -381,9 +381,17 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 	// provider may have revoked the token family since (the linker reports that
 	// as ErrNotLinked once it has dropped the link), so a dead link re-prompts
 	// instead of confirming a sign-in that fails on the next turn. A link store
-	// or token endpoint that is briefly away is neither: the person is most
-	// likely signed in and is told to retry, not sent through a new sign-in.
+	// that is briefly away is neither: the person is most likely signed in and
+	// is told to retry, not sent through a new sign-in the same store could not
+	// take. A token endpoint that refuses to renew the stored refresh token is
+	// different: a new sign-in issues a new one, so login offers it.
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+		if errors.Is(err, musterlink.ErrRefreshFailed) {
+			a.Logger.Warn("slack: login probe could not refresh, prompting sign-in", "user", slackUser, "error", err)
+			reply(loginRefreshFailedNotice)
+			a.postSignInCard(ctx, slackChannel, threadID, slackUser, false, signInForLogin)
+			return true
+		}
 		if !errors.Is(err, musterlink.ErrNotLinked) {
 			a.Logger.Warn("slack: login probe failed", "user", slackUser, "error", err)
 			reply(tokenErrorNotice)

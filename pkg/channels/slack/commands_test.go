@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -393,6 +394,39 @@ func TestHandleCommand_LoginStoreDownRepliesTransientNotice(t *testing.T) {
 	defer srv.mu.Unlock()
 	require.Contains(t, srv.ephemeralTexts[0], tokenErrorNotice)
 	require.NotContains(t, srv.ephemeralTexts[0], "*Sign in to Giant Swarm*")
+}
+
+// refreshFailedOBO is a linked identity whose stored refresh token muster's
+// token endpoint will not renew (a 503, say): retrying gives the same answer.
+type refreshFailedOBO struct {
+	identOBO
+	mints atomic.Int32
+}
+
+func (o *refreshFailedOBO) TokenFor(context.Context, string) (string, error) {
+	o.mints.Add(1)
+	return "", fmt.Errorf("%w: %w", musterlink.ErrRefreshFailed, errors.New("oauth2: cannot fetch token: 503 Service Unavailable"))
+}
+
+// A token endpoint that will not renew the stored refresh token does not stop
+// a new sign-in, which issues a new one: /login must offer it instead of the
+// "try again" notice that sends the person back to /login.
+func TestHandleCommand_LoginRefreshFailedRepromptsSignIn(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	obo := &refreshFailedOBO{}
+	a.OBO = obo
+
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(1), obo.mints.Load(),
+		"one refresh attempt: a second one waits on the failing endpoint and may replay a rotated token")
+	require.Equal(t, int32(2), srv.ephemerals.Load(), "the reason and the sign-in prompt reach the caller only")
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Equal(t, loginRefreshFailedNotice, srv.ephemeralTexts[0])
+	require.Contains(t, srv.ephemeralTexts[1], "*Sign in to Giant Swarm*")
+	for _, text := range srv.ephemeralTexts {
+		require.NotContains(t, text, tokenErrorNotice)
+	}
 }
 
 // A sign-out the store refused is reported as such: confirming it would leave

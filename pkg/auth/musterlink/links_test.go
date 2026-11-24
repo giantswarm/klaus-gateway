@@ -198,6 +198,7 @@ func TestTokenForStoreReadFailureIsTransientNotUnlinked(t *testing.T) {
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.ErrorIs(t, err, errStoreDown, "the store's failure reaches the caller")
 	require.NotErrorIs(t, err, ErrNotLinked)
+	require.NotErrorIs(t, err, ErrRefreshFailed, "a store that is away is not a refused refresh")
 	_, _, ok := l.LinkedIdentity("U1")
 	require.False(t, ok)
 	require.Equal(t, 0, stub.issued(), "nothing was spent at muster")
