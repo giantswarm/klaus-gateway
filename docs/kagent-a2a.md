@@ -161,7 +161,9 @@ thread to exactly one session:
    the later agent-manager refuses for an organization's namespace rather than starting another
    Agent. Nothing of the lookup is cached, so a first turn costs one more muster call for an
    organization's Agent, and none more for an Agent of `a2a.namespace`. A refused token or a
-   sign-in muster asks for on the lookup is answered as on the start. agent-manager's refusal of
+   sign-in muster asks for on the lookup is answered as on the start. A start by `organization`
+   whose answer does not name that organization (an agent-manager without the argument answered
+   it, another replica mid-rollout) is refused: nothing is sent to that Session. agent-manager's refusal of
    the organization (not found, its Agent Platform not enabled, or not ready yet) and of an
    Agent it cannot run is shown to the person in agent-manager's own words.
 

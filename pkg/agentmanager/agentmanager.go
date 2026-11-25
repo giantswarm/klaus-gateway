@@ -133,7 +133,10 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 		return pkga2a.Session{}, refusal(ref, res.Text)
 	}
 	var out struct {
-		Session *struct {
+		// Organization is the organization agent-manager started the
+		// Session in, when it started it by one.
+		Organization string `json:"organization"`
+		Session      *struct {
 			ID        string `json:"id"`
 			State     string `json:"state"`
 			ContextID string `json:"contextId"`
@@ -148,6 +151,13 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 	}
 	if out.Session == nil || out.Session.ID == "" {
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: %s answered no session id", ref, s.tool)
+	}
+	// An agent-manager that does not take organization (another replica
+	// mid-rollout, a rollback since the lookup) drops it and starts the Agent
+	// of that name in its default namespace: the answer then names no
+	// organization, and the turn must not go to that Session.
+	if organization != "" && out.Organization != organization {
+		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: %s started Session %s not in organization %s but in %q; nothing is sent to it", ref, s.tool, out.Session.ID, organization, out.Organization)
 	}
 	// The routing store keeps the session id alone and every later turn names
 	// it as the message's context id, so the two must be the same.

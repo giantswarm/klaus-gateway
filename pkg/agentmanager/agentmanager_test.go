@@ -2,6 +2,7 @@ package agentmanager_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -48,7 +49,6 @@ func starterWith(t *testing.T, tools map[string]func(map[string]any) mustertest.
 // parent). Whatever the person's organizations, an Agent outside them starts
 // by namespace, and a platform namespace asks for none.
 func TestStartSession_NamesTheAgentAsTheInstallationsAgentManagerTakesIt(t *testing.T) {
-	const started = `{"session":{"id":"` + sessionID + `","state":"RUNTIME_STATE_READY"}}`
 	byOrganization := map[string]any{"organization": "acme", "name": "billing", "requestId": "req-1", "noWorkspace": true}
 	byNamespace := func(ns string) map[string]any {
 		return map[string]any{"namespace": ns, "name": "billing", "requestId": "req-1", "noWorkspace": true}
@@ -94,7 +94,7 @@ func TestStartSession_NamesTheAgentAsTheInstallationsAgentManagerTakesIt(t *test
 	} {
 		t.Run(name, func(t *testing.T) {
 			tools := map[string]func(map[string]any) mustertest.Answer{
-				tool: func(map[string]any) mustertest.Answer { return mustertest.Answer{Text: started} },
+				tool: startedAsAgentManagerAnswers,
 			}
 			if tc.organizations != nil {
 				tools[prefix+"list_organizations"] = func(map[string]any) mustertest.Answer { return *tc.organizations }
@@ -113,6 +113,34 @@ func TestStartSession_NamesTheAgentAsTheInstallationsAgentManagerTakesIt(t *test
 			}
 		})
 	}
+}
+
+// startedAsAgentManagerAnswers is start_session's answer: a ready Session,
+// naming the organization it was started in when it was started by one.
+func startedAsAgentManagerAnswers(args map[string]any) mustertest.Answer {
+	answer := map[string]any{"session": map[string]any{"id": sessionID, "state": "RUNTIME_STATE_READY"}}
+	if org, ok := args["organization"]; ok {
+		answer["organization"] = org
+	}
+	text, _ := json.Marshal(answer)
+	return mustertest.Answer{Text: string(text)}
+}
+
+// A start by organization that an agent-manager without organization
+// answered (another replica mid-rollout: it drops the argument and starts the
+// Agent of that name in its default namespace) is no Session of the
+// organization's Agent.
+func TestStartSession_RefusesASessionOutsideTheOrganization(t *testing.T) {
+	starter, _ := starterWith(t, map[string]func(map[string]any) mustertest.Answer{
+		prefix + "list_organizations": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: `{"organizations":[{"name":"acme","namespace":"agents-acme"}]}`}
+		},
+		tool: func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: `{"session":{"id":"` + sessionID + `","state":"RUNTIME_STATE_READY","agent":{"namespace":"kagent","name":"billing"}}}`}
+		},
+	})
+	_, err := starter.StartSession(context.Background(), bearer, "agents-acme", "billing", "req-1", "", workspaces.Grant{})
+	require.ErrorContains(t, err, "not in organization acme")
 }
 
 // An organization agent-manager cannot start a Session in is refused in
