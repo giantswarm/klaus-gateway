@@ -70,7 +70,7 @@ func elicitationDoneButton(stateID string) map[string]any {
 func (a *Adapter) elicitationLink(link, elicitationID string) string {
 	withReturn := muster.ReturnLink(link, a.MusterURL, a.ElicitationReturnURL, elicitationID)
 	if muster.ValidateSignInURL(withReturn) != nil {
-		return link
+		return muster.ReturnLink(link, a.MusterURL, "", "")
 	}
 	return withReturn
 }

@@ -298,12 +298,12 @@ func (c *Client) signInOfRequired(required mcp.URLElicitationRequiredError, tool
 	}, nil
 }
 
-// returnLink is link with the gateway's return (ReturnLink), or link as given
-// when the return would make it one the person cannot be shown.
+// returnLink is link with the gateway's return (ReturnLink), or, when the
+// return would make it one the person cannot be shown, without any redirect.
 func (c *Client) returnLink(link, elicitationID string) string {
 	withReturn := ReturnLink(link, c.BaseURL, c.ReturnURL, elicitationID)
 	if ValidateSignInURL(withReturn) != nil {
-		return link
+		return ReturnLink(link, c.BaseURL, "", "")
 	}
 	return withReturn
 }
@@ -314,12 +314,14 @@ func (c *Client) returnLink(link, elicitationID string) string {
 // elicitation's elicitationId to it, never what was decided.
 const ReturnLinkParam = "redirect"
 
-// ReturnLink adds returnURL as the redirect of link when link is on the
-// origin of musterURL (scheme, host and port) and has an elicitationID to
-// key the return by. Any other link, or one that already names a redirect,
-// is returned as given.
+// ReturnLink sets returnURL as the redirect of link when link is on the
+// origin of musterURL (scheme, host and port, a default port written or not)
+// and has an elicitationID to key the return by. A redirect a link on
+// muster's origin already names is never kept, since it was not the
+// gateway's: it is replaced, or dropped when there is no return to set. Any
+// other link is returned as given.
 func ReturnLink(link, musterURL, returnURL, elicitationID string) string {
-	if returnURL == "" || musterURL == "" || elicitationID == "" {
+	if musterURL == "" {
 		return link
 	}
 	m, err := url.Parse(musterURL)
@@ -327,16 +329,41 @@ func ReturnLink(link, musterURL, returnURL, elicitationID string) string {
 		return link
 	}
 	u, err := url.Parse(link)
-	if err != nil || !strings.EqualFold(u.Scheme, m.Scheme) || !strings.EqualFold(u.Host, m.Host) {
+	if err != nil || !sameOrigin(u, m) {
 		return link
 	}
 	q := u.Query()
-	if q.Has(ReturnLinkParam) {
+	if !q.Has(ReturnLinkParam) && (returnURL == "" || elicitationID == "") {
 		return link
 	}
-	q.Set(ReturnLinkParam, returnURL)
+	q.Del(ReturnLinkParam)
+	if returnURL != "" && elicitationID != "" {
+		q.Set(ReturnLinkParam, returnURL)
+	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// sameOrigin reports whether a and b share scheme, host and port, a scheme's
+// default port written or left out alike.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		originPort(a) == originPort(b)
+}
+
+// originPort is u's port, its scheme's default when none is written.
+func originPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // SignInURLMaxBytes bounds a sign-in link as a client writes it in markup,
