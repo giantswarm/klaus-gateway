@@ -59,8 +59,7 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 		return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
 	}
 
-	link := a.elicitationLink(signIn.URL, signIn.ElicitationID)
-	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID, elicitationID: signIn.ElicitationID})
+	stateID, link := a.mintPrompt(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID, elicitationID: signIn.ElicitationID}, signIn.URL)
 	text := lead + "\n" + fmt.Sprintf(signInAskedBy, escapeMrkdwnCapped(server, signInServerNameMaxRunes)) + "\n" + signInLinkText(link) + "\n" + signInPromptTail
 	blocks := connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, stateID, false, client.authorizeAll)
 	actions, _ := blocks[len(blocks)-1].(map[string]any)

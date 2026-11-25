@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"net/url"
 	"time"
@@ -13,13 +14,22 @@ import (
 
 // ElicitationReturnPath is the gateway's generic return from a URL
 // elicitation's page on muster's origin: muster sends the browser here after
-// the person acted, with the elicitation's elicitationId, and the gateway
-// resumes the prompt that showed it as its Done would. It shares the
-// /auth/slack/ prefix the public route already sends to the gateway.
+// the person acted, and the gateway resumes the prompt that showed the link
+// as its Done would. It shares the /auth/slack/ prefix the public route
+// already sends to the gateway.
 const ElicitationReturnPath = "/auth/slack/return"
 
-// elicitationIDParam is the query parameter muster appends to the return.
+// elicitationIDParam is the query parameter muster appends to the return
+// after an approval.
 const elicitationIDParam = "elicitationId"
+
+// returnPromptParam is the query parameter of the return the gateway puts on
+// a prompt's link: the prompt's own random return key. muster's allowlist is
+// a prefix match that leaves the query free, and muster keeps the query when
+// it sends the browser back, so the return names the one prompt the gateway
+// issued the link in, to its person alone, and nothing anyone else can
+// derive from the elicitation.
+const returnPromptParam = "prompt"
 
 // elicitationReturnPage is what the browser shows after the return. It never
 // says what was decided: the outcome is muster's answer to the retried call,
@@ -63,16 +73,29 @@ func elicitationDoneButton(stateID string) map[string]any {
 	}
 }
 
-// elicitationLink is the link a runtime's URL elicitation prompt opens:
-// the server's, with the gateway's return added when it is on muster's origin
-// and the return is configured. A link the return would make unshowable is
-// kept as the server gave it.
-func (a *Adapter) elicitationLink(link, elicitationID string) string {
-	withReturn := muster.ReturnLink(link, a.MusterURL, a.ElicitationReturnURL, elicitationID)
-	if muster.ValidateSignInURL(withReturn) != nil {
-		return muster.ReturnLink(link, a.MusterURL, "", "")
+// promptLink is the link a URL elicitation prompt opens, and the prompt's
+// return key when the link carries the gateway's return: a link on muster's
+// origin gets the configured return with a fresh key (muster.ReturnLink),
+// and loses any redirect it brought. Any other link is opened as its server
+// gave it and gets no key, so no return resumes its prompt. A link the return
+// would make unshowable is kept without one.
+func (a *Adapter) promptLink(link string) (shown, returnKey string) {
+	if a.ElicitationReturnURL != "" {
+		key := randomToken()
+		withReturn := muster.ReturnLink(link, a.MusterURL, a.ElicitationReturnURL+"?"+url.Values{returnPromptParam: {key}}.Encode())
+		if withReturn != link && muster.ValidateSignInURL(withReturn) == nil {
+			return withReturn, key
+		}
 	}
-	return withReturn
+	return muster.ReturnLink(link, a.MusterURL, ""), ""
+}
+
+// mintPrompt stores entry's completion state for a prompt opening link and
+// returns the state's ID and the link the prompt shows (promptLink), whose
+// return key entry keeps.
+func (a *Adapter) mintPrompt(entry connectorCompletion, link string) (stateID, shown string) {
+	shown, entry.returnKey = a.promptLink(link)
+	return a.mintConnectorCompletion(entry), shown
 }
 
 // handleElicitationDone is a click on a URL elicitation prompt's Done: the
@@ -86,40 +109,45 @@ func (a *Adapter) handleElicitationDone(slackUser, stateID, responseURL string) 
 	a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, responseURL) })
 }
 
-// takeElicitationReturn marks every live, unanswered completion state of
-// elicitationID answered and returns them.
-func (a *Adapter) takeElicitationReturn(elicitationID string) []connectorCompletion {
-	if elicitationID == "" {
-		return nil
+// takeElicitationReturn marks the live, unanswered completion state whose
+// return key is returnKey answered and returns it. An elicitationID muster
+// appended must be the prompt's own; a sign-in's return carries none.
+func (a *Adapter) takeElicitationReturn(returnKey, elicitationID string) (connectorCompletion, bool) {
+	if returnKey == "" {
+		return connectorCompletion{}, false
 	}
 	now := time.Now()
 	a.connectorCompletionsMu.Lock()
 	defer a.connectorCompletionsMu.Unlock()
-	var taken []connectorCompletion
 	for id, stored := range a.connectorCompletions {
-		if stored.value.elicitationID != elicitationID || stored.value.consented || now.After(stored.expires) {
+		if stored.value.returnKey == "" || subtle.ConstantTimeCompare([]byte(stored.value.returnKey), []byte(returnKey)) != 1 {
 			continue
+		}
+		if stored.value.consented || now.After(stored.expires) ||
+			(elicitationID != "" && stored.value.elicitationID != "" && elicitationID != stored.value.elicitationID) {
+			return connectorCompletion{}, false
 		}
 		stored.value.consented = true
 		a.connectorCompletions[id] = stored
-		taken = append(taken, stored.value)
+		return stored.value, true
 	}
-	return taken
+	return connectorCompletion{}, false
 }
 
 // HandleElicitationReturn serves ElicitationReturnPath: muster's browser
-// return after the person acted at a URL elicitation's link. Every prompt
-// still waiting on that elicitationId continues as its Done would, as the
-// person it was posted for; muster decides the outcome on the retried call,
-// so the return carries no decision and the page states none. An unknown or
-// missing id gets the same page.
+// return after the person acted at a URL elicitation's link. The prompt the
+// return's key names, if it is still waiting, continues as its Done would, as
+// the person it was posted for; muster decides the outcome on the retried
+// call, so the return carries no decision and the page states none. An
+// unknown, used or missing key gets the same page.
 func (a *Adapter) HandleElicitationReturn(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	for _, entry := range a.takeElicitationReturn(r.URL.Query().Get(elicitationIDParam)) {
+	query := r.URL.Query()
+	if entry, ok := a.takeElicitationReturn(query.Get(returnPromptParam), query.Get(elicitationIDParam)); ok {
 		a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, "") })
 	}
 	h := w.Header()

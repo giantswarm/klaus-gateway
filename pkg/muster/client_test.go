@@ -393,57 +393,31 @@ func TestDecline_URLElicitationRequiredErrorSendsNothing(t *testing.T) {
 }
 
 // The generic return: a link on muster's origin gets redirect, the gateway's
-// return URL, so muster sends the browser back with the elicitationId. Any
-// other link, a link without an elicitationId, or one that already names a
-// redirect is left as muster gave it.
+// return URL, so muster sends the browser back there. A redirect the link
+// already names is never kept. Any other link is left as muster gave it.
 func TestReturnLink(t *testing.T) {
-	const returnURL = "https://gateway.example/auth/slack/return"
+	const returnURL = "https://gateway.example/auth/slack/return?prompt=k1"
+	const withReturn = "?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn%3Fprompt%3Dk1"
 	for name, tc := range map[string]struct {
-		link, musterURL, elicitationID, want string
+		link, musterURL, want string
 	}{
-		"muster's origin": {approvalURL, "https://muster.example/", approvalElicitationID,
-			approvalURL + "?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn"},
-		"keeps the query": {"https://muster.example/oauth/proxy/start?state=abc", "https://muster.example", "e1",
-			"https://muster.example/oauth/proxy/start?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn&state=abc"},
-		"another origin":    {"https://github.com/login/oauth?x=1", "https://muster.example", "e1", "https://github.com/login/oauth?x=1"},
-		"another port":      {"https://muster.example:8443/approvals/1", "https://muster.example", "e1", "https://muster.example:8443/approvals/1"},
-		"no elicitation id": {approvalURL, "https://muster.example", "", approvalURL},
-		"redirect already set is replaced": {approvalURL + "?redirect=https://portal.example/any/page", "https://muster.example", "e1",
-			approvalURL + "?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn"},
-		"default port on the link": {"https://muster.example:443/approvals/1", "https://muster.example", "e1",
-			"https://muster.example:443/approvals/1?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn"},
-		"default port on muster URL": {approvalURL, "https://muster.example:443", "e1",
-			approvalURL + "?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn"},
-		"no muster configured":   {approvalURL, "", "e1", approvalURL},
-		"unparseable muster URL": {approvalURL, "://", "e1", approvalURL},
+		"muster's origin":                  {approvalURL, "https://muster.example/", approvalURL + withReturn},
+		"keeps the query":                  {"https://muster.example/oauth/proxy/start?state=abc", "https://muster.example", "https://muster.example/oauth/proxy/start" + withReturn + "&state=abc"},
+		"another origin":                   {"https://github.com/login/oauth?x=1", "https://muster.example", "https://github.com/login/oauth?x=1"},
+		"another port":                     {"https://muster.example:8443/approvals/1", "https://muster.example", "https://muster.example:8443/approvals/1"},
+		"a longer host":                    {"https://muster.example.evil.example/approvals/1", "https://muster.example", "https://muster.example.evil.example/approvals/1"},
+		"plain http":                       {"http://muster.example/approvals/1", "https://muster.example", "http://muster.example/approvals/1"},
+		"redirect already set is replaced": {approvalURL + "?redirect=https://portal.example/any/page", "https://muster.example", approvalURL + withReturn},
+		"default port on the link":         {"https://muster.example:443/approvals/1", "https://muster.example", "https://muster.example:443/approvals/1" + withReturn},
+		"default port on muster URL":       {approvalURL, "https://muster.example:443", approvalURL + withReturn},
+		"no muster configured":             {approvalURL, "", approvalURL},
+		"unparseable muster URL":           {approvalURL, "://", approvalURL},
 	} {
 		t.Run(name, func(t *testing.T) {
-			require.Equal(t, tc.want, muster.ReturnLink(tc.link, tc.musterURL, returnURL, tc.elicitationID))
+			require.Equal(t, tc.want, muster.ReturnLink(tc.link, tc.musterURL, returnURL))
 		})
 	}
-	require.Equal(t, approvalURL, muster.ReturnLink(approvalURL, "https://muster.example", "", "e1"), "no return URL configured")
-	require.Equal(t, approvalURL+"?x=1", muster.ReturnLink(approvalURL+"?redirect=https://portal.example/any&x=1", "https://muster.example", "", "e1"),
-		"a redirect the link brought is dropped even without a return of the gateway's own")
-	require.Equal(t, approvalURL+"?x=1", muster.ReturnLink(approvalURL+"?redirect=https://portal.example/any&x=1", "https://muster.example", returnURL, ""),
-		"and without an elicitation id to key the return by")
-}
-
-// With a return URL set, the client puts it on the links muster answers with
-// on its own origin.
-func TestCallTool_ElicitationLinkOnMustersOriginGetsTheReturn(t *testing.T) {
-	fake := mustertest.New(nil)
-	defer fake.Close()
-	link := fake.URL + "/approvals/0f3a9c"
-	fake.Tools = map[string]func(map[string]any) mustertest.Answer{
-		"x_tool": func(map[string]any) mustertest.Answer {
-			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: approvalMessage, URL: link, ElicitationID: approvalElicitationID}}
-		},
-	}
-	client := muster.NewClient(fake.URL)
-	client.ReturnURL = "https://gateway.example/auth/slack/return"
-
-	res, err := client.CallTool(t.Context(), personToken, "x_tool", nil)
-	require.NoError(t, err)
-	require.NotNil(t, res.SignIn)
-	require.Equal(t, link+"?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn", res.SignIn.URL)
+	require.Equal(t, approvalURL, muster.ReturnLink(approvalURL, "https://muster.example", ""), "no return URL configured")
+	require.Equal(t, approvalURL+"?x=1", muster.ReturnLink(approvalURL+"?redirect=https://portal.example/any&x=1", "https://muster.example", ""),
+		"a redirect the link brought is dropped even without a return of the caller's own")
 }

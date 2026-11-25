@@ -714,9 +714,9 @@ func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, 
 		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "denial", decision.deny)
 	a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusConnecting, clicker, decision.verb()))
 
-	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: clicker, channel: rv.Channel, signIn: signIn, review: rv.ID, decision: decision})
-	text := signInPromptText(fmt.Sprintf(teamReviewConnectNotice, decision.verb()), signIn.Message, signIn.URL, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, signIn.URL, stateID); err != nil {
+	stateID, link := a.mintPrompt(connectorCompletion{slackUser: clicker, channel: rv.Channel, signIn: signIn, review: rv.ID, decision: decision}, signIn.URL)
+	text := signInPromptText(fmt.Sprintf(teamReviewConnectNotice, decision.verb()), signIn.Message, link, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.ID, "user", clicker, "error", err)
 	}
 }

@@ -881,3 +881,37 @@ func TestTeamReview_NeedsToolsAndLinking(t *testing.T) {
 	require.Error(t, err)
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
 }
+
+// The gateway's own prompt gets the return too: muster's sign-in sends the
+// browser back with the prompt's key (and server=<name>, no elicitationId),
+// and the decision is submitted as the person without a Done click.
+func TestTeamReview_MustersReturnSubmitsTheDecision(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{
+		reviewSignIn(),
+		{Text: "review submitted on giantswarm/github#4711"},
+	}}
+	a, srv, fake := teamReviewHarness(t, tools, func(a *slackadapter.Adapter) {
+		a.MusterURL = "https://muster.example"
+		a.ElicitationReturnURL = gatewayReturnURL
+	})
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+
+	var link string
+	waitFor(t, "a prompt is posted", func() bool {
+		var ok bool
+		link, _, ok = connectButton(fake)
+		return ok
+	})
+	require.True(t, strings.HasPrefix(link, "https://muster.example/oauth/proxy/start?redirect="), "muster's link with the return: %s", link)
+	require.Contains(t, link, "&state=abc123", "muster's own query is kept")
+	require.Contains(t, fake.pathCalls("chat.postEphemeral")[0].params["text"], "`"+strings.ReplaceAll(link, "&", "&amp;")+"`", "the link shown is the link opened")
+
+	getReturn(t, a, mustersReturn(t, link, url.Values{"server": {"giantswarm-repo-manager"}}))
+	waitFor(t, "the approval is submitted again as the person", func() bool { return len(tools.recorded()) == 2 })
+	require.NotNil(t, tools.recorded()[1].accepted)
+	waitFor(t, "the message shows the outcome", func() bool {
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
+	})
+}

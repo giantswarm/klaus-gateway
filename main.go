@@ -147,7 +147,6 @@ func run(args []string) error {
 		// muster sends the browser back here after the person acted at a URL
 		// elicitation's link on its origin (a sign-in, a tool approval).
 		elicitationReturnURL = strings.TrimRight(cfg.OBO.CallbackBaseURL, "/") + slackchannel.ElicitationReturnPath
-		musterClient.ReturnURL = elicitationReturnURL
 	}
 
 	var slackAdapter *slackchannel.Adapter

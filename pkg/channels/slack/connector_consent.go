@@ -53,20 +53,21 @@ type connectorCompletion struct {
 	// continuation accepts the sign-in, which delivers it.
 	conversation string
 	reply        conversationReply
-	// elicitationID is the elicitation's id muster appends to the return;
-	// empty when it gave none, and the prompt then continues on Done alone.
+	// elicitationID is the elicitation's id, which muster appends to the
+	// return after an approval; empty when it gave none.
 	elicitationID string
-	consented     bool
+	// returnKey is the random value the prompt's link carries in the
+	// gateway's return (promptLink); "" when the link got no return, and the
+	// prompt then continues on Done alone.
+	returnKey string
+	consented bool
 }
 
 // mintConnectorCompletion stores fresh completion state for a Connect prompt
 // and returns its opaque ID, which the prompt's link button carries as its
 // value.
 func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
-	raw := make([]byte, 16)
-	// crypto/rand.Read never returns an error (Go 1.24+).
-	_, _ = rand.Read(raw)
-	stateID := base64.RawURLEncoding.EncodeToString(raw)
+	stateID := randomToken()
 	entry.consented = false
 	if entry.elicitationID == "" && entry.signIn != nil {
 		entry.elicitationID = entry.signIn.ElicitationID
@@ -81,6 +82,14 @@ func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
 	sweepExpired(a.connectorCompletions, now)
 	a.connectorCompletions[stateID] = ttlEntry[connectorCompletion]{value: entry, expires: now.Add(connectorCompletionTTL)}
 	return stateID
+}
+
+// randomToken is 128 random bits, URL-safe.
+func randomToken() string {
+	raw := make([]byte, 16)
+	// crypto/rand.Read never returns an error (Go 1.24+).
+	_, _ = rand.Read(raw)
+	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
 // dropConnectorCompletions forgets the completion states named, so the

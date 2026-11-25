@@ -2,6 +2,7 @@ package slack
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -146,4 +147,57 @@ func TestConnectPromptBlocks_DeclinableHasDone(t *testing.T) {
 	}
 	require.Equal(t, []string{connectorConnect, elicitationDone, connectorDecline}, ids)
 	require.Equal(t, []string{"state", "state", "state"}, values)
+}
+
+// muster's return resumes only the prompt whose link the gateway issued it
+// for (security review M1-KG-S-01): the elicitationId alone, which the
+// server that sent it chose or knows, takes nothing, and two people's
+// prompts with the same elicitationId are kept apart by their own keys.
+func TestElicitationReturn_OnlyThePromptItWasIssuedFor(t *testing.T) {
+	a := &Adapter{MusterURL: "https://muster.example", ElicitationReturnURL: "https://gw.example" + ElicitationReturnPath}
+	_, link1 := a.mintPrompt(connectorCompletion{slackUser: "UVICTIM1", channel: "C1", threadTS: "1.1", signInTask: "t1", elicitationID: "attacker-chosen"}, "https://muster.example/approvals/a")
+	_, link2 := a.mintPrompt(connectorCompletion{slackUser: "UVICTIM2", channel: "C2", threadTS: "2.2", signInTask: "t2", elicitationID: "attacker-chosen"}, "https://muster.example/approvals/a")
+	_, link3 := a.mintPrompt(connectorCompletion{slackUser: "UVICTIM3", channel: "C3", threadTS: "3.3", signInTask: "t3", elicitationID: "attacker-chosen"}, "https://mcp.third-party.example/consent")
+	require.Equal(t, "https://mcp.third-party.example/consent", link3, "another server's link gets no return")
+
+	_, ok := a.takeElicitationReturn("", "attacker-chosen")
+	require.False(t, ok, "the id alone takes nothing")
+
+	key := func(link string) string {
+		u, err := url.Parse(link)
+		require.NoError(t, err)
+		back, err := url.Parse(u.Query().Get(muster.ReturnLinkParam))
+		require.NoError(t, err)
+		return back.Query().Get(returnPromptParam)
+	}
+	key1, key2 := key(link1), key(link2)
+	require.NotEmpty(t, key1)
+	require.NotEqual(t, key1, key2)
+
+	entry, ok := a.takeElicitationReturn(key1, "attacker-chosen")
+	require.True(t, ok)
+	require.Equal(t, "UVICTIM1", entry.slackUser, "only the first person's prompt")
+	_, ok = a.takeElicitationReturn(key1, "attacker-chosen")
+	require.False(t, ok, "a replay takes nothing")
+	_, ok = a.takeElicitationReturn(key2, "another-id")
+	require.False(t, ok, "a key with another elicitation's id takes nothing")
+	entry, ok = a.takeElicitationReturn(key2, "")
+	require.True(t, ok, "a sign-in's return carries no elicitationId")
+	require.Equal(t, "UVICTIM2", entry.slackUser)
+}
+
+// A muster link that names a redirect of its own loses it (security review
+// M1-KG-S-04): the prompt opens muster's link with the gateway's return, or
+// with no redirect at all when no return is configured.
+func TestPromptLink_DropsTheLinksOwnRedirect(t *testing.T) {
+	hostile := "https://muster.example/approvals/a?redirect=" + url.QueryEscape("https://portal.example/any/page")
+	a := &Adapter{MusterURL: "https://muster.example", ElicitationReturnURL: "https://gw.example" + ElicitationReturnPath}
+	shown, key := a.promptLink(hostile)
+	require.NotEmpty(t, key)
+	require.NotContains(t, shown, "portal.example")
+	require.Contains(t, shown, url.QueryEscape("https://gw.example"+ElicitationReturnPath+"?"+returnPromptParam+"="+key))
+
+	shown, key = (&Adapter{MusterURL: "https://muster.example"}).promptLink(hostile)
+	require.Empty(t, key)
+	require.Equal(t, "https://muster.example/approvals/a", shown)
 }

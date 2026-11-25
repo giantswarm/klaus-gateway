@@ -131,12 +131,12 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	surfaces, _ := a.sessionConnectFor(slackUser, msg.ThreadID)
 	surfaces.channel, surfaces.threadTS = slackChannel, msg.ThreadID
 	held := heldMessageOf(msg, slackChannel, time.Now())
-	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: msg.ThreadID, signIn: signIn, held: &held})
+	stateID, link := a.mintPrompt(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: msg.ThreadID, signIn: signIn, held: &held}, signIn.URL)
 	surfaces.states = append(surfaces.states, stateID)
-	text := signInPromptText(sessionConnectNote, signIn.Message, signIn.URL, sessionConnectTail)
+	text := signInPromptText(sessionConnectNote, signIn.Message, link, sessionConnectTail)
 
 	if isDMChannelID(slackChannel) {
-		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, signIn.URL, stateID)
+		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, link, stateID)
 		if err != nil {
 			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "error", err)
 			a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
@@ -154,10 +154,10 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	}
 
 	origin := a.signInOrigin(ctx, client, slackChannel, msg.ThreadID)
-	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, signIn.URL)
+	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, link)
 	a.ensureSessionConnectLine(ctx, client, &surfaces, slackUser, dmed)
 	a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
-	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, signIn.URL, stateID); err != nil {
+	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "error", err)
 	}
 }

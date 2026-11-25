@@ -178,9 +178,9 @@ func (a *Adapter) settleConversationReply(ctx context.Context, rv store.Review, 
 	case res.SignIn != nil:
 		a.Logger.Info("slack: conversation reply needs the person's sign-in", "record", "conversation_connect",
 			"conversation", rv.ID, "tool", rv.Tool, "slack_user", user)
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: user, channel: rv.Channel, threadTS: rv.TS, signIn: res.SignIn, conversation: rv.ID, reply: reply})
-		text := signInPromptText(fmt.Sprintf(conversationConnectNotice, from), res.SignIn.Message, res.SignIn.URL, fmt.Sprintf(conversationConnectTail, from))
-		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, user, text, res.SignIn.URL, stateID); err != nil {
+		stateID, link := a.mintPrompt(connectorCompletion{slackUser: user, channel: rv.Channel, threadTS: rv.TS, signIn: res.SignIn, conversation: rv.ID, reply: reply}, res.SignIn.URL)
+		text := signInPromptText(fmt.Sprintf(conversationConnectNotice, from), res.SignIn.Message, link, fmt.Sprintf(conversationConnectTail, from))
+		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, user, text, link, stateID); err != nil {
 			a.Logger.Warn("slack: conversation connect prompt failed", "conversation", rv.ID, "error", err)
 		}
 		return

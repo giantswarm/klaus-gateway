@@ -590,9 +590,9 @@ func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, us
 		"decision", rv.ID, "tool", rv.Tool, "slack_user", user)
 	a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusConnecting, user))
 
-	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: user, channel: rv.Channel, signIn: signIn, review: rv.ID, answer: &ans})
-	text := signInPromptText(decisionConnectNotice, signIn.Message, signIn.URL, decisionConnectTail)
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, signIn.URL, stateID); err != nil {
+	stateID, link := a.mintPrompt(connectorCompletion{slackUser: user, channel: rv.Channel, signIn: signIn, review: rv.ID, answer: &ans}, signIn.URL)
+	text := signInPromptText(decisionConnectNotice, signIn.Message, link, decisionConnectTail)
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: decision connect prompt failed", "decision", rv.ID, "user", user, "error", err)
 	}
 }
