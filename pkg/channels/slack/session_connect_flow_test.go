@@ -449,3 +449,37 @@ func TestSessionConnect_FailedAcceptDoesNotClaimTheSignIn(t *testing.T) {
 	require.NotContains(t, allText(updatesIn(fake, "U1")), "Done. Your message", "the card claims nothing done")
 	require.NotContains(t, allText(updatesIn(fake, "C1")), "is done", "nor does the thread's line")
 }
+
+// A Done whose retry muster answers with a tool error (the person declined
+// the approval on muster's page, it expired or was refused) is not a
+// delivery: the held message is not replayed, which would only ask again,
+// the surfaces do not say it is on its way, and the person reads muster's
+// words (code review M1-KG-C-02).
+func TestSessionConnect_RefusedRetryIsNotDelivered(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	gw.dispatchErr = sessionConnectChallenge()
+	accepter := &fakeAccepter{result: muster.Result{IsError: true, Dispatched: true, Text: "declined: the person declined x_agentmanager_start_session. It did not run."}}
+	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
+
+	gw.openConversation(t, "C1", "181.000", "U1", "test-agent")
+	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "181.000", ""))
+	var stateID string
+	require.Eventually(t, func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	}, flowWait, 20*time.Millisecond, "the prompt is posted")
+
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, "")
+	require.Eventually(t, func() bool { return accepter.count() == 1 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(updatesIn(fake, "U1")), "Your message was not sent: declined: the person declined x_agentmanager_start_session. It did not run.")
+	}, flowWait, 20*time.Millisecond, "the card says why the message was not sent")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Your message was not sent: declined")
+	}, flowWait, 20*time.Millisecond, "so does a note to the person in the thread")
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, 1, gw.dispatchCount(), "the held message is not replayed")
+	require.NotContains(t, allText(updatesIn(fake, "U1")), "on its way")
+	require.Contains(t, allText(updatesIn(fake, "C1")), "<@U1> is done; the conversation did not start.")
+}

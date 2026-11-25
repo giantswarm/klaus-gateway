@@ -193,6 +193,15 @@ const (
 	sessionConnectCardConnected   = "Done."
 )
 
+// What a Session start's surfaces say when muster refused the retry of its
+// Done (the person declined the approval on muster's page, it expired):
+// the held message was not sent. %s in sessionConnectRefusedFormat is the
+// person's Slack user ID, in sessionConnectCardRefused muster's words.
+const (
+	sessionConnectRefusedFormat = "<@%s> is done; the conversation did not start."
+	sessionConnectCardRefused   = "Your message was not sent: %s"
+)
+
 // sessionConnectSupersededNote replaces the earlier card of a DM
 // conversation when a later message gets a card of its own, so one button is
 // live.

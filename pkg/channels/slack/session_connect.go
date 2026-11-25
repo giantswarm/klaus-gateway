@@ -239,12 +239,6 @@ const (
 // message after the fact. The ephemeral is replaced through its click's
 // response_url by the continuation.
 func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string, outcome sessionConnectOutcome) {
-	s, ok := a.takeSessionConnect(slackUser, threadID)
-	if !ok {
-		return
-	}
-	a.dropConnectorCompletions(s.states)
-	client := a.apiClient()
 	line, card := sessionConnectConnectedFormat, sessionConnectCardConnected
 	switch outcome {
 	case sessionConnectDelivered:
@@ -252,8 +246,20 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 	case sessionConnectDeclined:
 		line, card = sessionConnectDeclinedFormat, connectorDeclinedNotice
 	}
+	a.settleSessionConnectAs(ctx, slackUser, threadID, fmt.Sprintf(line, slackUser), card)
+}
+
+// settleSessionConnectAs is settleSessionConnect with the line and the card
+// rewritten to line and card.
+func (a *Adapter) settleSessionConnectAs(ctx context.Context, slackUser, threadID, line, card string) {
+	s, ok := a.takeSessionConnect(slackUser, threadID)
+	if !ok {
+		return
+	}
+	a.dropConnectorCompletions(s.states)
+	client := a.apiClient()
 	if s.lineTS != "" {
-		text := fmt.Sprintf(line, slackUser)
+		text := line
 		if err := client.chatUpdate(ctx, s.channel, s.lineTS, text, []any{contextBlock(text)}); err != nil {
 			a.Logger.Warn("slack: rewrite session connect line failed", "thread", s.threadTS, "error", err)
 		}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -215,14 +216,31 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 	return res, true
 }
 
-// resumeHeldStart accepts the sign-in a Session start was asked for, which
-// waits for it, then runs the held message as the thread's first turn. The
-// replayed start names the same request, so it finds the Session the accepted
-// start made. The surfaces settle as delivered only when the accept ran the
-// start; otherwise the replayed start settles them or, still asked for the
-// sign-in, refreshes them with a new prompt.
+// resumeHeldStart accepts the URL elicitation a Session start was asked for
+// (muster waits for a sign-in, matches an approval), then runs the held
+// message as the thread's first turn. The replayed start names the same
+// request, so it finds the Session the accepted start made. The surfaces
+// settle as delivered only when the accept ran the start. One muster refused
+// (a declined or expired approval) settles them as not sent, with muster's
+// words, and the held message is dropped: replaying it would only ask again.
+// Otherwise the replayed start settles them or, still asked, refreshes them
+// with a new prompt.
 func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion) {
-	if res, ok := a.acceptSignIn(ctx, entry); ok && res.SignIn == nil {
+	res, ok := a.acceptSignIn(ctx, entry)
+	switch {
+	case ok && res.SignIn == nil && res.IsError:
+		a.Logger.Info("slack: session start refused after Done", "record", "session_connect_refused", "user", entry.slackUser, "thread", entry.threadTS, "reason", res.Text)
+		reason := "muster refused it"
+		if res.Text != "" {
+			reason = truncateRunes(escapeMrkdwn(res.Text), teamReviewReasonMax)
+		}
+		card := fmt.Sprintf(sessionConnectCardRefused, reason)
+		a.settleSessionConnectAs(ctx, entry.slackUser, entry.threadTS, fmt.Sprintf(sessionConnectRefusedFormat, entry.slackUser), card)
+		if err := a.apiClient().postEphemeralText(ctx, entry.channel, entry.slackUser, entry.threadTS, card); err != nil {
+			a.Logger.Warn("slack: session start refusal note failed", "thread", entry.threadTS, "error", err)
+		}
+		return
+	case ok && res.SignIn == nil:
 		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
 	}
 	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {
