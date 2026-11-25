@@ -224,7 +224,8 @@ typed payload under the extension URI in its metadata:
   server's URL elicitation, such as muster's sign-in link for a server the person has not
   connected or muster's approval page for a tool call that asks (kagent relays muster's
   `-32042`). The gateway keeps `elicitation_id` on the prompt: muster appends it to the
-  gateway's return (`/auth/slack/return`) after the person acted.
+  gateway's return (`/auth/slack/return`) after an approval, and the return checks it against
+  the prompt its own key names (`docs/slack-hitl-surface.md` section 7).
 
 `pkg/channels` parses that payload into the `HitlPrompt` the channels render (Approve/Deny,
 a choice widget, a form), and the message's text part is the agent's hint. The channel's

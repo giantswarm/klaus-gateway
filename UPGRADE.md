@@ -17,13 +17,26 @@ stable release tag while a `Next` section with content is left.
   there, or muster sends their browser back (below). This is the client side of tool approval
   (muster's enforcement); roll it out with or before the muster release that asks for
   approvals. On its own it changes only the prompt's wording and buttons.
-- Links on muster's origin (the origin of `obo.musterUrl`) whose elicitation has an
-  `elicitationId` get `redirect=<obo.callbackBaseUrl>/auth/slack/return` again, and the gateway
-  serves that return (under `/auth/slack/`, which the OBO route already sends to it). To bring
-  the browser back automatically, add `<obo.callbackBaseUrl>/auth/slack/return` to muster's
-  `oauth.mcpClient.postLoginRedirectAllowlist`. Without the entry muster drops the redirect and
-  logs a warning per link; *Done* still continues. Every other link opens exactly as the server
-  gave it.
+- Links on muster's origin (the origin of `obo.musterUrl`, a default port written or not) get
+  `redirect=<obo.callbackBaseUrl>/auth/slack/return?prompt=<key>`, a random key per prompt, and
+  the gateway serves that return (under `/auth/slack/`, which the OBO route already sends to
+  it). A `redirect` such a link already names is replaced. To bring the browser back
+  automatically, add `<obo.callbackBaseUrl>/auth/slack/return` to muster's
+  `oauth.mcpClient.postLoginRedirectAllowlist` (a prefix entry; the key rides in the query).
+  The return then continues approvals (muster appends the `elicitationId`) and sign-ins on
+  muster's origin (muster appends `server=<name>`) alike, and only the prompt whose key it
+  carries. Without the entry muster drops the redirect and logs a warning per link; *Done*
+  still continues. Every link off muster's origin opens exactly as the server gave it and is
+  never continued by a return.
+- `obo.musterUrl` must be muster's public origin (`aggregator.oauth.mcpClient.publicUrl`), the
+  origin its approval and sign-in links are on. With an in-cluster address no link gets the
+  return; *Done* still works.
+- What *Done* and the return continue lives in the memory of the process that posted the
+  prompt, for 30 minutes (muster's longest `approval.ttl`). After a restart, or with more than
+  one replica when the click or the return reaches another replica, nothing continues: *Done*
+  tells the person the prompt can no longer continue and to ask again. Run one replica (the
+  chart's default) if prompts must survive a click landing elsewhere; shared state is not
+  offered.
 - The gateway's muster client also reads a URL elicitation muster sends as the JSON-RPC error
   `-32042` (protocol 2025-11-25). Nothing to configure.
 - A prompt posted before the upgrade continues nothing: its link button no longer does, and it

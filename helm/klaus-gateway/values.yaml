@@ -305,8 +305,11 @@ slack:
 # When enabled, the gateway acts as a muster OAuth client: a human links their
 # Slack identity once via a browser PKCE flow, after which the gateway mints a
 # fresh human muster token per Slack turn (the agent acts as the human, not
-# pure M2M). It mounts /auth/slack/link, /auth/slack/callback and the CIMD
-# document at /auth/slack/client.json.
+# pure M2M). It mounts /auth/slack/link, /auth/slack/callback, the CIMD
+# document at /auth/slack/client.json and /auth/slack/return, where muster sends
+# the browser back after a URL elicitation on its origin (add
+# <callbackBaseUrl>/auth/slack/return to muster's
+# oauth.mcpClient.postLoginRedirectAllowlist).
 #
 # Client registration uses CIMD (Client ID Metadata Documents), not Dynamic
 # Client Registration: the OAuth client_id is the public URL of the CIMD
@@ -316,6 +319,8 @@ slack:
 obo:
   enabled: false
   # musterUrl is the muster authorization-server base URL (RFC 8414 discovery).
+  # Use muster's public origin (its oauth.mcpClient.publicUrl): only links on
+  # this origin get the gateway's return.
   musterUrl: ""
   # callbackBaseUrl is the gateway's public, externally reachable base URL
   # (e.g. https://agentgateway.example.com). The muster redirect URI and the
