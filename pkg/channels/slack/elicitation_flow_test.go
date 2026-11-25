@@ -309,3 +309,13 @@ func TestURLElicitation_SignInReturnResumes(t *testing.T) {
 	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond, "the sign-in's return resumes the prompt")
 	require.Equal(t, channels.DecisionApprove, sent.resumes()[0].Decision.Type)
 }
+
+// The server's name a relayed elicitation carries shows as written in the
+// thread's waiting note and the prompt alike: no formatting, no direction
+// override.
+func TestURLElicitation_ServerNameShowsAsWritten(t *testing.T) {
+	_, fake, _, _ := pauseOn(t, "157.000", elicitationTurn("evil* (asked by *muster‮", approvalURL))
+	note := fake.threadText()
+	require.Contains(t, note, "Waiting for <@U1> (asked by *evil＊ (asked by ＊muster*).")
+	require.NotContains(t, ephemeralJSON(fake), "‮")
+}

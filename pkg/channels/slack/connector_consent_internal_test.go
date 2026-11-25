@@ -216,3 +216,26 @@ func TestElicitationOpenButtonLabel_KeepsTheRightEndOfALongHost(t *testing.T) {
 	require.Equal(t, "Open ↗", label, "the registrable domain does not fit: the host is left to the text")
 	require.Equal(t, "Open ↗ a.b.example", elicitationOpenButtonLabel("https://a.b.example/x"))
 }
+
+// Text a relayed elicitation chose (its message, its server's name) shows as
+// written and nothing more (security review M1-KG-S-03): bidi overrides and
+// zero-width characters are dropped, and Slack's formatting characters cannot
+// end the heading's bold or start a format of their own.
+func TestElicitationHeading_NeutralisesFormattingAndDirection(t *testing.T) {
+	h := elicitationHeading("third-party", "Approve* _safe_ `x` ‮evil‬ ​hidden ~strike~ *Asked by muster")
+	require.NotContains(t, h, "‮")
+	require.NotContains(t, h, "‬")
+	require.NotContains(t, h, "​")
+	require.NotContains(t, h, "`")
+	require.NotContains(t, h, "~")
+	inner := strings.TrimSuffix(strings.TrimPrefix(h, "*"), "*")
+	require.NotContains(t, inner, "*", "only the heading's own bold")
+	require.NotContains(t, inner, " _", "no italic can open")
+	require.Contains(t, inner, "Approve")
+	require.Contains(t, inner, "evil")
+
+	h = elicitationHeading("x_github *muster*‮", "")
+	require.Contains(t, h, "x_github", "an underscore inside a word formats nothing and stays")
+	require.NotContains(t, strings.TrimPrefix(h, "*"), "*muster")
+	require.NotContains(t, h, "‮")
+}

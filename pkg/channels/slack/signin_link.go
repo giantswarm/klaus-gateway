@@ -50,7 +50,7 @@ func signInPromptText(lead, message, link, tail string) string {
 	}
 	var b strings.Builder
 	b.WriteString(lead)
-	if message = strings.TrimSpace(message); message != "" {
+	if message = strings.TrimSpace(plainMrkdwn(message)); message != "" {
 		// Quoting adds "\n>" before the message and a ">" after each newline.
 		room := slackSectionTextMax - utf8.RuneCountInString(lead+linkText+tail) - 2 - strings.Count(message, "\n")
 		if room = min(room, signInMessageMaxRunes); room > 1 {

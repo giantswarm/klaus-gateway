@@ -36,7 +36,7 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 	if server == "" {
 		server = "An MCP server"
 	}
-	if ts, err := client.postMessage(ctx, slackChannel, fmt.Sprintf(signInWaitingNote, slackUser, escapeMrkdwn(server)), threadID); err != nil {
+	if ts, err := client.postMessage(ctx, slackChannel, fmt.Sprintf(signInWaitingNote, slackUser, shownServerName(server)), threadID); err != nil {
 		a.Logger.Warn("slack: post sign-in waiting note failed", "thread", threadID, "error", err)
 	} else {
 		a.notePromptTS(threadID, pd.TaskID, ts)
@@ -60,7 +60,7 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 	}
 
 	stateID, link := a.mintPrompt(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID, elicitationID: signIn.ElicitationID}, signIn.URL)
-	text := lead + "\n" + fmt.Sprintf(signInAskedBy, escapeMrkdwnCapped(server, signInServerNameMaxRunes)) + "\n" + signInLinkText(link) + "\n" + signInPromptTail
+	text := lead + "\n" + fmt.Sprintf(signInAskedBy, shownServerName(server)) + "\n" + signInLinkText(link) + "\n" + signInPromptTail
 	blocks := connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, stateID, false, client.authorizeAll)
 	actions, _ := blocks[len(blocks)-1].(map[string]any)
 	elements := actions[bkElements].([]any)
@@ -73,11 +73,23 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 // message in bold, on one line and capped, or, when it sent none, a line
 // naming the server.
 func elicitationHeading(server, message string) string {
-	message = strings.Join(strings.Fields(message), " ")
+	message = oneLine(plainMrkdwn(message))
 	if message == "" {
-		return fmt.Sprintf(signInPromptLead, escapeMrkdwnCapped(server, signInServerNameMaxRunes))
+		return fmt.Sprintf(signInPromptLead, shownServerName(server))
 	}
 	return "*" + escapeMrkdwnCapped(message, signInMessageMaxRunes) + "*"
+}
+
+// shownServerName is the name of the server that asked, as the prompt and
+// the thread show it: on one line, as written (plainMrkdwn), escaped and
+// capped.
+func shownServerName(server string) string {
+	return escapeMrkdwnCapped(oneLine(plainMrkdwn(server)), signInServerNameMaxRunes)
+}
+
+// oneLine collapses every run of whitespace in s to one space.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // signInDecided is the line a sign-in prompt's thread note is rewritten to
