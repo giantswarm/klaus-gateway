@@ -137,7 +137,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 		return ok
 	}, flowWait, 20*time.Millisecond, "the ephemeral Connect prompt is posted")
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
-	require.Contains(t, ephemeral, "*muster* asks first:\n>Sign in to agent-manager to continue.")
+	require.Contains(t, ephemeral, "*Sign in to agent-manager to continue.*\nAsked by *muster* before the conversation can start.")
 	require.Contains(t, ephemeral, "Opens *muster.example*\n`"+sessionConnectLink+"`", "the whole link, its domain in bold")
 	require.Contains(t, ephemeral, "Open it, then choose *Done*: your message goes to the agent.")
 	require.Equal(t, sessionConnectLink, buttonURL, "muster's link, unchanged")
@@ -153,7 +153,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	require.Len(t, postsTo(fake, "U1"), 1)
 
 	line := allText(postsTo(fake, "C1"))
-	require.Contains(t, line, "Waiting for <@U1> to sign in (the prompt is in a direct message from the app)")
+	require.Contains(t, line, "Waiting for <@U1> at *muster*'s link (the prompt is in a direct message from the app)")
 	require.NotContains(t, line, "muster.example", "the line carries no link")
 	require.NotContains(t, line, "The turn failed", "a consent to give is not a failure")
 	for _, c := range postsTo(fake, "C1") {
@@ -186,8 +186,8 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 		return strings.Contains(capturedBody(), "Done. What waited for it goes ahead.")
 	}, flowWait, 20*time.Millisecond, "the clicked ephemeral says what the click started")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> signed in.") &&
-			strings.Contains(allText(updatesIn(fake, "U1")), "Signed in. Your message is on its way to the agent.")
+		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> is done.") &&
+			strings.Contains(allText(updatesIn(fake, "U1")), "Done. Your message is on its way to the agent.")
 	}, flowWait, 20*time.Millisecond, "the line and the DM card are rewritten")
 	require.Eventually(t, func() bool {
 		dispatched.mu.Lock()
@@ -266,8 +266,8 @@ func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 	gw.mu.Unlock()
 	sendEvent(t, srv, mention("U1", "connected, try again", "171.000", "170.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> signed in.") &&
-			strings.Contains(allText(updatesIn(fake, "U1")), "Signed in.")
+		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> is done.") &&
+			strings.Contains(allText(updatesIn(fake, "U1")), "Done.")
 	}, flowWait, 20*time.Millisecond, "the line and the card settle on the turn that went through")
 	require.NotContains(t, allText(updatesIn(fake, "U1")), "on its way", "the held message stays unsent")
 	require.Eventually(t, func() bool { return strings.Contains(fake.streamedText(), "ok") },
@@ -307,7 +307,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 		return ok
 	}, flowWait, 20*time.Millisecond, "the card is posted as a message")
 	require.Equal(t, "D1", card.params["channel"])
-	require.Contains(t, allText([]recordedCall{card}), "*muster* asks first:")
+	require.Contains(t, allText([]recordedCall{card}), "Asked by *muster* before the conversation can start.")
 	require.NotContains(t, fmt.Sprint(card.params["blocks"]), "Asked in", "the conversation is where it was asked")
 	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no ephemeral in a DM")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for", "no line in a DM")
@@ -330,7 +330,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	gw.mu.Unlock()
 	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, false)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(updatesIn(fake, "D1")), "Signed in. Your message is on its way to the agent.")
+		return strings.Contains(allText(updatesIn(fake, "D1")), "Done. Your message is on its way to the agent.")
 	}, flowWait, 20*time.Millisecond, "the card is rewritten in place")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 20*time.Millisecond, "the held message runs")
@@ -365,10 +365,10 @@ func TestSessionConnect_CollaboratorIsToldTheOwnerMustConnect(t *testing.T) {
 	gw.mu.Unlock()
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "<@U001> needs to sign in once")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "*muster* asks <@U001> first")
 	}, flowWait, 50*time.Millisecond, "the collaborator is told the owner must connect")
 	for _, c := range fake.pathCalls("chat.postEphemeral") {
-		if strings.Contains(allText([]recordedCall{c}), "needs to sign in") {
+		if strings.Contains(allText([]recordedCall{c}), "asks <@U001> first") {
 			require.Equal(t, "U002", c.params["user"], "the note goes to the collaborator")
 		}
 	}
@@ -409,7 +409,7 @@ func TestSessionConnect_NotNowDeclinesAndDropsTheHeldMessage(t *testing.T) {
 	accepter.mu.Unlock()
 	require.Eventually(t, func() bool {
 		return strings.Contains(capturedBody(), "Not now.") &&
-			strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> did not sign in.") &&
+			strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> chose not now.") &&
 			strings.Contains(allText(updatesIn(fake, "U1")), "Not now.")
 	}, flowWait, 20*time.Millisecond, "the ephemeral, the line and the DM card say so")
 	require.NotEmpty(t, logLine(logs, "record=connector_declined", "user=U1"))
@@ -446,6 +446,6 @@ func TestSessionConnect_FailedAcceptDoesNotClaimTheSignIn(t *testing.T) {
 		_, refreshed, _, ok := connectButtonIn(updatesIn(fake, "U1"))
 		return ok && refreshed != stateID
 	}, flowWait, 20*time.Millisecond, "the replayed start refreshes the DM card with a fresh prompt")
-	require.NotContains(t, allText(updatesIn(fake, "U1")), "Signed in", "the card claims no sign-in")
-	require.NotContains(t, allText(updatesIn(fake, "C1")), "signed in", "nor does the thread's line")
+	require.NotContains(t, allText(updatesIn(fake, "U1")), "Done. Your message", "the card claims nothing done")
+	require.NotContains(t, allText(updatesIn(fake, "C1")), "is done", "nor does the thread's line")
 }

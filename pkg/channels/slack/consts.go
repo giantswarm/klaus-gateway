@@ -143,35 +143,39 @@ const (
 	signInServerNameMaxRunes = 100
 )
 
-// sessionConnectNote leads the Connect prompt that answers a Session start
-// muster asked a sign-in for: the person is signed in, but a server the start
-// goes through waits for their one-time consent. muster's own message on it
-// and the link follow, then sessionConnectTail.
+// sessionConnectNote is the context line of the prompt that answers a
+// Session start muster asked a URL elicitation for (a sign-in a server the
+// start goes through waits for, an approval of the start), under muster's
+// message as the heading; the link follows, then sessionConnectTail.
 const (
-	sessionConnectNote = "The conversation can't start yet. *muster* asks first:"
+	sessionConnectNote = "%s before the conversation can start."
 	sessionConnectTail = "Open it, then choose *Done*: your message goes to the agent."
 )
+
+// elicitationAskedLead opens the context line of a prompt for a URL
+// elicitation muster answered one of the gateway's own calls with.
+const elicitationAskedLead = "Asked by *muster*"
 
 // sessionConnectOwnerNote answers a collaborator whose turn would start the
 // thread owner's Session: the consent is the owner's to give, so no link for
 // the sender; %s is the owner's Slack user ID.
-const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs to sign in once. Ask them to mention the agent here, then send your message again."
+const sessionConnectOwnerNote = "The conversation can't start yet: *muster* asks <@%s> first. Ask them to mention the agent here, then send your message again."
 
 // The waiting line a Session start's Connect prompt posts in a channel
 // thread, which everyone sees: whom the thread waits for and, while their DM
 // holds the card, where the button is; it never carries the link, which is
-// the person's alone. Once the sign-in completed it says who signed in. %s is
-// the person's Slack user ID. The card is rewritten once the consent is
+// the person's alone. Once the person is done it says so. %s is the person's
+// Slack user ID. The card is rewritten once the consent is
 // settled: sessionConnectCardDone when the prompt's own click continued and
 // the held message runs, sessionConnectCardConnected when the person's next
-// turn found them signed in and the held message stays unsent.
+// turn found muster no longer asking and the held message stays unsent.
 const (
-	sessionConnectWaitingFormat   = "Waiting for <@%s> to sign in"
+	sessionConnectWaitingFormat   = "Waiting for <@%s> at *muster*'s link"
 	sessionConnectWaitingDMHint   = " (the prompt is in a direct message from the app)"
-	sessionConnectConnectedFormat = "<@%s> signed in."
-	sessionConnectDeclinedFormat  = "<@%s> did not sign in."
-	sessionConnectCardDone        = "Signed in. Your message is on its way to the agent."
-	sessionConnectCardConnected   = "Signed in."
+	sessionConnectConnectedFormat = "<@%s> is done."
+	sessionConnectDeclinedFormat  = "<@%s> chose not now."
+	sessionConnectCardDone        = "Done. Your message is on its way to the agent."
+	sessionConnectCardConnected   = "Done."
 )
 
 // sessionConnectSupersededNote replaces the earlier card of a DM

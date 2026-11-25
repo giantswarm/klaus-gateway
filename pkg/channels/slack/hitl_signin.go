@@ -80,6 +80,17 @@ func elicitationHeading(server, message string) string {
 	return "*" + escapeMrkdwnCapped(message, signInMessageMaxRunes) + "*"
 }
 
+// elicitationPromptText is the text of the prompt for a URL elicitation
+// muster answered one of the gateway's own calls with, laid out as a
+// runtime's: muster's message as the heading, then context, the flow's line
+// on what waits for it, the link as signInLinkText shows it, and tail.
+func elicitationPromptText(message, context, link, tail string) string {
+	return elicitationHeading(musterServerName, message) + "\n" + context + "\n" + signInLinkText(link) + "\n" + tail
+}
+
+// musterServerName names muster as the server that asked.
+const musterServerName = "muster"
+
 // shownServerName is the name of the server that asked, as the prompt and
 // the thread show it: on one line, as written (plainMrkdwn), escaped and
 // capped.

@@ -111,7 +111,7 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 // so the sender gets no link: a private note that names the owner, whose own
 // next message gets the prompt.
 func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.InboundMessage, slackChannel, slackUser, owner string, asOwner bool, challenge *pkga2a.ConnectRequiredError) {
-	a.Logger.Info("slack: session start waits for the person's sign-in",
+	a.Logger.Info("slack: session start waits for the person at muster's link",
 		"record", "session_connect_required",
 		"agent", msg.AgentRef,
 		"slack_user", slackUser,
@@ -133,7 +133,7 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	held := heldMessageOf(msg, slackChannel, time.Now())
 	stateID, link := a.mintPrompt(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: msg.ThreadID, signIn: signIn, held: &held}, signIn.URL)
 	surfaces.states = append(surfaces.states, stateID)
-	text := signInPromptText(sessionConnectNote, signIn.Message, link, sessionConnectTail)
+	text := elicitationPromptText(signIn.Message, fmt.Sprintf(sessionConnectNote, elicitationAskedLead), link, sessionConnectTail)
 
 	if isDMChannelID(slackChannel) {
 		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, link, stateID)
@@ -255,13 +255,13 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 	if s.lineTS != "" {
 		text := fmt.Sprintf(line, slackUser)
 		if err := client.chatUpdate(ctx, s.channel, s.lineTS, text, []any{contextBlock(text)}); err != nil {
-			a.Logger.Warn("slack: rewrite session connect line after sign-in failed", "thread", s.threadTS, "error", err)
+			a.Logger.Warn("slack: rewrite session connect line failed", "thread", s.threadTS, "error", err)
 		}
 	}
 	if s.cardTS != "" {
 		text := card
 		if err := client.chatUpdate(ctx, s.cardChannel, s.cardTS, text, []any{sectionBlock(text)}); err != nil {
-			a.Logger.Warn("slack: rewrite session connect card after sign-in failed", "thread", s.threadTS, "error", err)
+			a.Logger.Warn("slack: rewrite session connect card failed", "thread", s.threadTS, "error", err)
 		}
 	}
 }

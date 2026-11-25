@@ -559,7 +559,7 @@ func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T)
 			continue
 		}
 		cards++
-		require.Equal(t, 1, strings.Count(slackRendered(call), "The conversation can't start yet"),
+		require.Equal(t, 1, strings.Count(slackRendered(call), "before the conversation can start"),
 			"%s: the Connect prompt says its lead sentence once", call.path)
 	}
 	require.Equal(t, 2, cards, "the ephemeral and the DM card")

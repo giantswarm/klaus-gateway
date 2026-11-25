@@ -97,7 +97,7 @@ const (
 	// teamReviewConnectNotice heads the Connect prompt, above muster's message
 	// and the link, and teamReviewConnectTail follows them. The verbs are the
 	// decision's: approve/approval, deny/denial.
-	teamReviewConnectNotice = "To %s as yourself, *muster* asks first:"
+	teamReviewConnectNotice = "%s before your %s goes through."
 	teamReviewConnectTail   = "Open it, then choose *Done*: your %s is submitted."
 )
 
@@ -105,7 +105,7 @@ const (
 // team alike. Each replaces the previous one; the decision's outcome replaces
 // them all. The noun is the decision's: approval or denial.
 const (
-	teamReviewStatusConnecting      = "<@%s> is signing in to %s as themselves."
+	teamReviewStatusConnecting      = "<@%s> is finishing a step at muster to %s as themselves."
 	teamReviewStatusRefused         = "<@%s>'s %s was not accepted: %s"
 	teamReviewStatusFailed          = "<@%s>'s %s could not be submitted to the manager; another click may do."
 	teamReviewStatusStillChallenged = "<@%s> did not finish signing in in time; another click may do."
@@ -710,12 +710,12 @@ func decidedNotice(rv store.Review) string {
 // review and the decision, so the click on its link submits the decision as
 // the person once they signed in.
 func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, signIn *muster.SignIn) {
-	a.Logger.Info("slack: team review needs the person's sign-in", "record", "team_review_connect",
+	a.Logger.Info("slack: team review waits for the person at muster's link", "record", "team_review_connect",
 		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "denial", decision.deny)
 	a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusConnecting, clicker, decision.verb()))
 
 	stateID, link := a.mintPrompt(connectorCompletion{slackUser: clicker, channel: rv.Channel, signIn: signIn, review: rv.ID, decision: decision}, signIn.URL)
-	text := signInPromptText(fmt.Sprintf(teamReviewConnectNotice, decision.verb()), signIn.Message, link, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
+	text := elicitationPromptText(signIn.Message, fmt.Sprintf(teamReviewConnectNotice, elicitationAskedLead, decision.noun()), link, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
 	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.ID, "user", clicker, "error", err)
 	}

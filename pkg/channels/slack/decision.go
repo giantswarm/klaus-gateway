@@ -77,12 +77,12 @@ const (
 	decisionWithdrawnNotice  = "This decision was withdrawn."
 	decisionPendingNotice    = "<@%s>'s answer is being submitted right now."
 
-	decisionStatusConnecting      = "<@%s> is signing in to answer as themselves."
+	decisionStatusConnecting      = "<@%s> is finishing a step at muster to answer as themselves."
 	decisionStatusRefused         = "<@%s>'s answer was not accepted: %s"
 	decisionStatusFailed          = "<@%s>'s answer could not be submitted; try again in a moment."
 	decisionStatusStillChallenged = "<@%s> did not finish signing in in time; try again in a moment."
 
-	decisionConnectNotice = "To answer as yourself, *muster* asks first:"
+	decisionConnectNotice = "%s before your answer goes through."
 	decisionConnectTail   = "Open it, then choose *Done*: your answer is submitted."
 )
 
@@ -586,12 +586,12 @@ func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user stri
 // decision stays open, its status line says who is signing in, and the person
 // gets a Connect prompt whose click submits the answer once they signed in.
 func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, user string, ans decisionAnswer, signIn *muster.SignIn) {
-	a.Logger.Info("slack: decision answer needs the person's sign-in", "record", "decision_connect",
+	a.Logger.Info("slack: decision answer waits for the person at muster's link", "record", "decision_connect",
 		"decision", rv.ID, "tool", rv.Tool, "slack_user", user)
 	a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusConnecting, user))
 
 	stateID, link := a.mintPrompt(connectorCompletion{slackUser: user, channel: rv.Channel, signIn: signIn, review: rv.ID, answer: &ans}, signIn.URL)
-	text := signInPromptText(decisionConnectNotice, signIn.Message, link, decisionConnectTail)
+	text := elicitationPromptText(signIn.Message, fmt.Sprintf(decisionConnectNotice, elicitationAskedLead), link, decisionConnectTail)
 	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: decision connect prompt failed", "decision", rv.ID, "user", user, "error", err)
 	}

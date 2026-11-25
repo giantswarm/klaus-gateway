@@ -136,9 +136,9 @@ func (a *Adapter) handleConnectorDecline(slackUser, stateID, responseURL string)
 func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletion, responseURL string) {
 	if a.SignIns != nil && a.OBO != nil && entry.signIn != nil {
 		if token, err := a.OBO.TokenFor(ctx, entry.slackUser); err != nil {
-			a.Logger.Warn("slack: token to decline a sign-in unavailable", "user", entry.slackUser, "error", err)
+			a.Logger.Warn("slack: token to decline an elicitation unavailable", "user", entry.slackUser, "error", err)
 		} else if err := a.SignIns.Decline(ctx, token, entry.signIn); err != nil {
-			a.Logger.Warn("slack: decline sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
+			a.Logger.Warn("slack: decline elicitation failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
 		}
 	}
 	switch {
@@ -153,7 +153,7 @@ func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletio
 			a.showTeamReviewStatus(ctx, rv, "")
 		}
 	}
-	a.Logger.Info("slack: sign-in declined", "record", "connector_declined", "user", entry.slackUser, "thread", entry.threadTS, "review", entry.review)
+	a.Logger.Info("slack: elicitation declined", "record", "connector_declined", "user", entry.slackUser, "thread", entry.threadTS, "review", entry.review)
 	if responseURL != "" {
 		if err := respondURL(ctx, responseURL, entry.threadTS, connectorDeclinedNotice); err != nil {
 			a.Logger.Warn("slack: rewrite connect prompt after decline failed", "thread", entry.threadTS, "error", err)
@@ -204,12 +204,12 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 	}
 	token, err := a.OBO.TokenFor(ctx, entry.slackUser)
 	if err != nil {
-		a.Logger.Warn("slack: token to accept a sign-in unavailable", "user", entry.slackUser, "error", err)
+		a.Logger.Warn("slack: token to accept an elicitation unavailable", "user", entry.slackUser, "error", err)
 		return muster.Result{}, false
 	}
 	res, err := a.SignIns.Accept(ctx, token, entry.signIn)
 	if err != nil {
-		a.Logger.Warn("slack: accept sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
+		a.Logger.Warn("slack: accept elicitation failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
 		return muster.Result{}, false
 	}
 	return res, true
@@ -226,7 +226,7 @@ func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion
 		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
 	}
 	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after Done failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
 		a.postReplayFailureNote(ctx, entry.held.SlackChannel, entry.threadTS, err)
 	}
 }
@@ -235,7 +235,7 @@ func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion
 // if it is still paused on it.
 func (a *Adapter) resumeSignInTask(ctx context.Context, entry connectorCompletion) {
 	if a.pendingSignIn(entry.threadTS, entry.signInTask) == nil {
-		a.Logger.Info("slack: sign-in consent for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
+		a.Logger.Info("slack: Done for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
 		return
 	}
 	msg := channels.InboundMessage{
@@ -246,7 +246,7 @@ func (a *Adapter) resumeSignInTask(ctx context.Context, entry connectorCompletio
 		Subject:   entry.slackUser,
 	}
 	if err := a.replayDispatch(ctx, msg, entry.channel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Log(ctx, failureLogLevel(err), "slack: sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: resume after Done failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
 		a.postReplayFailureNote(ctx, entry.channel, entry.threadTS, err)
 	}
 }

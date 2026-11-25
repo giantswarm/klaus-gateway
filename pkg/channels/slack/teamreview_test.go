@@ -552,7 +552,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.Len(t, prompts, 1)
 	require.Equal(t, "U1", prompts[0].params["user"])
 	require.Nil(t, prompts[0].params["thread_ts"], "the prompt is a channel-level ephemeral, where the click happened")
-	require.Contains(t, prompts[0].params["text"], "To approve as yourself, *muster* asks first:\n>Sign in to giantswarm-repo-manager to continue.")
+	require.Contains(t, prompts[0].params["text"], "*Sign in to giantswarm-repo-manager to continue.*\nAsked by *muster* before your approval goes through.")
 	require.Contains(t, prompts[0].params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
 	require.Contains(t, prompts[0].params["text"], "Open it, then choose *Done*: your approval is submitted.")
 	require.Equal(t, []string{"connector_connect", "elicitation_done", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
@@ -560,7 +560,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.NotContains(t, statusLine(fake, receipt.TS), "not accepted", "a sign-in is not a refusal")
 
 	waitFor(t, "the team sees who is signing in", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in to approve as themselves.")
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is finishing a step at muster to approve as themselves.")
 	})
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open for the team")
 	require.Len(t, tools.recorded(), 1)
@@ -601,7 +601,7 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 		return ok
 	})
 	waitFor(t, "the team sees who is signing in", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in")
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is finishing a step at muster")
 	})
 
 	responseSrv, capturedBody := newResponseURLCapture(t)
@@ -612,7 +612,7 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 	require.NotNil(t, calls[1].declined)
 	require.Nil(t, calls[1].accepted)
 	waitFor(t, "the prompt says nothing was sent", func() bool { return strings.Contains(capturedBody(), "Not now.") })
-	waitFor(t, "the status line is gone", func() bool { return !strings.Contains(statusLine(fake, receipt.TS), "signing in") })
+	waitFor(t, "the status line is gone", func() bool { return !strings.Contains(statusLine(fake, receipt.TS), "finishing a step") })
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
 
 	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
@@ -771,7 +771,7 @@ func TestTeamReview_ConsentGoneAfterRestartClickApproves(t *testing.T) {
 		return ok
 	})
 	waitFor(t, "the team sees who is signing in", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in")
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is finishing a step at muster")
 	})
 	restart(t, a1, srv1)
 
