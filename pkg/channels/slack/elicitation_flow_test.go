@@ -319,3 +319,33 @@ func TestURLElicitation_ServerNameShowsAsWritten(t *testing.T) {
 	require.Contains(t, note, "Waiting for <@U1> (asked by *evil＊ (asked by ＊muster*).")
 	require.NotContains(t, ephemeralJSON(fake), "‮")
 }
+
+// A Done or Not now that can continue nothing says so instead of doing
+// nothing (code review M1-KG-C-04, security review M1-KG-S-05): after muster's
+// return or an earlier Done the prompt was already answered; an unknown
+// state (expired, the app restarted, another replica posted it) can no
+// longer continue, and the person is told to ask again.
+func TestURLElicitation_DeadDoneSaysWhy(t *testing.T) {
+	adapter, fake, sent, srv := pauseOnApproval(t, "158.000")
+	link, stateID, ok := connectButton(fake)
+	require.True(t, ok)
+	getReturn(t, adapter, mustersReturn(t, link, url.Values{"elicitationId": {approvalElicitationID}}))
+	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond)
+
+	answered, answeredBody := newResponseURLCapture(t)
+	sendClick(t, srv, "elicitation_done", stateID, answered.URL, true)
+	require.Eventually(t, func() bool { return strings.Contains(answeredBody(), "This prompt was already answered.") },
+		flowWait, 20*time.Millisecond, "a Done after the return says the prompt was answered")
+
+	gone, goneBody := newResponseURLCapture(t)
+	sendClick(t, srv, "elicitation_done", "state-of-another-process", gone.URL, true)
+	require.Eventually(t, func() bool { return strings.Contains(goneBody(), "This prompt can no longer continue") },
+		flowWait, 20*time.Millisecond, "a Done no process here knows says it can no longer continue")
+	require.Contains(t, goneBody(), "more than one")
+
+	declined, declinedBody := newResponseURLCapture(t)
+	sendClick(t, srv, "connector_decline", "state-of-another-process", declined.URL, true)
+	require.Eventually(t, func() bool { return strings.Contains(declinedBody(), "This prompt can no longer continue") },
+		flowWait, 20*time.Millisecond, "so does a Not now")
+	require.Len(t, sent.resumes(), 1)
+}

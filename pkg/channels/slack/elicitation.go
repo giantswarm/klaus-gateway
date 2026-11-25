@@ -116,13 +116,15 @@ func (a *Adapter) mintPrompt(entry connectorCompletion, link string) (stateID, s
 
 // handleElicitationDone is a click on a URL elicitation prompt's Done: the
 // person is done at its link. The first click of the person the prompt is
-// for runs what the prompt holds; any other is a no-op.
-func (a *Adapter) handleElicitationDone(slackUser, stateID, responseURL string) {
-	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
+// for runs what the prompt holds; any other continues nothing and says why
+// (tellDeadPrompt).
+func (a *Adapter) handleElicitationDone(ctx context.Context, click promptClick) {
+	entry, ok := a.takeConnectorAnswer(click.slackUser, click.stateID)
 	if !ok {
+		a.tellDeadPrompt(ctx, click)
 		return
 	}
-	a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, responseURL) })
+	a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, click.continuationURL()) })
 }
 
 // takeElicitationReturn marks the live, unanswered completion state whose

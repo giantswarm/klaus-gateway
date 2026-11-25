@@ -3075,11 +3075,21 @@ var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second, Transport: t
 // is updated this way after a click. The response_url is unauthenticated and
 // short-lived; a failure is non-fatal (the decision has already been recorded).
 func respondURL(ctx context.Context, responseURL, threadTS, text string) error {
+	return respond(ctx, responseURL, threadTS, text, true)
+}
+
+// respondEphemeralNote posts text through a Slack interaction response_url as
+// a new ephemeral to the clicker, the clicked message left as it is.
+func respondEphemeralNote(ctx context.Context, responseURL, threadTS, text string) error {
+	return respond(ctx, responseURL, threadTS, text, false)
+}
+
+func respond(ctx context.Context, responseURL, threadTS, text string, replace bool) error {
 	if responseURL == "" {
 		return nil
 	}
 	payload := map[string]any{
-		"replace_original": true,
+		"replace_original": replace,
 		"response_type":    "ephemeral",
 		paramText:          text,
 	}

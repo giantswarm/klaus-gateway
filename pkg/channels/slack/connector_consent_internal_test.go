@@ -239,3 +239,10 @@ func TestElicitationHeading_NeutralisesFormattingAndDirection(t *testing.T) {
 	require.NotContains(t, strings.TrimPrefix(h, "*"), "*muster")
 	require.NotContains(t, h, "‮")
 }
+
+// A prompt's Done lives as long as muster's longest approval (approval.ttl,
+// at most 30m), so a Done late in that window still continues (code review
+// M1-KG-C-04).
+func TestConnectorCompletionTTL_OutlivesMustersLongestApproval(t *testing.T) {
+	require.GreaterOrEqual(t, connectorCompletionTTL, 30*time.Minute)
+}

@@ -93,14 +93,76 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-// dropConnectorCompletions forgets the completion states named, so the
-// buttons that carry them continue nothing.
+// dropConnectorCompletions marks the completion states named answered, so
+// the buttons that carry them continue nothing and say the prompt was
+// answered until the states expire.
 func (a *Adapter) dropConnectorCompletions(stateIDs []string) {
 	a.connectorCompletionsMu.Lock()
 	defer a.connectorCompletionsMu.Unlock()
 	for _, id := range stateIDs {
-		delete(a.connectorCompletions, id)
+		if stored, ok := a.connectorCompletions[id]; ok {
+			stored.value.consented = true
+			a.connectorCompletions[id] = stored
+		}
 	}
+}
+
+// deadPromptNotice is what a Done or Not now of slackUser's that continued
+// nothing tells them: "" for a prompt that is not theirs, which they cannot
+// see anyway.
+func (a *Adapter) deadPromptNotice(slackUser, stateID string) string {
+	a.connectorCompletionsMu.Lock()
+	defer a.connectorCompletionsMu.Unlock()
+	stored, found := a.connectorCompletions[stateID]
+	switch {
+	case !found || time.Now().After(stored.expires):
+		return promptGoneNotice
+	case stored.value.slackUser != slackUser:
+		return ""
+	case stored.value.consented:
+		return promptAlreadyContinuedNotice
+	}
+	return promptGoneNotice
+}
+
+// tellDeadPrompt answers a Done or Not now click that continued nothing with
+// why: an ephemeral prompt is rewritten to the notice through the click's
+// response_url, any other prompt (a card, a real message) gets it as an
+// ephemeral note under it, the card left alone.
+func (a *Adapter) tellDeadPrompt(ctx context.Context, click promptClick) {
+	notice := a.deadPromptNotice(click.slackUser, click.stateID)
+	if notice == "" || click.responseURL == "" {
+		return
+	}
+	var err error
+	if click.ephemeral {
+		err = respondURL(ctx, click.responseURL, click.threadTS, notice)
+	} else {
+		err = respondEphemeralNote(ctx, click.responseURL, click.threadTS, notice)
+	}
+	if err != nil {
+		a.Logger.Warn("slack: tell a dead prompt click failed", "user", click.slackUser, "error", err)
+	}
+}
+
+// promptClick is a click on a URL elicitation prompt's Done or Not now.
+type promptClick struct {
+	slackUser, stateID string
+	// responseURL is the click's response_url; ephemeral says whether the
+	// prompt is an ephemeral message, rewritten through it, or a card, a real
+	// message its own flow rewrites; threadTS is the prompt's thread.
+	responseURL string
+	ephemeral   bool
+	threadTS    string
+}
+
+// continuationURL is the response_url the continuation rewrites the prompt
+// through: an ephemeral's only.
+func (c promptClick) continuationURL() string {
+	if !c.ephemeral {
+		return ""
+	}
+	return c.responseURL
 }
 
 // takeConnectorAnswer records slackUser's answer to stateID's link, their
@@ -121,14 +183,15 @@ func (a *Adapter) takeConnectorAnswer(slackUser, stateID string) (connectorCompl
 
 // handleConnectorDecline is a click on a Connect prompt's Not now: the person
 // will not open the link. The first click of the person the prompt is for
-// declines the sign-in to muster and drops what the prompt holds; any other
-// is a no-op.
-func (a *Adapter) handleConnectorDecline(slackUser, stateID, responseURL string) {
-	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
+// declines the elicitation to muster and drops what the prompt holds; any
+// other continues nothing and says why (tellDeadPrompt).
+func (a *Adapter) handleConnectorDecline(ctx context.Context, click promptClick) {
+	entry, ok := a.takeConnectorAnswer(click.slackUser, click.stateID)
 	if !ok {
+		a.tellDeadPrompt(ctx, click)
 		return
 	}
-	a.background(func(ctx context.Context) { a.dropAfterDecline(ctx, entry, responseURL) })
+	a.background(func(ctx context.Context) { a.dropAfterDecline(ctx, entry, click.continuationURL()) })
 }
 
 // dropAfterDecline answers muster's sign-in with decline, then settles what

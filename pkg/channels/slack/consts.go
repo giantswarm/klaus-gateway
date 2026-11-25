@@ -116,11 +116,22 @@ const signInButtonLabel = "Sign in"
 // name.
 const musterCallToolMetaTool = "call_tool"
 
-// connectorCompletionTTL bounds a connector completion state: the window
-// between the Connect prompt posting and the person's click on its link.
-// Matched to the login link's own lifetime; past it the click continues
-// nothing.
-const connectorCompletionTTL = musterlink.DefaultStateTTL
+// connectorCompletionTTL bounds a URL elicitation prompt's completion state:
+// the window between the prompt posting and the person's Done or muster's
+// return. Matched to the longest a muster approval can be decided
+// (approval.ttl, at most 30m); past it Done says the prompt can no longer
+// continue.
+const connectorCompletionTTL = 30 * time.Minute
+
+// What a Done or Not now that continues nothing tells the person: the prompt
+// was answered already (an earlier click, muster's return, or its flow
+// settled otherwise), or no completion state of it is here (past
+// connectorCompletionTTL, a restart, or another replica posted it; the state
+// lives in the process that posted the prompt).
+const (
+	promptAlreadyContinuedNotice = "This prompt was already answered."
+	promptGoneNotice             = "This prompt can no longer continue: it is older than 30 minutes, or the app restarted or runs as more than one instance and another one posted it. Ask again (send your message again or click again where you started) to get a new prompt."
+)
 
 // Texts of a task paused on an MCP server's URL elicitation
 // (postMCPSignInPrompt): a sign-in, a tool approval or any later one, which
