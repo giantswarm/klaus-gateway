@@ -2,6 +2,7 @@ package muster_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -252,4 +253,156 @@ func TestCallTool_SlowDiscoverStillGetsTheSignIn(t *testing.T) {
 	res, err := muster.NewClient(slow.URL).CallTool(t.Context(), personToken, "x_agent-manager_start_session", nil)
 	require.NoError(t, err)
 	require.NotNil(t, res.SignIn)
+}
+
+// approvalElicitation is the URL elicitation muster answers a call that asks
+// with (tool approval, slice 2): its message says what is asked in plain words,
+// its URL is muster's approval page and its elicitationId is muster's random id.
+const (
+	approvalMessage       = "Alert Review wants to acknowledge an incident in PagerDuty."
+	approvalURL           = "https://muster.example/approvals/0f3a9c"
+	approvalElicitationID = "el-7d1e"
+)
+
+// The URL elicitation of an approval reaches the caller as any other: its
+// message, its URL and its elicitationId, which keys the generic return.
+func TestCallTool_ApprovalElicitationCarriesItsID(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_pagerduty_acknowledge_incident": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: approvalMessage, URL: approvalURL, ElicitationID: approvalElicitationID}}
+		},
+	})
+	defer fake.Close()
+
+	res, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_pagerduty_acknowledge_incident", map[string]any{"incident": "P123"})
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+	require.Equal(t, approvalMessage, res.SignIn.Message)
+	require.Equal(t, approvalURL, res.SignIn.URL)
+	require.Equal(t, approvalElicitationID, res.SignIn.ElicitationID)
+}
+
+// urlElicitationRequired is muster's answer to a 2025-11-25 client as the
+// MCP specification words it: JSON-RPC error -32042 carrying the URL mode
+// elicitations the client has to start.
+func urlElicitationRequired(id json.RawMessage) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":` + string(id) + `,"error":{"code":-32042,"message":"URL elicitation required","data":{"elicitations":[{"mode":"url","elicitationId":"` + approvalElicitationID + `","url":"` + approvalURL + `","message":"` + approvalMessage + `"}]}}}`)
+}
+
+// legacyAsking stands in front of fake and answers the first tools/call with
+// -32042, as muster answers a session on the 2025-11-25 protocol; every other
+// request goes through.
+func legacyAsking(t *testing.T, fake *mustertest.Server) *httptest.Server {
+	t.Helper()
+	target, err := url.Parse(fake.URL)
+	require.NoError(t, err)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var asked bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Method == "tools/call" && !asked {
+			asked = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(urlElicitationRequired(req.ID))
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A -32042 answer is read as the URL elicitation it carries. Accept retries
+// the same call as it is: on that protocol the retry carries no answer, and
+// muster matches it server-side.
+func TestCallTool_URLElicitationRequiredErrorThenAccept(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_pagerduty_acknowledge_incident": func(map[string]any) mustertest.Answer { return mustertest.Answer{Text: "acknowledged"} },
+	})
+	defer fake.Close()
+	client := muster.NewClient(legacyAsking(t, fake).URL)
+
+	res, err := client.CallTool(t.Context(), personToken, "x_pagerduty_acknowledge_incident", map[string]any{"incident": "P123"})
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+	require.Equal(t, approvalMessage, res.SignIn.Message)
+	require.Equal(t, approvalURL, res.SignIn.URL)
+	require.Equal(t, approvalElicitationID, res.SignIn.ElicitationID)
+	require.Empty(t, fake.Calls(), "the call did not run")
+
+	res, err = client.Accept(t.Context(), personToken, res.SignIn)
+	require.NoError(t, err)
+	require.Equal(t, muster.Result{Text: "acknowledged", Dispatched: true}, res)
+	calls := fake.Calls()
+	require.Len(t, calls, 1)
+	require.False(t, calls[0].Accepted, "a 2025-11-25 retry carries no elicitation answer")
+	require.Equal(t, map[string]any{"incident": "P123"}, calls[0].Args)
+}
+
+// Declining a -32042 elicitation sends nothing: there is no answer to carry,
+// and the call was never run.
+func TestDecline_URLElicitationRequiredErrorSendsNothing(t *testing.T) {
+	fake := mustertest.New(nil)
+	defer fake.Close()
+	client := muster.NewClient(legacyAsking(t, fake).URL)
+	res, err := client.CallTool(t.Context(), personToken, "x_tool", nil)
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+
+	require.NoError(t, client.Decline(t.Context(), personToken, res.SignIn))
+	require.Empty(t, fake.Calls())
+}
+
+// The generic return: a link on muster's origin gets redirect, the gateway's
+// return URL, so muster sends the browser back with the elicitationId. Any
+// other link, a link without an elicitationId, or one that already names a
+// redirect is left as muster gave it.
+func TestReturnLink(t *testing.T) {
+	const returnURL = "https://gateway.example/auth/slack/return"
+	for name, tc := range map[string]struct {
+		link, musterURL, elicitationID, want string
+	}{
+		"muster's origin": {approvalURL, "https://muster.example/", approvalElicitationID,
+			approvalURL + "?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn"},
+		"keeps the query": {"https://muster.example/oauth/proxy/start?state=abc", "https://muster.example", "e1",
+			"https://muster.example/oauth/proxy/start?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn&state=abc"},
+		"another origin":         {"https://github.com/login/oauth?x=1", "https://muster.example", "e1", "https://github.com/login/oauth?x=1"},
+		"another port":           {"https://muster.example:8443/approvals/1", "https://muster.example", "e1", "https://muster.example:8443/approvals/1"},
+		"no elicitation id":      {approvalURL, "https://muster.example", "", approvalURL},
+		"redirect already set":   {approvalURL + "?redirect=https://x.example/", "https://muster.example", "e1", approvalURL + "?redirect=https://x.example/"},
+		"no muster configured":   {approvalURL, "", "e1", approvalURL},
+		"unparseable muster URL": {approvalURL, "://", "e1", approvalURL},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, muster.ReturnLink(tc.link, tc.musterURL, returnURL, tc.elicitationID))
+		})
+	}
+	require.Equal(t, approvalURL, muster.ReturnLink(approvalURL, "https://muster.example", "", "e1"), "no return URL configured")
+}
+
+// With a return URL set, the client puts it on the links muster answers with
+// on its own origin.
+func TestCallTool_ElicitationLinkOnMustersOriginGetsTheReturn(t *testing.T) {
+	fake := mustertest.New(nil)
+	defer fake.Close()
+	link := fake.URL + "/approvals/0f3a9c"
+	fake.Tools = map[string]func(map[string]any) mustertest.Answer{
+		"x_tool": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: approvalMessage, URL: link, ElicitationID: approvalElicitationID}}
+		},
+	}
+	client := muster.NewClient(fake.URL)
+	client.ReturnURL = "https://gateway.example/auth/slack/return"
+
+	res, err := client.CallTool(t.Context(), personToken, "x_tool", nil)
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+	require.Equal(t, link+"?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn", res.SignIn.URL)
 }

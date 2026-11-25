@@ -4,9 +4,11 @@
 // under the person's own grants.
 //
 // The client declares URL mode elicitation. A call muster cannot run until
-// the person signs in somewhere is answered with that sign-in as a URL
-// elicitation (SignIn) instead of a tool result; the caller shows the link,
-// and once the person agreed to open it retries the call with Accept.
+// the person does something at a link (sign in somewhere, approve the call)
+// is answered with that URL elicitation (SignIn) instead of a tool result;
+// the caller shows the link, and once the person is done there retries the
+// call with Accept. muster asks on protocol 2026-07-28 with an input_required
+// result, on 2025-11-25 with the JSON-RPC error -32042; both are read.
 package muster
 
 import (
@@ -54,19 +56,28 @@ type Result struct {
 	SignIn     *SignIn
 }
 
-// SignIn is a URL mode elicitation muster answered a call with. The person
-// opens URL, exactly as given, after they agreed to; Accept then retries the
-// call that asked for it.
+// SignIn is a URL mode elicitation muster answered a call with: a sign-in, a
+// tool approval or any later one, which the client does not tell apart. The
+// person opens URL, exactly as given, after they agreed to; Accept then
+// retries the call that asked for it.
 type SignIn struct {
-	// Message is muster's own words on why, to show attributed to muster.
+	// Message is muster's own words on what is asked, to show attributed to
+	// muster.
 	Message string
-	// URL is the page the person signs in on.
+	// URL is the page the person acts on, with the gateway's return added
+	// when it is on muster's origin (ReturnLink).
 	URL string
+	// ElicitationID is muster's id of the elicitation, which muster appends
+	// to the return; empty when muster gave none.
+	ElicitationID string
 
 	tool         string
 	args         map[string]any
 	inputKey     string
 	requestState string
+	// required is set for an elicitation muster asked with -32042: its retry
+	// carries no answer, and a decline sends nothing.
+	required bool
 }
 
 // ErrUnusableSignIn is a sign-in muster asked for that the gateway will not
@@ -80,6 +91,10 @@ type Client struct {
 	BaseURL string
 	// HTTP carries the requests; each call bounds itself with its context.
 	HTTP *http.Client
+	// ReturnURL, when set, is where muster sends the browser back after the
+	// person acted at an elicitation's link on muster's origin; see
+	// ReturnLink.
+	ReturnURL string
 }
 
 // NewClient returns a Client for the muster at baseURL.
@@ -121,6 +136,14 @@ func (c *Client) answer(ctx context.Context, bearer string, signIn *SignIn, acti
 	if signIn == nil || signIn.tool == "" {
 		return Result{}, errors.New("muster: no sign-in to answer")
 	}
+	if signIn.required {
+		// -32042 has no answer to send: the retry is the call again, which
+		// muster matches server-side, and a decline is not calling again.
+		if action != mcp.ElicitationResponseActionAccept {
+			return Result{}, nil
+		}
+		return c.call(ctx, bearer, signIn.tool, signIn.args, mcp.MultiRoundTripParams{})
+	}
 	answer := mcp.NewElicitationInputResponse(mcp.ElicitationResult{
 		ElicitationResponse: mcp.ElicitationResponse{Action: action},
 	})
@@ -149,11 +172,18 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 	request.Params.Arguments = map[string]any{nameKey: tool, argumentsKey: args}
 	request.Params.MultiRoundTripParams = roundTrip
 	res, err := session.CallTool(ctx, request)
+	if required, ok := asURLElicitationRequired(err); ok {
+		signIn, err := c.signInOfRequired(required, tool, args)
+		if err != nil {
+			return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
+		}
+		return Result{SignIn: signIn}, nil
+	}
 	if err != nil {
 		return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
 	}
 	if res.NeedsInput() {
-		signIn, err := signInOf(res, tool, args)
+		signIn, err := c.signInOf(res, tool, args)
 		if err != nil {
 			return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
 		}
@@ -211,7 +241,7 @@ func (c *Client) connect(ctx context.Context, bearer string) (*mcpclient.Client,
 
 // signInOf reads the one URL mode elicitation an input_required answer
 // carries.
-func signInOf(res *mcp.CallToolResult, tool string, args map[string]any) (*SignIn, error) {
+func (c *Client) signInOf(res *mcp.CallToolResult, tool string, args map[string]any) (*SignIn, error) {
 	if len(res.InputRequests) != 1 {
 		return nil, fmt.Errorf("%w: %d input requests", ErrUnusableSignIn, len(res.InputRequests))
 	}
@@ -224,15 +254,89 @@ func signInOf(res *mcp.CallToolResult, tool string, args map[string]any) (*SignI
 			return nil, err
 		}
 		return &SignIn{
-			Message:      e.Message,
-			URL:          e.URL,
-			tool:         tool,
-			args:         args,
-			inputKey:     key,
-			requestState: res.RequestState,
+			Message:       e.Message,
+			URL:           c.returnLink(e.URL, e.ElicitationID),
+			ElicitationID: e.ElicitationID,
+			tool:          tool,
+			args:          args,
+			inputKey:      key,
+			requestState:  res.RequestState,
 		}, nil
 	}
 	return nil, ErrUnusableSignIn
+}
+
+// asURLElicitationRequired finds the -32042 error muster answers a 2025-11-25
+// session with.
+func asURLElicitationRequired(err error) (mcp.URLElicitationRequiredError, bool) {
+	var required mcp.URLElicitationRequiredError
+	if err != nil && errors.As(err, &required) {
+		return required, true
+	}
+	return required, false
+}
+
+// signInOfRequired reads the one URL mode elicitation a -32042 error carries.
+func (c *Client) signInOfRequired(required mcp.URLElicitationRequiredError, tool string, args map[string]any) (*SignIn, error) {
+	if len(required.Elicitations) != 1 {
+		return nil, fmt.Errorf("%w: %d elicitations", ErrUnusableSignIn, len(required.Elicitations))
+	}
+	e := required.Elicitations[0]
+	if e.Mode != mcp.ElicitationModeURL {
+		return nil, fmt.Errorf("%w: not a URL elicitation", ErrUnusableSignIn)
+	}
+	if err := ValidateSignInURL(e.URL); err != nil {
+		return nil, err
+	}
+	return &SignIn{
+		Message:       e.Message,
+		URL:           c.returnLink(e.URL, e.ElicitationID),
+		ElicitationID: e.ElicitationID,
+		tool:          tool,
+		args:          args,
+		required:      true,
+	}, nil
+}
+
+// returnLink is link with the gateway's return (ReturnLink), or link as given
+// when the return would make it one the person cannot be shown.
+func (c *Client) returnLink(link, elicitationID string) string {
+	withReturn := ReturnLink(link, c.BaseURL, c.ReturnURL, elicitationID)
+	if ValidateSignInURL(withReturn) != nil {
+		return link
+	}
+	return withReturn
+}
+
+// ReturnLinkParam is the query parameter of muster's link that names where
+// muster sends the browser after the person acted there, checked against
+// muster's oauth.mcpClient.postLoginRedirectAllowlist; muster appends the
+// elicitation's elicitationId to it, never what was decided.
+const ReturnLinkParam = "redirect"
+
+// ReturnLink adds returnURL as the redirect of link when link is on the
+// origin of musterURL (scheme, host and port) and has an elicitationID to
+// key the return by. Any other link, or one that already names a redirect,
+// is returned as given.
+func ReturnLink(link, musterURL, returnURL, elicitationID string) string {
+	if returnURL == "" || musterURL == "" || elicitationID == "" {
+		return link
+	}
+	m, err := url.Parse(musterURL)
+	if err != nil || m.Host == "" {
+		return link
+	}
+	u, err := url.Parse(link)
+	if err != nil || !strings.EqualFold(u.Scheme, m.Scheme) || !strings.EqualFold(u.Host, m.Host) {
+		return link
+	}
+	q := u.Query()
+	if q.Has(ReturnLinkParam) {
+		return link
+	}
+	q.Set(ReturnLinkParam, returnURL)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // SignInURLMaxBytes bounds a sign-in link as a client writes it in markup,

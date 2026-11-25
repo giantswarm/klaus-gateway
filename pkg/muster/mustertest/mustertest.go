@@ -28,10 +28,12 @@ type Answer struct {
 	SignIn       *SignIn
 }
 
-// SignIn is the URL elicitation a call is answered with.
+// SignIn is the URL elicitation a call is answered with. ElicitationID is
+// its elicitationId, "mustertest-<tool>" when empty.
 type SignIn struct {
-	Message string
-	URL     string
+	Message       string
+	URL           string
+	ElicitationID string
 }
 
 // Call is one tools/call the fake served. Accepted is a retry carrying the
@@ -123,11 +125,15 @@ func (s *Server) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 		if !declaredURLElicitation(ctx) {
 			return mcp.NewToolResultError("auth_required: the client did not declare URL elicitation"), nil
 		}
+		elicitationID := a.SignIn.ElicitationID
+		if elicitationID == "" {
+			elicitationID = "mustertest-" + call.Tool
+		}
 		return server.NewInputRequestBuilder(signInState).Elicit(signInKey, mcp.ElicitationParams{
 			Mode:          mcp.ElicitationModeURL,
 			Message:       a.SignIn.Message,
 			URL:           a.SignIn.URL,
-			ElicitationID: "mustertest-" + call.Tool,
+			ElicitationID: elicitationID,
 		}).ToolResult(), nil
 	}
 	return result(a), nil
