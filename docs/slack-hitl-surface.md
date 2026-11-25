@@ -397,9 +397,10 @@ the elicitation as the person: the gateway retries the start (with muster's `req
 the `accept` on 2026-07-28, the plain call on 2025-11-25); muster waits up to five minutes for a
 sign-in to complete, or matches an approval, and then starts the Session, and the held message
 runs as the thread's first turn (agent-manager's `start_session` is idempotent per request id,
-so the replayed start finds that Session). What muster still asks for (a sign-in that did not
-complete in time, an approval not decided yet) is asked for again by the replayed start, with a
-fresh prompt. A retry muster refuses (the person declined the approval, it expired) is not
+so the replayed start finds that Session; the gateway's muster client hands the replay the
+accepted start's answer, since muster used the approval up and the same start would ask a
+second time). What muster still asks for on the retry (a sign-in that did not complete in time,
+an approval not decided yet) gets the prompt again for that elicitation, without a replay. A retry muster refuses (the person declined the approval, it expired) is not
 replayed: the line reads "@Jose is done; the conversation did not start.", the card and a note
 to the person in the thread read "Your message was not sent: <muster's words>", and the held
 message is dropped. In a DM the card is a message of the conversation; a later message gets a

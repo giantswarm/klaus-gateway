@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
@@ -281,13 +282,15 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 
 // resumeHeldStart accepts the URL elicitation a Session start was asked for
 // (muster waits for a sign-in, matches an approval), then runs the held
-// message as the thread's first turn. The replayed start names the same
-// request, so it finds the Session the accepted start made. The surfaces
-// settle as delivered only when the accept ran the start. One muster refused
-// (a declined or expired approval) settles them as not sent, with muster's
-// words, and the held message is dropped: replaying it would only ask again.
-// Otherwise the replayed start settles them or, still asked, refreshes them
-// with a new prompt.
+// message as the thread's first turn. When the accept ran the start, the
+// surfaces settle as delivered and the replayed start gets the accepted
+// start's answer from the muster client instead of asking again
+// (muster.Client.CallIdempotent; agent-manager's start is idempotent per
+// request id). One muster still asks for (an approval not decided yet) gets
+// the prompt again, not a replay. One muster refused (a declined or expired
+// approval) settles them as not sent, with muster's words, and the held
+// message is dropped. When the accept failed, the replayed start settles them
+// or refreshes them with a new prompt.
 func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion) {
 	res, ok := a.acceptSignIn(ctx, entry)
 	switch {
@@ -303,7 +306,13 @@ func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion
 			a.Logger.Warn("slack: session start refusal note failed", "thread", entry.threadTS, "error", err)
 		}
 		return
-	case ok && res.SignIn == nil:
+	case ok && res.SignIn != nil:
+		// Still asked (an approval not decided yet): the person gets the
+		// prompt again for the elicitation muster answered the retry with.
+		// A replay would only call the start again to be asked the same.
+		a.promptSessionConnect(ctx, entry.held.Msg, entry.held.SlackChannel, entry.slackUser, "", false, &pkga2a.ConnectRequiredError{SignIn: res.SignIn})
+		return
+	case ok:
 		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
 	}
 	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {

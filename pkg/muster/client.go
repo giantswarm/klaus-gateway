@@ -13,6 +13,8 @@ package muster
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -78,6 +81,9 @@ type SignIn struct {
 	// required is set for an elicitation muster asked with -32042: its retry
 	// carries no answer, and a decline sends nothing.
 	required bool
+	// idempotent is set for an elicitation CallIdempotent got: the answer of
+	// its accepted retry is handed to the next identical CallIdempotent.
+	idempotent bool
 }
 
 // ErrUnusableSignIn is a sign-in muster asked for that the gateway will not
@@ -91,6 +97,9 @@ type Client struct {
 	BaseURL string
 	// HTTP carries the requests; each call bounds itself with its context.
 	HTTP *http.Client
+
+	handoverMu sync.Mutex
+	handovers  map[string]handover
 }
 
 // NewClient returns a Client for the muster at baseURL.
@@ -106,6 +115,81 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	return c.call(ctx, bearer, tool, args, mcp.MultiRoundTripParams{})
+}
+
+// HandoverFor is how long the answer of an accepted retry of a CallIdempotent
+// waits for the identical call it is handed to.
+const HandoverFor = 2 * time.Minute
+
+// handover is the answer of an accepted retry, waiting for the identical
+// CallIdempotent.
+type handover struct {
+	res     Result
+	expires time.Time
+}
+
+// CallIdempotent is CallTool for a tool whose call repeated with the same
+// arguments answers the same (agent-manager's start_session, idempotent per
+// request id), and that its caller makes again after an accepted retry ran
+// it (a held message replayed after Done). The answer of that retry is handed,
+// once and within HandoverFor, to the next CallIdempotent with the same bearer,
+// tool and arguments, which does not call muster again: muster used the
+// approval up when the retry ran, so the same call would ask a second time.
+func (c *Client) CallIdempotent(ctx context.Context, bearer, tool string, args map[string]any) (Result, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	if res, ok := c.takeHandover(bearer, tool, args); ok {
+		return res, nil
+	}
+	res, err := c.CallTool(ctx, bearer, tool, args)
+	if res.SignIn != nil {
+		res.SignIn.idempotent = true
+	}
+	return res, err
+}
+
+func handoverKey(bearer, tool string, args map[string]any) (string, bool) {
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(bearer + "\x00" + tool + "\x00" + string(encoded)))
+	return hex.EncodeToString(sum[:]), true
+}
+
+func (c *Client) putHandover(bearer, tool string, args map[string]any, res Result) {
+	key, ok := handoverKey(bearer, tool, args)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	c.handoverMu.Lock()
+	defer c.handoverMu.Unlock()
+	if c.handovers == nil {
+		c.handovers = map[string]handover{}
+	}
+	for k, h := range c.handovers {
+		if now.After(h.expires) {
+			delete(c.handovers, k)
+		}
+	}
+	c.handovers[key] = handover{res: res, expires: now.Add(HandoverFor)}
+}
+
+func (c *Client) takeHandover(bearer, tool string, args map[string]any) (Result, bool) {
+	key, ok := handoverKey(bearer, tool, args)
+	if !ok {
+		return Result{}, false
+	}
+	c.handoverMu.Lock()
+	defer c.handoverMu.Unlock()
+	h, found := c.handovers[key]
+	delete(c.handovers, key)
+	if !found || time.Now().After(h.expires) {
+		return Result{}, false
+	}
+	return h.res, true
 }
 
 // Accept retries the call signIn was asked for with the person's accept: they
@@ -132,6 +216,20 @@ func (c *Client) answer(ctx context.Context, bearer string, signIn *SignIn, acti
 	if signIn == nil || signIn.tool == "" {
 		return Result{}, errors.New("muster: no sign-in to answer")
 	}
+	res, err := c.retry(ctx, bearer, signIn, action)
+	if err == nil && action == mcp.ElicitationResponseActionAccept && signIn.idempotent {
+		switch {
+		case res.SignIn != nil:
+			res.SignIn.idempotent = true
+		case res.Dispatched && !res.IsError:
+			c.putHandover(bearer, signIn.tool, signIn.args, res)
+		}
+	}
+	return res, err
+}
+
+// retry calls the call signIn was asked for again with the person's action.
+func (c *Client) retry(ctx context.Context, bearer string, signIn *SignIn, action mcp.ElicitationResponseAction) (Result, error) {
 	if signIn.required {
 		// -32042 has no answer to send: the retry is the call again, which
 		// muster matches server-side, and a decline is not calling again.

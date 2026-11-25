@@ -138,8 +138,8 @@ creates one, which a turn that switches agents does mid-thread.
   person, and muster decides on that retry (a sign-in it waits for, an approval it matches);
   then the held message runs as the thread's first turn. A retry muster refuses (the person
   declined the approval, it expired) is not run: the person reads muster's words and the held
-  message is not sent. One muster still asks for gets a fresh prompt through the replayed
-  start. The hold is the process's own; after a restart, or on another replica, *Done* says the
+  message is not sent. One muster still asks for gets the prompt again, without a replay;
+  after an approved retry the replay gets the start's answer instead of being asked again. The hold is the process's own; after a restart, or on another replica, *Done* says the
   prompt can no longer continue. Where the prompt goes follows the sign-in prompt: in a DM the
   card is a message of the conversation, and a later message of the person's gets a card of
   its own while the earlier one loses its button; in a channel thread the card is ephemeral, so

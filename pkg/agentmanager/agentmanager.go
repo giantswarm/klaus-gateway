@@ -30,6 +30,12 @@ type ToolCaller interface {
 	CallTool(ctx context.Context, bearer, tool string, args map[string]any) (muster.Result, error)
 }
 
+// idempotentCaller is a ToolCaller that hands the answer of an accepted
+// retry to the identical call that follows it. *muster.Client satisfies it.
+type idempotentCaller interface {
+	CallIdempotent(ctx context.Context, bearer, tool string, args map[string]any) (muster.Result, error)
+}
+
 // Starter starts Sessions through agent-manager's start_session. It satisfies
 // pkga2a.SessionStarter.
 type Starter struct {
@@ -70,7 +76,14 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 	} else {
 		args["workspaceGrant"] = grant.Token()
 	}
-	res, err := s.tools.CallTool(ctx, bearer, s.tool, args)
+	// start_session is idempotent per request id, and the held message is
+	// replayed after the accepted retry of a start muster asked approval for
+	// already ran it: that replay gets the retry's answer, not a second ask.
+	call := s.tools.CallTool
+	if idempotent, ok := s.tools.(idempotentCaller); ok {
+		call = idempotent.CallIdempotent
+	}
+	res, err := call(ctx, bearer, s.tool, args)
 	if err != nil {
 		var httpErr *muster.HTTPError
 		if errors.As(err, &httpErr) && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden) {

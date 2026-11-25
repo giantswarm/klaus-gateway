@@ -483,3 +483,40 @@ func TestSessionConnect_RefusedRetryIsNotDelivered(t *testing.T) {
 	require.NotContains(t, allText(updatesIn(fake, "U1")), "on its way")
 	require.Contains(t, allText(updatesIn(fake, "C1")), "<@U1> is done; the conversation did not start.")
 }
+
+// muster still asks on the accepted retry of a held start (an approval not
+// decided yet): the person gets the prompt again for the elicitation muster
+// answered the retry with, and the held message is not replayed, which would
+// only call the start again to be asked the same (code review M1-KG-N-02).
+func TestSessionConnect_StillAskedAfterDonePromptsAgainWithoutReplay(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	gw.dispatchErr = sessionConnectChallenge()
+	again := &muster.SignIn{Message: "Confirm Start session in agent-manager.", URL: "https://muster.example/approvals/2"}
+	accepter := &fakeAccepter{result: muster.Result{SignIn: again}}
+	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
+
+	gw.openConversation(t, "C1", "182.000", "U1", "test-agent")
+	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "182.000", ""))
+	var stateID string
+	require.Eventually(t, func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	}, flowWait, 20*time.Millisecond, "the prompt is posted")
+
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, "")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Confirm Start session in agent-manager.")
+	}, flowWait, 20*time.Millisecond, "the prompt is posted again for the elicitation muster still asks")
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, 1, gw.dispatchCount(), "the held message is not replayed")
+
+	_, againState, ok := lastConnectButton(fake)
+	require.True(t, ok)
+	require.NotEqual(t, stateID, againState)
+	sendConnectorInteractionURL(t, srv, "elicitation_done", againState, "")
+	require.Eventually(t, func() bool { return accepter.count() == 2 }, flowWait, 20*time.Millisecond)
+	accepter.mu.Lock()
+	defer accepter.mu.Unlock()
+	require.Same(t, again, accepter.accepted[1], "the new prompt answers the elicitation muster still asks")
+}
