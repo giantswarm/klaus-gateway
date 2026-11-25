@@ -77,10 +77,10 @@ const (
 	decisionWithdrawnNotice  = "This decision was withdrawn."
 	decisionPendingNotice    = "<@%s>'s answer is being submitted right now."
 
-	decisionStatusConnecting      = "<@%s> is finishing a step at muster to answer as themselves."
-	decisionStatusRefused         = "<@%s>'s answer was not accepted: %s"
-	decisionStatusFailed          = "<@%s>'s answer could not be submitted; try again in a moment."
-	decisionStatusStillChallenged = "<@%s> did not finish signing in in time; try again in a moment."
+	decisionStatusConnecting = "<@%s> is finishing a step at muster to answer as themselves."
+	decisionStatusRefused    = "<@%s>'s answer was not accepted: %s"
+	decisionStatusFailed     = "<@%s>'s answer could not be submitted; try again in a moment."
+	decisionStatusStillAsked = "<@%s> is not done at muster's link yet; their answer waits for it."
 
 	decisionConnectNotice = "%s before your answer goes through."
 	decisionConnectTail   = "Open it, then choose *Done*: your answer is submitted."
@@ -551,12 +551,7 @@ func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user stri
 	}
 	if res.SignIn != nil {
 		a.releaseTeamReview(ctx, rv.ID)
-		if accepted != nil {
-			a.Logger.Warn("slack: decision answer still asks for a sign-in after the accepted one", "decision", rv.ID, "tool", rv.Tool, "user", user)
-			a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusStillChallenged, user))
-			return
-		}
-		a.promptDecisionConnect(ctx, rv, user, ans, res.SignIn)
+		a.promptDecisionConnect(ctx, rv, user, ans, res.SignIn, accepted != nil)
 		return
 	}
 	if res.IsError {
@@ -582,16 +577,22 @@ func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user stri
 	}
 }
 
-// promptDecisionConnect answers the sign-in muster asked an answer for: the
-// decision stays open, its status line says who is signing in, and the person
-// gets a Connect prompt whose click submits the answer once they signed in.
-func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, user string, ans decisionAnswer, signIn *muster.SignIn) {
+// promptDecisionConnect answers the URL elicitation muster asked an answer
+// for: the decision stays open, its status line says who is at muster's link,
+// and the person gets a prompt whose Done submits the answer. stillAsked is
+// set when muster asked again on the retry of an earlier prompt's Done (an
+// approval not decided yet): the prompt is posted again, saying so.
+func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, user string, ans decisionAnswer, signIn *muster.SignIn, stillAsked bool) {
 	a.Logger.Info("slack: decision answer waits for the person at muster's link", "record", "decision_connect",
-		"decision", rv.ID, "tool", rv.Tool, "slack_user", user)
-	a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusConnecting, user))
+		"decision", rv.ID, "tool", rv.Tool, "slack_user", user, "still_asked", stillAsked)
+	status := decisionStatusConnecting
+	if stillAsked {
+		status = decisionStatusStillAsked
+	}
+	a.showDecisionStatus(ctx, rv, fmt.Sprintf(status, user))
 
 	stateID, link := a.mintPrompt(connectorCompletion{slackUser: user, channel: rv.Channel, signIn: signIn, review: rv.ID, answer: &ans}, signIn.URL)
-	text := elicitationPromptText(signIn.Message, fmt.Sprintf(decisionConnectNotice, elicitationAskedLead), link, decisionConnectTail)
+	text := elicitationPromptText(signIn.Message, fmt.Sprintf(decisionConnectNotice, elicitationLead(stillAsked)), link, decisionConnectTail)
 	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: decision connect prompt failed", "decision", rv.ID, "user", user, "error", err)
 	}

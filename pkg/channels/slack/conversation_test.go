@@ -244,27 +244,39 @@ func TestConversation_SignInThenDelivers(t *testing.T) {
 	require.Empty(t, threadNotes(fake, receipt.TS))
 }
 
-// A sign-in that did not finish while muster waited is a note, not another
-// prompt.
-func TestConversation_UnfinishedSignInIsNotDelivered(t *testing.T) {
-	tools := &recordingTools{results: []muster.Result{reviewSignIn(), reviewSignIn()}}
+// muster still asks after Done (an approval not decided yet): the person
+// gets the prompt again and the reply is kept behind it, not dropped; the new
+// prompt's Done delivers it (code review M1-KG-C-01).
+func TestConversation_StillAskedAfterDoneKeepsTheReply(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{approvalAsk(), approvalAsk(), {Text: "sent: delivery 4"}}}
 	a, srv, fake := conversationHarness(t, tools)
 	receipt, err := a.OpenConversation(context.Background(), guideConversation())
 	require.NoError(t, err)
 
 	replyInConversation(t, srv, receipt, "U1", "1800000000.000002", "Are you there?")
 	var stateID string
-	waitFor(t, "a Connect prompt is posted", func() bool {
+	waitFor(t, "a prompt is posted", func() bool {
 		var ok bool
 		_, stateID, ok = connectButton(fake)
 		return ok
 	})
 	sendClick(t, srv, "elicitation_done", stateID, "", true)
 
-	waitFor(t, "the thread says the sign-in did not finish", func() bool {
-		notes := threadNotes(fake, receipt.TS)
-		return len(notes) == 1 && notes[0] == "Not delivered to *Your guide*: the sign-in did not finish in time. Send it again once you're signed in."
+	waitFor(t, "the prompt is posted again", func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 2 })
+	again := fake.pathCalls("chat.postEphemeral")[1]
+	require.Contains(t, again.params["text"], "Not done yet: *muster* still asks before your reply goes to *Your guide*.")
+	require.Empty(t, threadNotes(fake, receipt.TS), "no note says the reply was dropped")
+
+	_, againState, ok := lastConnectButton(fake)
+	require.True(t, ok)
+	sendClick(t, srv, "elicitation_done", againState, "", true)
+	waitFor(t, "the kept reply is delivered", func() bool {
+		for _, r := range fake.pathCalls("reactions.add") {
+			if r.params["timestamp"] == "1800000000.000002" && r.params["name"] == "incoming_envelope" {
+				return true
+			}
+		}
+		return false
 	})
-	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "no second prompt")
-	require.Empty(t, fake.pathCalls("reactions.add"))
+	require.Len(t, tools.recorded(), 3)
 }

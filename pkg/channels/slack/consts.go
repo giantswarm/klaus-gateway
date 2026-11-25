@@ -152,9 +152,24 @@ const (
 	sessionConnectTail = "Open it, then choose *Done*: your message goes to the agent."
 )
 
-// elicitationAskedLead opens the context line of a prompt for a URL
-// elicitation muster answered one of the gateway's own calls with.
-const elicitationAskedLead = "Asked by *muster*"
+// The first words of the context line of a prompt for a URL elicitation
+// muster answered one of the gateway's own calls with: who asked, or, on the
+// prompt posted again when muster still asks after Done (an approval not
+// decided yet, which muster does not wait for; a sign-in not finished while
+// it waited), that the person is not done there yet.
+const (
+	elicitationAskedLead      = "Asked by *muster*"
+	elicitationStillAskedLead = "Not done yet: *muster* still asks"
+)
+
+// elicitationLead is the context line's first words for a prompt posted
+// first (stillAsked false) or again after Done.
+func elicitationLead(stillAsked bool) string {
+	if stillAsked {
+		return elicitationStillAskedLead
+	}
+	return elicitationAskedLead
+}
 
 // sessionConnectOwnerNote answers a collaborator whose turn would start the
 // thread owner's Session: the consent is the owner's to give, so no link for

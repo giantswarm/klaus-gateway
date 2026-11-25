@@ -620,17 +620,37 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 	require.Len(t, tools.recorded(), 2, "the declined prompt's Sign in submits nothing")
 }
 
-// A sign-in that did not complete in time is asked again by muster after the
-// accept: the person is told, once, and the review stays open.
-func TestTeamReview_SignInNotCompletedIsNotLooped(t *testing.T) {
-	tools := &recordingTools{results: []muster.Result{reviewSignIn()}}
+// approvalAsk is muster's URL elicitation of a tool approval (tool approval
+// slice 2): its message, its approval page.
+func approvalAsk() muster.Result {
+	return muster.Result{SignIn: &muster.SignIn{Message: "Confirm Approve change in repo-manager.", URL: "https://muster.example/approvals/0f3a9c", ElicitationID: "el-1"}}
+}
+
+// lastConnectButton returns the link and value of the latest ephemeral
+// prompt's link button.
+func lastConnectButton(fake *fakeSlackAPI) (buttonURL, buttonValue string, ok bool) {
+	calls := fake.pathCalls("chat.postEphemeral")
+	for i := len(calls) - 1; i >= 0; i-- {
+		if u, v, _, found := connectButtonIn(calls[i : i+1]); found {
+			return u, v, true
+		}
+	}
+	return "", "", false
+}
+
+// muster still asks after Done (an approval not decided yet; muster does not
+// wait for one): the person gets the prompt again, saying it is not done
+// yet, the review stays open, and the new prompt's Done submits the decision
+// (code review M1-KG-C-01).
+func TestTeamReview_StillAskedAfterDoneIsPromptedAgain(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{approvalAsk(), approvalAsk(), {Text: "review submitted"}}}
 	a, srv, fake := teamReviewHarness(t, tools)
 	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
 	require.NoError(t, err)
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
 	var stateID string
-	waitFor(t, "a Connect prompt is posted", func() bool {
+	waitFor(t, "a prompt is posted", func() bool {
 		var ok bool
 		_, stateID, ok = connectButton(fake)
 		return ok
@@ -638,14 +658,27 @@ func TestTeamReview_SignInNotCompletedIsNotLooped(t *testing.T) {
 	responseSrv, capturedBody := newResponseURLCapture(t)
 	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 
-	waitFor(t, "the status line says the sign-in did not finish", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> did not finish signing in in time")
+	waitFor(t, "the prompt is posted again", func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 2 })
+	again := fake.pathCalls("chat.postEphemeral")[1]
+	require.Contains(t, again.params["text"], "*Confirm Approve change in repo-manager.*\nNot done yet: *muster* still asks before your approval goes through.")
+	require.NotContains(t, again.params["text"], "sign")
+	waitFor(t, "the status line says the person is not done yet", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is not done at muster's link yet")
 	})
+	require.NotContains(t, statusLine(fake, receipt.TS), "signing in")
 	require.Contains(t, capturedBody(), "Done. What waited for it goes ahead.")
-	require.NotContains(t, capturedBody(), "Signed in.", "the prompt never claims a sign-in that did not finish")
-	require.Len(t, tools.recorded(), 2, "one call per attempt, no loop")
-	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "the one Connect prompt; no second one, no private repeat")
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
+	require.Len(t, tools.recorded(), 2, "one call per Done, no loop")
+
+	_, againState, ok := lastConnectButton(fake)
+	require.True(t, ok)
+	require.NotEqual(t, stateID, againState)
+	sendClick(t, srv, "elicitation_done", againState, responseSrv.URL, true)
+	waitFor(t, "the new prompt's Done submits the decision", func() bool {
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
+	})
+	require.Len(t, tools.recorded(), 3)
+	require.NotNil(t, tools.recorded()[2].accepted)
 }
 
 // Someone else approves while the clicker is signing in: the consent's
