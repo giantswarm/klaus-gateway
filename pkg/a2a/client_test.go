@@ -558,7 +558,13 @@ func TestClient_StartSession_MapsTheControllersRefusal(t *testing.T) {
 	require.Equal(t, "organization acme", refused.Tenant)
 	require.Equal(t, "Billing", refused.DisplayName)
 	require.ErrorContains(t, err, "not authorized", "the controller's reason is kept for the log")
-	require.Len(t, f.muster.Calls(), 1, "agent-manager was asked once")
+	var starts int
+	for _, call := range f.muster.Calls() {
+		if call.Tool == startSessionTool {
+			starts++
+		}
+	}
+	require.Equal(t, 1, starts, "agent-manager was asked to start once")
 }
 
 // organizationNames is a fixed OrganizationNames: organization namespace to

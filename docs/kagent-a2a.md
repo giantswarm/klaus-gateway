@@ -118,7 +118,8 @@ thread to exactly one session:
    same way the gateway calls every muster tool as a linked person. agent-manager runs the
    checks every surface shares — a workspace grant must name its caller — and creates the
    session at the controller as that person, so the gateway has one way to start a session and
-   no surface can skip those checks. The call names the Agent (`namespace`, `name`), the
+   no surface can skip those checks. The call names the Agent (`namespace`, `name`; for an
+   organization's Agent, `organization`, `name` where agent-manager takes it, see below), the
    `requestId` = the gateway's synthesized context id (a SHA-256 hex over `channel,
    channelID, "", threadID, agentRef`, followed by the workspace's namespace and name when the
    thread chose one) and the `sessionName`, for a thread that chose a workspace the
@@ -146,6 +147,23 @@ thread to exactly one session:
    The person is signed in, so the channel answers with its Connect prompt, never the sign-in
    prompt; once the person agreed to open the link it accepts the sign-in, which muster runs
    the start for once the sign-in completed, and runs the turn again.
+
+   **An organization's Agent.** agent-manager's `start_session` takes an organization's Agent
+   by the organization's name (`organization`) and refuses its namespace given as `namespace`;
+   `namespace` is for the installation's platform namespaces only. The released agent-manager
+   before that takes `namespace` for every Agent. For an Agent outside `a2a.namespace` the
+   gateway asks agent-manager's `list_organizations`, as the person, which organization's
+   namespace the Agent is in. An entry whose `namespace` is the Agent's names the
+   organization; the entry's shape tells the two agent-managers apart: the later one lists an
+   organization by `name` and `namespace`, the earlier one with its `parent` as well, and the
+   gateway then starts by `namespace`. No entry, or a lookup that does not answer (no
+   organizations on the installation, the tool not behind muster), starts by `namespace`, which
+   the later agent-manager refuses for an organization's namespace rather than starting another
+   Agent. Nothing of the lookup is cached, so a first turn costs one more muster call for an
+   organization's Agent, and none more for an Agent of `a2a.namespace`. A refused token or a
+   sign-in muster asks for on the lookup is answered as on the start. agent-manager's refusal of
+   the organization (not found, its Agent Platform not enabled, or not ready yet) and of an
+   Agent it cannot run is shown to the person in agent-manager's own words.
 
    The start also carries `sessionName`, the conversation's display name: the message that opened the
    thread, rendered on one line and cut at the controller's 200-character limit on a word
