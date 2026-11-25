@@ -74,6 +74,16 @@ func TestFailureNote_ModelCredentials(t *testing.T) {
 		failureNote(errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)))
 }
 
+// A Session start refused with a reason (an organization that is not there,
+// not enabled or not ready, an Agent that cannot run) shows agent-manager's
+// own words, escaped, instead of the generic failed note.
+func TestFailureNote_StartRefusedInTheToolsWords(t *testing.T) {
+	require.Equal(t, "The conversation did not start: organization acme not found; list_organizations lists yours. Nothing was sent to the agent.",
+		failureNote(fmt.Errorf("channels: start: %w", &pkga2a.AgentNotFoundError{Ref: "agents-acme/billing", Reason: "organization acme not found; list_organizations lists yours"})))
+	require.Equal(t, "The conversation did not start: organization acme is not ready yet: try &lt;again&gt; shortly. Nothing was sent to the agent.",
+		failureNote(&pkga2a.AgentUnavailableError{Ref: "agents-acme/billing", Reason: "organization acme is not ready yet:\n try <again> shortly."}))
+}
+
 // An agent the sender may not use is refused by name and tenant, wrapped or
 // not, and is logged as the person's state rather than a platform error.
 func TestFailureNote_AgentNotPermitted(t *testing.T) {

@@ -289,7 +289,7 @@ func run(args []string) error {
 		// is no person to start it as, and no turn would run either.
 		var starter pkga2a.SessionStarter
 		if musterClient != nil {
-			starter = agentmanager.New(musterClient, cfg.A2A.AgentManagerToolsPrefix)
+			starter = agentmanager.New(musterClient, cfg.A2A.AgentManagerToolsPrefix, agentmanager.Options{PlatformNamespaces: []string{cfg.A2A.Namespace}, Logger: logger})
 		} else {
 			logger.Warn("kagent client without obo: no Session can be started (agent-manager's start_session runs as the linked person)")
 		}

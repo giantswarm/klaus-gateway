@@ -34,7 +34,7 @@ func (f *fakeKagent) agentManager(t *testing.T) *agentmanager.Starter {
 	}
 	t.Cleanup(srv.Close)
 	f.muster = srv
-	return agentmanager.New(muster.NewClient(srv.URL), "x_agent-manager_")
+	return agentmanager.New(muster.NewClient(srv.URL), "x_agent-manager_", agentmanager.Options{PlatformNamespaces: []string{"kagent"}})
 }
 
 func (f *fakeKagent) startSession(call mustertest.Call) mustertest.Answer {

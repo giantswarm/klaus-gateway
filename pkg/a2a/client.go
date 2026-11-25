@@ -161,6 +161,20 @@ func (e *AgentUnavailableError) Error() string {
 
 func (e *AgentUnavailableError) Is(target error) bool { return target == ErrAgentUnavailable }
 
+// AgentNotFoundError is agent-manager's not_found to a Session start: the
+// Agent, or the organization it was named by, is not there. Reason is
+// agent-manager's own sentence. It matches ErrAgentUnknown in errors.Is.
+type AgentNotFoundError struct {
+	Ref    string
+	Reason string
+}
+
+func (e *AgentNotFoundError) Error() string {
+	return fmt.Sprintf("%s: %s: %s", ErrAgentUnknown.Error(), e.Ref, e.Reason)
+}
+
+func (e *AgentNotFoundError) Is(target error) bool { return target == ErrAgentUnknown }
+
 // ConnectRequiredError is the sign-in muster asks for on the way to the
 // controller: the caller is signed in, but the muster server a call goes
 // through (agent-manager, for a Session start) waits for their one-time
