@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -420,4 +421,44 @@ func TestReturnLink(t *testing.T) {
 	require.Equal(t, approvalURL, muster.ReturnLink(approvalURL, "https://muster.example", ""), "no return URL configured")
 	require.Equal(t, approvalURL+"?x=1", muster.ReturnLink(approvalURL+"?redirect=https://portal.example/any&x=1", "https://muster.example", ""),
 		"a redirect the link brought is dropped even without a return of the caller's own")
+}
+
+// The retry after Done carries the identity muster binds a pending approval
+// to (muster decision #81: the person and the calling client, here the same
+// person's token from the same client, not the MCP session): every call is
+// its own connection, and the retry over a new one carries the asking call's
+// bearer (code review M1-KG-N-01). The fake is
+// muster on protocol 2025-11-25, the one it negotiates in its first tool
+// approval release, where every connection is a new MCP session.
+func TestAccept_RetryCarriesTheAskingCallsClientIdentity(t *testing.T) {
+	var mu sync.Mutex
+	approved := false
+	fake := mustertest.New(nil)
+	fake.Legacy = true
+	defer fake.Close()
+	fake.CallTools = map[string]func(mustertest.Call) mustertest.Answer{"x_tool": func(c mustertest.Call) mustertest.Answer {
+		mu.Lock()
+		defer mu.Unlock()
+		if approved && c.Bearer == "Bearer "+personToken {
+			return mustertest.Answer{Text: "ran"}
+		}
+		return mustertest.Answer{SignIn: &mustertest.SignIn{Message: approvalMessage, URL: approvalURL, ElicitationID: approvalElicitationID}}
+	}}
+	client := muster.NewClient(fake.URL)
+
+	res, err := client.CallTool(t.Context(), personToken, "x_tool", map[string]any{"a": 1})
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+	mu.Lock()
+	approved = true
+	mu.Unlock()
+	res, err = client.Accept(t.Context(), personToken, res.SignIn)
+	require.NoError(t, err)
+	require.Equal(t, "ran", res.Text)
+
+	calls := fake.Calls()
+	require.Len(t, calls, 2)
+	require.Equal(t, calls[0].Bearer, calls[1].Bearer, "the same person's token")
+	require.Equal(t, calls[0].Args, calls[1].Args, "the same call")
+	require.NotEqual(t, calls[0].SessionID, calls[1].SessionID, "over a new MCP session, which muster #81 no longer binds to")
 }

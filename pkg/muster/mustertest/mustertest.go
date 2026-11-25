@@ -6,8 +6,10 @@
 package mustertest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -38,13 +40,15 @@ type SignIn struct {
 
 // Call is one tools/call the fake served. Accepted is a retry carrying the
 // person's accept of the sign-in the call was answered with, Declined one
-// carrying their decline (the tool did not run).
+// carrying their decline (the tool did not run). SessionID is the client's
+// MCP session (Mcp-Session-Id), which muster binds a pending approval to.
 type Call struct {
-	Bearer   string
-	Tool     string
-	Args     map[string]any
-	Accepted bool
-	Declined bool
+	Bearer    string
+	SessionID string
+	Tool      string
+	Args      map[string]any
+	Accepted  bool
+	Declined  bool
 }
 
 // signInKey and signInState are the input request key and request state the
@@ -62,25 +66,42 @@ type Server struct {
 	*httptest.Server
 	Tools     map[string]func(args map[string]any) Answer
 	CallTools map[string]func(call Call) Answer
+	// Legacy makes the fake speak protocol 2025-11-25 alone, as muster does
+	// in its first tool approval release: every client connection is an MCP
+	// session (Mcp-Session-Id, Call.SessionID), and a URL elicitation is the
+	// JSON-RPC error -32042 instead of an input_required result.
+	Legacy bool
 
 	mu    sync.Mutex
 	calls []Call
 }
 
-type bearerKey struct{}
+type (
+	bearerKey  struct{}
+	sessionKey struct{}
+)
 
 // New starts a fake muster; Close stops it.
 func New(tools map[string]func(args map[string]any) Answer) *Server {
 	s := &Server{Tools: tools}
 	mcpServer := server.NewMCPServer("mustertest", "test")
 	mcpServer.AddTool(mcp.NewTool("call_tool"), s.callTool)
+	// muster is stateful: every client connection gets its own MCP session
+	// (Mcp-Session-Id), which a pending approval is bound to.
 	handler := server.NewStreamableHTTPServer(mcpServer,
+		server.WithStateful(true),
 		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			ctx = context.WithValue(ctx, sessionKey{}, r.Header.Get(server.HeaderKeySessionID))
 			return context.WithValue(ctx, bearerKey{}, r.Header.Get("Authorization"))
 		}),
 	)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Legacy && legacyRefusesDiscover(w, r) {
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	s.Server = httptest.NewServer(mux)
 	return s
 }
@@ -97,7 +118,8 @@ func (s *Server) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	tool, _ := args["name"].(string)
 	inner, _ := args["arguments"].(map[string]any)
 	bearer, _ := ctx.Value(bearerKey{}).(string)
-	call := Call{Bearer: bearer, Tool: tool, Args: inner}
+	sessionID, _ := ctx.Value(sessionKey{}).(string)
+	call := Call{Bearer: bearer, SessionID: sessionID, Tool: tool, Args: inner}
 	if answer := server.ElicitationResponse(req.Params.InputResponses, signInKey); answer != nil && req.Params.RequestState == signInState {
 		if answer.Action != mcp.ElicitationResponseActionAccept {
 			call.Declined = true
@@ -129,6 +151,11 @@ func (s *Server) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 		if elicitationID == "" {
 			elicitationID = "mustertest-" + call.Tool
 		}
+		if s.Legacy {
+			return nil, mcp.URLElicitationRequiredError{Elicitations: []mcp.ElicitationParams{{
+				Mode: mcp.ElicitationModeURL, Message: a.SignIn.Message, URL: a.SignIn.URL, ElicitationID: elicitationID,
+			}}}
+		}
 		return server.NewInputRequestBuilder(signInState).Elicit(signInKey, mcp.ElicitationParams{
 			Mode:          mcp.ElicitationModeURL,
 			Message:       a.SignIn.Message,
@@ -140,12 +167,15 @@ func (s *Server) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 }
 
 func declaredURLElicitation(ctx context.Context) bool {
-	info := server.RequestProtocolInfoFromContext(ctx)
-	if info == nil || info.ClientCapabilities == nil {
-		return false
+	var caps *mcp.ClientCapabilities
+	if info := server.RequestProtocolInfoFromContext(ctx); info != nil && info.ClientCapabilities != nil {
+		caps = info.ClientCapabilities
+	} else if session, ok := server.ClientSessionFromContext(ctx).(server.SessionWithClientInfo); ok {
+		// 2025-11-25: the capabilities the session's initialize declared.
+		c := session.GetClientCapabilities()
+		caps = &c
 	}
-	e := info.ClientCapabilities.Elicitation
-	return e != nil && e.URL != nil
+	return caps != nil && caps.Elicitation != nil && caps.Elicitation.URL != nil
 }
 
 func result(a Answer) *mcp.CallToolResult {
@@ -158,4 +188,28 @@ func result(a Answer) *mcp.CallToolResult {
 	}
 	envelope, _ := json.Marshal(inner)
 	return &mcp.CallToolResult{IsError: a.IsError, Content: []mcp.Content{mcp.NewTextContent(string(envelope))}}
+}
+
+// legacyRefusesDiscover answers a server/discover request as a server older
+// than 2026-07-28 does, with method not found, so the client falls back to
+// initialize on 2025-11-25; it reports whether it answered.
+func legacyRefusesDiscover(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	if json.Unmarshal(body, &req) != nil || req.Method != string(mcp.MethodServerDiscover) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"error":{"code":-32601,"message":"Method not found"}}`))
+	return true
 }
