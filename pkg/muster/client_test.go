@@ -285,14 +285,24 @@ func TestCallTool_ApprovalElicitationCarriesItsID(t *testing.T) {
 // urlElicitationRequired is muster's answer to a 2025-11-25 client as the
 // MCP specification words it: JSON-RPC error -32042 carrying the URL mode
 // elicitations the client has to start.
-func urlElicitationRequired(id json.RawMessage) []byte {
-	return []byte(`{"jsonrpc":"2.0","id":` + string(id) + `,"error":{"code":-32042,"message":"URL elicitation required","data":{"elicitations":[{"mode":"url","elicitationId":"` + approvalElicitationID + `","url":"` + approvalURL + `","message":"` + approvalMessage + `"}]}}}`)
+func urlElicitationRequired(id json.RawMessage, elicitations string) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":` + string(id) + `,"error":{"code":-32042,"message":"URL elicitation required: 1 elicitation(s) needed","data":{"elicitations":` + elicitations + `}}}`)
 }
+
+// contractElicitation is the one elicitation of muster's -32042 answer as the
+// approval contract (section 1) writes it.
+const contractElicitation = `{"mode":"url","elicitationId":"` + approvalElicitationID + `","url":"` + approvalURL + `","message":"` + approvalMessage + `"}`
 
 // legacyAsking stands in front of fake and answers the first tools/call with
 // -32042, as muster answers a session on the 2025-11-25 protocol; every other
 // request goes through.
 func legacyAsking(t *testing.T, fake *mustertest.Server) *httptest.Server {
+	t.Helper()
+	return legacyAskingWith(t, fake, "["+contractElicitation+"]")
+}
+
+// legacyAskingWith is legacyAsking answering with elicitations, a JSON array.
+func legacyAskingWith(t *testing.T, fake *mustertest.Server, elicitations string) *httptest.Server {
 	t.Helper()
 	target, err := url.Parse(fake.URL)
 	require.NoError(t, err)
@@ -309,7 +319,7 @@ func legacyAsking(t *testing.T, fake *mustertest.Server) *httptest.Server {
 		if req.Method == "tools/call" && !asked {
 			asked = true
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(urlElicitationRequired(req.ID))
+			_, _ = w.Write(urlElicitationRequired(req.ID, elicitations))
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -344,6 +354,28 @@ func TestCallTool_URLElicitationRequiredErrorThenAccept(t *testing.T) {
 	require.Len(t, calls, 1)
 	require.False(t, calls[0].Accepted, "a 2025-11-25 retry carries no elicitation answer")
 	require.Equal(t, map[string]any{"incident": "P123"}, calls[0].Args)
+}
+
+// A -32042 answer the gateway cannot show as one prompt is refused as an
+// unusable sign-in, and the call did not run: no elicitation, several, or one
+// that is not URL mode.
+func TestCallTool_URLElicitationRequiredErrorUnusable(t *testing.T) {
+	formElicitation := `{"mode":"form","elicitationId":"f1","message":"Pick one","requestedSchema":{"type":"object","properties":{}}}`
+	for name, elicitations := range map[string]string{
+		"no elicitation":   `[]`,
+		"two elicitations": "[" + contractElicitation + "," + contractElicitation + "]",
+		"not URL mode":     "[" + formElicitation + "]",
+		"URL not showable": `[{"mode":"url","elicitationId":"e","url":"http://muster.example/approvals/1","message":"m"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := mustertest.New(nil)
+			defer fake.Close()
+			res, err := muster.NewClient(legacyAskingWith(t, fake, elicitations).URL).CallTool(t.Context(), personToken, "x_tool", nil)
+			require.ErrorIs(t, err, muster.ErrUnusableSignIn)
+			require.Nil(t, res.SignIn)
+			require.Empty(t, fake.Calls(), "the call did not run")
+		})
+	}
 }
 
 // Declining a -32042 elicitation sends nothing: there is no answer to carry,
