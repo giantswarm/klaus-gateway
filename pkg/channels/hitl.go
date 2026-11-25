@@ -46,14 +46,17 @@ type HitlPrompt struct {
 	RequestID string
 }
 
-// HitlSignIn is an MCP server's URL elicitation: the person opens URL, signs
-// in to Server, and the paused task resumes. The link is minted for the
-// person whose turn asked for it.
+// HitlSignIn is an MCP server's URL elicitation: the person opens URL, does
+// what Message asks there (sign in to Server, approve a tool call), and the
+// paused task resumes. The link is minted for the person whose turn asked for
+// it. ElicitationID is the server's id of the elicitation, empty when it gave
+// none; muster appends it to the return after the person acted.
 type HitlSignIn struct {
-	ID      string
-	Server  string
-	Message string
-	URL     string
+	ID            string
+	Server        string
+	Message       string
+	URL           string
+	ElicitationID string
 }
 
 // IsSignIn reports whether this prompt is an MCP server's sign-in link.
