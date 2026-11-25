@@ -97,8 +97,8 @@ const (
 	// teamReviewConnectNotice heads the Connect prompt, above muster's message
 	// and the link, and teamReviewConnectTail follows them. The verbs are the
 	// decision's: approve/approval, deny/denial.
-	teamReviewConnectNotice = "To %s as yourself, *muster* asks you to sign in once:"
-	teamReviewConnectTail   = "Open it with *Sign in*: your %s is submitted once you're signed in."
+	teamReviewConnectNotice = "To %s as yourself, *muster* asks first:"
+	teamReviewConnectTail   = "Open it, then choose *Done*: your %s is submitted."
 )
 
 // Team-review status lines, under the buttons, read by the clicker and the

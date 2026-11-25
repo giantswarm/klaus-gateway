@@ -141,8 +141,13 @@ func run(args []string) error {
 	// person: agent-manager's start_session, the workspace-manager's tools and
 	// a team review's approval.
 	var musterClient *muster.Client
+	elicitationReturnURL := ""
 	if cfg.OBO.Enabled {
 		musterClient = muster.NewClient(cfg.OBO.MusterURL)
+		// muster sends the browser back here after the person acted at a URL
+		// elicitation's link on its origin (a sign-in, a tool approval).
+		elicitationReturnURL = strings.TrimRight(cfg.OBO.CallbackBaseURL, "/") + slackchannel.ElicitationReturnPath
+		musterClient.ReturnURL = elicitationReturnURL
 	}
 
 	var slackAdapter *slackchannel.Adapter
@@ -214,10 +219,14 @@ func run(args []string) error {
 		if slackAdapter != nil {
 			slackAdapter.OBO = linker
 			slackAdapter.SignIns = musterClient
+			slackAdapter.MusterURL = cfg.OBO.MusterURL
+			slackAdapter.ElicitationReturnURL = elicitationReturnURL
+			publicMux.Get(slackchannel.ElicitationReturnPath, slackAdapter.HandleElicitationReturn)
 		}
 		logger.Info("obo linking routes mounted",
 			"link_path", musterlink.LinkPath,
 			"callback_path", musterlink.CallbackPath,
+			"elicitation_return", elicitationReturnURL,
 			"muster_url", cfg.OBO.MusterURL,
 			"email_match", slackEmail != nil,
 		)

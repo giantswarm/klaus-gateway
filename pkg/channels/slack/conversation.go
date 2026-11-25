@@ -38,8 +38,8 @@ const (
 	conversationNotYours         = "This thread is <@%s>'s conversation with %s; only they can write to it."
 	conversationNotDelivered     = "Not delivered to %s: %s"
 	conversationFailed           = "Not delivered to %s: it could not be reached right now. Send it again in a moment."
-	conversationConnectNotice    = "Not delivered to %s yet. *muster* asks you to sign in once:"
-	conversationConnectTail      = "Open it with *Sign in*: your reply goes to %s once you're signed in."
+	conversationConnectNotice    = "Not delivered to %s yet. *muster* asks first:"
+	conversationConnectTail      = "Open it, then choose *Done*: your reply goes to %s."
 	conversationSignInUnfinished = "Not delivered to %s: the sign-in did not finish in time. Send it again once you're signed in."
 	conversationDelivered        = "incoming_envelope"
 )

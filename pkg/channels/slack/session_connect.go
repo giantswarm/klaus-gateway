@@ -269,7 +269,7 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 // postConnectPromptMessage posts a Connect prompt as a message of the
 // conversation, in threadID when set, and returns its ts.
 func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, threadID, text, link, connectValue string) (string, error) {
-	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, signInButtonLabel, link, connectValue, true, c.authorizeAll))
+	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, connectValue, true, c.authorizeAll))
 }
 
 // postConnectPromptDM posts a Connect prompt's card to user's DM, led by
@@ -277,7 +277,7 @@ func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, 
 // ephemeral went out. The DM is addressed by user ID, so the D… conversation
 // Slack put it in comes back with its ts for the rewrites.
 func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, text, link, connectValue string) (channel, ts string, err error) {
-	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, signInButtonLabel, link, connectValue, true, c.authorizeAll)...)
+	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, connectValue, true, c.authorizeAll)...)
 	resp, err := c.postJSONResponse(ctx, methodChatPostMessage, map[string]any{paramChannel: user, paramText: text, paramBlocks: blocks})
 	if err != nil {
 		return "", "", err
@@ -291,7 +291,7 @@ func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, 
 // updateConnectPrompt rewrites the Connect card at (channel, ts) to a fresh
 // button, led by origin when there is one.
 func (c *slackAPIClient) updateConnectPrompt(ctx context.Context, channel, ts, origin, text, link, connectValue string) error {
-	blocks := connectPromptBlocks(text, signInButtonLabel, link, connectValue, true, c.authorizeAll)
+	blocks := connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, connectValue, true, c.authorizeAll)
 	if origin != "" {
 		blocks = append([]any{contextBlock(origin)}, blocks...)
 	}

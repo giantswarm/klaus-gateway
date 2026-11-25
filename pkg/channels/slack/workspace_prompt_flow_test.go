@@ -585,12 +585,12 @@ func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T)
 	require.Zero(t, created)
 }
 
-// sendSignInConsent posts user's click on a Connect prompt's link button
+// sendSignInConsent posts user's click on a Connect prompt's Done button
 // carrying stateID, on an ephemeral prompt.
 func sendSignInConsent(t *testing.T, srv *httptest.Server, user, stateID string) {
 	t.Helper()
 	postInteraction(t, srv, map[string]any{
 		"type": "block_actions", "user": map[string]any{"id": user}, "container": map[string]any{"type": "message", "is_ephemeral": true},
-		"actions": []any{map[string]any{"action_id": "connector_connect", "value": stateID}},
+		"actions": []any{map[string]any{"action_id": "elicitation_done", "value": stateID}},
 	})
 }

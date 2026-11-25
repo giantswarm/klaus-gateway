@@ -2932,12 +2932,12 @@ const slackSectionTextMax = 3000
 // group's label.
 const slackOptionTextMax = 75
 
-// postConnectPrompt posts an ephemeral (target-user-only) Connect prompt:
-// text over a "Sign in" URL button opening link, in threadID when set.
-// connectValue is the button's value, the prompt's completion state, whose
-// click is the person's consent.
+// postConnectPrompt posts an ephemeral (target-user-only) prompt for a URL
+// elicitation muster answered one of the gateway's own calls with: text over
+// an Open URL button opening link, in threadID when set, then Done and Not
+// now. connectValue is the buttons' value, the prompt's completion state.
 func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, link, connectValue string) error {
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, signInButtonLabel, link, connectValue, connectValue != "", c.authorizeAll))
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, connectValue, connectValue != "", c.authorizeAll))
 }
 
 // postProviderConnectPrompt posts a workspace's Connect prompt: its
@@ -2971,9 +2971,10 @@ func (c *slackAPIClient) postConnectEphemeral(ctx context.Context, channel, thre
 // connectPromptBlocks are a Connect prompt's blocks: text, verbatim so Slack
 // links no URL in it but the button's, over a URL button
 // labelled label opening link exactly as given, with connectValue as its
-// value, a Not now button carrying the same value when declinable (the value
-// is then the prompt's completion state), and an "Authorize all" button
-// opening the authorize modal when authorizeAll is set.
+// value, Done and Not now buttons carrying the same value when declinable
+// (the value is then the prompt's completion state: the prompt is a URL
+// elicitation's), and an "Authorize all" button opening the authorize modal
+// when authorizeAll is set.
 func connectPromptBlocks(text, label, link, connectValue string, declinable, authorizeAll bool) []any {
 	elements := []any{
 		map[string]any{
@@ -2986,7 +2987,7 @@ func connectPromptBlocks(text, label, link, connectValue string, declinable, aut
 		},
 	}
 	if declinable {
-		elements = append(elements, map[string]any{
+		elements = append(elements, elicitationDoneButton(connectValue), map[string]any{
 			bkType:     bkButton,
 			bkText:     map[string]any{bkType: bkPlainText, bkText: signInDeclineText},
 			bkActionID: connectorDecline,

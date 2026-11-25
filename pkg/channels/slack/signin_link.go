@@ -1,11 +1,8 @@
 package slack
 
 import (
-	"net/url"
 	"strings"
 	"unicode/utf8"
-
-	"golang.org/x/net/idna"
 )
 
 // signInLinkText shows a link the person is asked to open before they agree
@@ -15,14 +12,7 @@ import (
 // that has no punycode form is shown as written, with the same warning. The
 // link must have passed muster.ValidateSignInURL.
 func signInLinkText(link string) string {
-	host := ""
-	if u, err := url.Parse(link); err == nil {
-		host = u.Hostname()
-	}
-	shown, err := idna.Lookup.ToASCII(host)
-	if err != nil {
-		shown = host
-	}
+	shown, host := shownHost(link)
 	var b strings.Builder
 	b.WriteString(signInLinkOpensLead)
 	b.WriteString("*" + escapeMrkdwn(shown) + "*")

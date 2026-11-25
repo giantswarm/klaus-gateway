@@ -57,9 +57,9 @@ func TestSignInLinkText(t *testing.T) {
 			"the whole link as written, in code; its domain in bold")
 	})
 	t.Run("punycode domain", func(t *testing.T) {
-		text := signInLinkText("https://xn--mster-jua.example/start")
-		require.Contains(t, text, "Opens *xn--mster-jua.example*")
-		require.Contains(t, text, "`https://xn--mster-jua.example/start`")
+		text := signInLinkText("https://xn--mster-kva.example/start")
+		require.Contains(t, text, "Opens *xn--mster-kva.example*")
+		require.Contains(t, text, "`https://xn--mster-kva.example/start`")
 		require.Contains(t, text, signInLinkPunycodeWarning)
 	})
 	t.Run("unicode domain shows its punycode form", func(t *testing.T) {
@@ -115,4 +115,35 @@ func TestAuthorizeRow_ShowsTheLinkItOpens(t *testing.T) {
 	row = authorizeRow(grantServer{Name: "github", Status: grantStatusAuthNeeded, Kind: grantKindGrant, AuthURL: "http://muster.example/grant"})
 	require.NotContains(t, row, bkAccessory, "a link that is not one the app opens gets no button")
 	require.Contains(t, row[bkText].(map[string]any)[bkText], authorizeLinkUnusable)
+}
+
+// A URL elicitation's link button is neutral and names the host it opens, an
+// internationalized one in its punycode form.
+func TestElicitationOpenButtonLabel_NamesTheHost(t *testing.T) {
+	require.Equal(t, "Open ↗ muster.example", elicitationOpenButtonLabel("https://muster.example/approvals/1"))
+	require.Equal(t, "Open ↗ xn--mster-kva.example", elicitationOpenButtonLabel("https://müster.example/approvals/1"))
+	require.Equal(t, "Open ↗", elicitationOpenButtonLabel("not a link"))
+}
+
+// The server's message is the heading: one line, escaped, capped; a server
+// that sent none is named instead.
+func TestElicitationHeading(t *testing.T) {
+	require.Equal(t, "*Alert Review wants to acknowledge &lt;P123&gt;.*", elicitationHeading("muster", "Alert Review wants\nto acknowledge <P123>."))
+	require.Equal(t, "*muster* asks you to open a link so the agent can continue.", elicitationHeading("muster", "  "))
+	require.LessOrEqual(t, utf8.RuneCountInString(elicitationHeading("muster", strings.Repeat("a", 2*signInMessageMaxRunes))), signInMessageMaxRunes+2)
+}
+
+// A declinable prompt is a URL elicitation's: Open, Done and Not now, Done and
+// Not now carrying the completion state.
+func TestConnectPromptBlocks_DeclinableHasDone(t *testing.T) {
+	blocks := connectPromptBlocks("text", elicitationOpenButtonLabel("https://muster.example/s"), "https://muster.example/s", "state", true, false)
+	elements := blocks[1].(map[string]any)[bkElements].([]any)
+	var ids, values []string
+	for _, el := range elements {
+		button := el.(map[string]any)
+		ids = append(ids, button[bkActionID].(string))
+		values = append(values, button[bkValue].(string))
+	}
+	require.Equal(t, []string{connectorConnect, elicitationDone, connectorDecline}, ids)
+	require.Equal(t, []string{"state", "state", "state"}, values)
 }

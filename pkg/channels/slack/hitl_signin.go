@@ -18,16 +18,18 @@ const signInDecline = "sign_in_decline"
 // with; decisionFromText reads it as a decline.
 const signInDeclineText = "Not now"
 
-// postMCPSignInPrompt renders a task paused on an MCP server's sign-in link.
-// The link is minted for slackUser, the person whose turn asked for it, so the
+// postMCPSignInPrompt renders a task paused on an MCP server's URL
+// elicitation: a sign-in, a tool approval or any later one, all alike. The
+// link is minted for slackUser, the person whose turn asked for it, so the
 // prompt is theirs alone; the thread gets a note naming whom the turn waits
-// on, which also anchors the ephemeral there (klaus-gateway#156). The prompt
-// quotes the server's own message, attributed to the server, and shows the
-// whole link with its domain before the person opens it. Their click on the
-// link button opens it exactly as given and resumes the task with accept,
-// "Not now" with decline, and a typed reply decides as decisionFromText reads
-// it. A link that cannot be shown as written is not offered: the prompt says
-// so, and only "Not now" or a reply answers it.
+// on, which also anchors the ephemeral there (klaus-gateway#156). The
+// server's own message is the heading, attributed to the server, and the
+// whole link is shown with its host before the person opens it. The link
+// button (Open, labelled with the host) opens it and decides nothing; Done,
+// or muster's return with the elicitation's id, resumes the task with
+// accept, "Not now" with decline, and a typed reply decides as
+// decisionFromText reads it. A link that cannot be shown as written is not
+// offered: the prompt says so, and only "Not now" or a reply answers it.
 func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser string, pd *channels.OutboundDelta) error {
 	signIn := pd.Prompt.SignIn
 	server := signIn.Server
@@ -46,9 +48,9 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 		bkActionID: signInDecline,
 		bkValue:    encodeHitlValue(threadID, pd.TaskID),
 	}
-	lead := fmt.Sprintf(signInPromptLead, escapeMrkdwnCapped(server, signInServerNameMaxRunes))
+	lead := elicitationHeading(server, signIn.Message)
 	if err := muster.ValidateSignInURL(signIn.URL); err != nil {
-		a.Logger.Warn("slack: sign-in link not offered", "server", server, "thread", threadID, "error", err)
+		a.Logger.Warn("slack: elicitation link not offered", "server", server, "thread", threadID, "error", err)
 		text := lead + "\n" + signInLinkUnusableNotice
 		blocks := []any{
 			map[string]any{bkType: bkSection, bkText: verbatimMrkdwn(text)},
@@ -57,12 +59,26 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 		return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
 	}
 
-	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID})
-	text := signInPromptText(lead, signIn.Message, signIn.URL, signInPromptTail)
-	blocks := connectPromptBlocks(text, signInButtonLabel, signIn.URL, stateID, false, client.authorizeAll)
+	link := a.elicitationLink(signIn.URL, signIn.ElicitationID)
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID, elicitationID: signIn.ElicitationID})
+	text := lead + "\n" + fmt.Sprintf(signInAskedBy, escapeMrkdwnCapped(server, signInServerNameMaxRunes)) + "\n" + signInLinkText(link) + "\n" + signInPromptTail
+	blocks := connectPromptBlocks(text, elicitationOpenButtonLabel(link), link, stateID, false, client.authorizeAll)
 	actions, _ := blocks[len(blocks)-1].(map[string]any)
-	actions[bkElements] = append(actions[bkElements].([]any), decline)
+	elements := actions[bkElements].([]any)
+	// Open, Done, Not now, then Authorize all when offered.
+	actions[bkElements] = append([]any{elements[0], elicitationDoneButton(stateID), decline}, elements[1:]...)
 	return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
+}
+
+// elicitationHeading is a URL elicitation prompt's heading: the server's own
+// message in bold, on one line and capped, or, when it sent none, a line
+// naming the server.
+func elicitationHeading(server, message string) string {
+	message = strings.Join(strings.Fields(message), " ")
+	if message == "" {
+		return fmt.Sprintf(signInPromptLead, escapeMrkdwnCapped(server, signInServerNameMaxRunes))
+	}
+	return "*" + escapeMrkdwnCapped(message, signInMessageMaxRunes) + "*"
 }
 
 // signInDecided is the line a sign-in prompt's thread note is rewritten to

@@ -290,15 +290,18 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		}
 		return
 	case connectorConnect:
-		// URL button: the browser opens the link itself, and the click is the
-		// person's consent to it. Only an ephemeral prompt is rewritten through
-		// the click's response_url; a card, a real message, is rewritten in
-		// place by its own flow.
+		// URL button: the browser opens the link itself. Opening it decides
+		// nothing; the prompt continues on Done or muster's return.
+		return
+	case elicitationDone:
+		// Only an ephemeral prompt is rewritten through the click's
+		// response_url; a card, a real message, is rewritten in place by its
+		// own flow.
 		responseURL := payload.ResponseURL
 		if !payload.Container.IsEphemeral {
 			responseURL = ""
 		}
-		a.handleConnectorConnect(payload.User.ID, action.Value, responseURL)
+		a.handleElicitationDone(payload.User.ID, action.Value, responseURL)
 		return
 	case connectorDecline:
 		responseURL := payload.ResponseURL

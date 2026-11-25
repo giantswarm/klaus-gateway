@@ -222,11 +222,11 @@ func TestConversation_SignInThenDelivers(t *testing.T) {
 	})
 	prompt := fake.pathCalls("chat.postEphemeral")[0]
 	require.Contains(t, prompt.params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
-	require.Contains(t, prompt.params["text"], "your reply goes to *Your guide* once you're signed in")
-	require.Equal(t, []string{"connector_connect", "connector_decline"}, actionIDs(blocksOf(prompt)))
+	require.Contains(t, prompt.params["text"], "your reply goes to *Your guide*.")
+	require.Equal(t, []string{"connector_connect", "elicitation_done", "connector_decline"}, actionIDs(blocksOf(prompt)))
 	require.Equal(t, reviewSignInLink, buttonURL, "muster's link, unchanged")
 
-	sendClick(t, srv, "connector_connect", stateID, "", true)
+	sendClick(t, srv, "elicitation_done", stateID, "", true)
 
 	waitFor(t, "the sign-in is accepted as the person", func() bool { return len(tools.recorded()) == 2 })
 	accepted := tools.recorded()[1]
@@ -259,7 +259,7 @@ func TestConversation_UnfinishedSignInIsNotDelivered(t *testing.T) {
 		_, stateID, ok = connectButton(fake)
 		return ok
 	})
-	sendClick(t, srv, "connector_connect", stateID, "", true)
+	sendClick(t, srv, "elicitation_done", stateID, "", true)
 
 	waitFor(t, "the thread says the sign-in did not finish", func() bool {
 		notes := threadNotes(fake, receipt.TS)

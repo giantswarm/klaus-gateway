@@ -19,11 +19,11 @@ type SignInAnswerer interface {
 	Decline(ctx context.Context, bearer string, signIn *muster.SignIn) error
 }
 
-// connectorCompletion binds a Connect prompt's link button to what the
-// person's consent continues. The button opens the server's link exactly as
-// given; its click, from the person the prompt is for, is their consent to
-// open it (the accept of the URL elicitation), and the first one runs the
-// continuation. Clicks after it only open the link again.
+// connectorCompletion binds a URL elicitation prompt's Done button to what it
+// continues. The link button opens the server's link and continues nothing;
+// Done, from the person the prompt is for, or muster's return with the
+// elicitation's id, is the accept of the URL elicitation, and the first one
+// runs the continuation. Later ones continue nothing.
 type connectorCompletion struct {
 	slackUser string // raw Slack user ID (U…) the prompt is for
 	channel   string // Slack channel the prompt was posted in
@@ -53,7 +53,10 @@ type connectorCompletion struct {
 	// continuation accepts the sign-in, which delivers it.
 	conversation string
 	reply        conversationReply
-	consented    bool
+	// elicitationID is the elicitation's id muster appends to the return;
+	// empty when it gave none, and the prompt then continues on Done alone.
+	elicitationID string
+	consented     bool
 }
 
 // mintConnectorCompletion stores fresh completion state for a Connect prompt
@@ -65,6 +68,9 @@ func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
 	_, _ = rand.Read(raw)
 	stateID := base64.RawURLEncoding.EncodeToString(raw)
 	entry.consented = false
+	if entry.elicitationID == "" && entry.signIn != nil {
+		entry.elicitationID = entry.signIn.ElicitationID
+	}
 
 	now := time.Now()
 	a.connectorCompletionsMu.Lock()
@@ -101,18 +107,6 @@ func (a *Adapter) takeConnectorAnswer(slackUser, stateID string) (connectorCompl
 	stored.value.consented = true
 	a.connectorCompletions[stateID] = stored
 	return stored.value, true
-}
-
-// handleConnectorConnect is a click on a Connect prompt's link button: Slack
-// opens the link, and the click is the person's consent to it. The first click
-// of the person the prompt is for runs what the prompt holds; any other is a
-// no-op.
-func (a *Adapter) handleConnectorConnect(slackUser, stateID, responseURL string) {
-	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
-	if !ok {
-		return
-	}
-	a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, responseURL) })
 }
 
 // handleConnectorDecline is a click on a Connect prompt's Not now: the person
@@ -158,13 +152,15 @@ func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletio
 	}
 }
 
-// continueAfterConsent runs what a Connect prompt holds once its person agreed
-// to open the link. The prompt is replaced at once, since the click says
-// nothing of how the sign-in ends: each continuation reports its outcome on
-// its own surface. A runtime's sign-in resumes its paused task with accept:
-// the runtime retries its own call. The gateway's own call is accepted: muster
-// waits for the sign-in, then runs the call. Blocking, so it runs on the
-// adapter lifecycle context via background.
+// continueAfterConsent runs what a URL elicitation prompt holds once its
+// person is done at the link (Done, or muster's return). The prompt is
+// replaced at once, since Done says nothing of the outcome: each continuation
+// reports it on its own surface, from muster's answer to the retried call. A
+// runtime's elicitation resumes its paused task with accept: the runtime
+// retries its own call. The gateway's own call is accepted: muster runs it
+// when what it asked for is done (a sign-in it waits for, an approval it
+// matches) or asks again. Blocking, so it runs on the adapter lifecycle
+// context via background.
 func (a *Adapter) continueAfterConsent(ctx context.Context, entry connectorCompletion, responseURL string) {
 	notice := connectorContinuingNotice
 	if entry.signInTask != "" {

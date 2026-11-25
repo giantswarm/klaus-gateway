@@ -83,15 +83,31 @@ const (
 const oboSignIn = "obo_sign_in"
 
 // connectorConnect is the Connect prompt's Block Kit action ID: a URL button
-// opening the server's sign-in link in the browser, whose click is the
-// person's consent to it.
+// opening the server's link in the browser. On a URL elicitation's prompt
+// its click continues nothing: the person is done there only once they say
+// so with elicitationDone (or muster sends their browser to the return).
 const connectorConnect = "connector_connect"
+
+// elicitationDone is a URL elicitation prompt's Done button: the person is
+// done at the link. Its value is the prompt's completion state; its first
+// click by the person the prompt is for runs what the prompt holds (the
+// elicitation's accept), and muster decides the outcome on the retry.
+const elicitationDone = "elicitation_done"
+
+// Labels of a URL elicitation prompt's buttons. The link button is neutral,
+// the same for a sign-in, a tool approval or any later elicitation, and
+// names the host it opens (elicitationOpenLabel + " " + host).
+const (
+	elicitationOpenLabel = "Open ↗"
+	elicitationDoneLabel = "Done"
+)
 
 // connectorDecline is a Connect prompt's Not now button: the person will not
 // open the link. Its value is the prompt's completion state.
 const connectorDecline = "connector_decline"
 
-// signInButtonLabel labels a Connect prompt's link button.
+// signInButtonLabel labels a workspace's muster sign-in button, which is no
+// URL elicitation.
 const signInButtonLabel = "Sign in"
 
 // musterCallToolMetaTool is muster's aggregating meta-tool. Agents typically
@@ -106,20 +122,23 @@ const musterCallToolMetaTool = "call_tool"
 // nothing.
 const connectorCompletionTTL = musterlink.DefaultStateTTL
 
-// Texts of a task paused on an MCP server's sign-in link (postMCPSignInPrompt).
-// The server is the MCP server that asked, such as an MCP gateway; what needs
-// the sign-in is in its own message, quoted after the attribution.
-// signInWaitingNote names the person (a Slack user ID) and the server.
+// Texts of a task paused on an MCP server's URL elicitation
+// (postMCPSignInPrompt): a sign-in, a tool approval or any later one, which
+// the gateway does not tell apart. The server's own message is the heading,
+// followed by who asked (the MCP server, muster for a platform agent).
+// signInWaitingNote names the person (a Slack user ID) and the server;
+// signInPromptLead stands in for a server that sent no message.
 const (
-	signInWaitingNote        = "Waiting for <@%s> to sign in (asked by *%s*)."
-	signInPromptLead         = "*%s* asks you to sign in so the agent can continue."
-	signInPromptTail         = "Open it with *Sign in*: the agent continues once you're signed in."
-	signInLinkUnusableNotice = "Its sign-in link is not one the app opens (it must be https, short enough to show whole, and written out without spaces, hidden characters or credentials). Reply here or choose *Not now*."
-	signInAcceptedLine       = "<@%s> signed in."
-	signInDeclinedLine       = "<@%s> did not sign in."
-	signInDismissedNotice    = "Not signed in. The agent continues without it."
-	signInContinuingNotice   = "Opened the sign-in link. The agent continues once you're signed in."
-	signInResumeText         = "I've signed in, continue"
+	signInWaitingNote        = "Waiting for <@%s> (asked by *%s*)."
+	signInPromptLead         = "*%s* asks you to open a link so the agent can continue."
+	signInAskedBy            = "Asked by *%s*."
+	signInPromptTail         = "Open it, then choose *Done* here: the agent continues."
+	signInLinkUnusableNotice = "Its link is not one the app opens (it must be https, short enough to show whole, and written out without spaces, hidden characters or credentials). Reply here or choose *Not now*."
+	signInAcceptedLine       = "<@%s> is done."
+	signInDeclinedLine       = "<@%s> chose not now."
+	signInDismissedNotice    = "Not now. The agent continues without it."
+	signInContinuingNotice   = "Done. The agent continues."
+	signInResumeText         = "Done, continue"
 	signInMessageMaxRunes    = 500
 	signInServerNameMaxRunes = 100
 )
@@ -129,8 +148,8 @@ const (
 // goes through waits for their one-time consent. muster's own message on it
 // and the link follow, then sessionConnectTail.
 const (
-	sessionConnectNote = "The conversation can't start yet. *muster* asks you to sign in once:"
-	sessionConnectTail = "Open it with *Sign in*: your message goes to the agent once you're signed in."
+	sessionConnectNote = "The conversation can't start yet. *muster* asks first:"
+	sessionConnectTail = "Open it, then choose *Done*: your message goes to the agent."
 )
 
 // sessionConnectOwnerNote answers a collaborator whose turn would start the
@@ -148,7 +167,7 @@ const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs t
 // turn found them signed in and the held message stays unsent.
 const (
 	sessionConnectWaitingFormat   = "Waiting for <@%s> to sign in"
-	sessionConnectWaitingDMHint   = " (the Sign in button is in a direct message from the app)"
+	sessionConnectWaitingDMHint   = " (the prompt is in a direct message from the app)"
 	sessionConnectConnectedFormat = "<@%s> signed in."
 	sessionConnectDeclinedFormat  = "<@%s> did not sign in."
 	sessionConnectCardDone        = "Signed in. Your message is on its way to the agent."
@@ -158,14 +177,14 @@ const (
 // sessionConnectSupersededNote replaces the earlier card of a DM
 // conversation when a later message gets a card of its own, so one button is
 // live.
-const sessionConnectSupersededNote = "Sign in with the newer prompt below."
+const sessionConnectSupersededNote = "Use the newer prompt below."
 
-// connectorContinuingNotice replaces a Connect prompt on the click of its
-// link; connectorDeclinedNotice once the person chose Not now, which dropped
-// what it held.
+// connectorContinuingNotice replaces a Connect prompt on its Done;
+// connectorDeclinedNotice once the person chose Not now, which dropped what
+// it held.
 const (
-	connectorContinuingNotice = "Opened the sign-in link. What waited for it goes ahead once you're signed in."
-	connectorDeclinedNotice   = "Not signed in. What waited for the sign-in was not sent; try again when you want to sign in."
+	connectorContinuingNotice = "Done. What waited for it goes ahead."
+	connectorDeclinedNotice   = "Not now. What waited for it was not sent; try again when you're ready."
 )
 
 // signInLinkOpensLead leads the domain a sign-in link opens, shown in bold

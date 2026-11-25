@@ -82,8 +82,8 @@ const (
 	decisionStatusFailed          = "<@%s>'s answer could not be submitted; try again in a moment."
 	decisionStatusStillChallenged = "<@%s> did not finish signing in in time; try again in a moment."
 
-	decisionConnectNotice = "To answer as yourself, *muster* asks you to sign in once:"
-	decisionConnectTail   = "Open it with *Sign in*: your answer is submitted once you're signed in."
+	decisionConnectNotice = "To answer as yourself, *muster* asks first:"
+	decisionConnectTail   = "Open it, then choose *Done*: your answer is submitted."
 )
 
 // decisionAnswer is what a person answered: an option (1-based, 0 for none)

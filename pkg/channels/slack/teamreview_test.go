@@ -552,10 +552,10 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.Len(t, prompts, 1)
 	require.Equal(t, "U1", prompts[0].params["user"])
 	require.Nil(t, prompts[0].params["thread_ts"], "the prompt is a channel-level ephemeral, where the click happened")
-	require.Contains(t, prompts[0].params["text"], "To approve as yourself, *muster* asks you to sign in once:\n>Sign in to giantswarm-repo-manager to continue.")
+	require.Contains(t, prompts[0].params["text"], "To approve as yourself, *muster* asks first:\n>Sign in to giantswarm-repo-manager to continue.")
 	require.Contains(t, prompts[0].params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
-	require.Contains(t, prompts[0].params["text"], "your approval is submitted once you're signed in")
-	require.Equal(t, []string{"connector_connect", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
+	require.Contains(t, prompts[0].params["text"], "Open it, then choose *Done*: your approval is submitted.")
+	require.Equal(t, []string{"connector_connect", "elicitation_done", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
 	require.Equal(t, reviewSignInLink, buttonURL, "muster's link, unchanged")
 	require.NotContains(t, statusLine(fake, receipt.TS), "not accepted", "a sign-in is not a refusal")
 
@@ -566,7 +566,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.Len(t, tools.recorded(), 1)
 
 	responseSrv, capturedBody := newResponseURLCapture(t)
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 
 	waitFor(t, "the approval is submitted again as the person, accepting the sign-in", func() bool { return len(tools.recorded()) == 2 })
 	calls := tools.recorded()
@@ -577,10 +577,10 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
 	})
 	require.Empty(t, latestButtons(fake, receipt.TS))
-	waitFor(t, "the prompt says what the click started", func() bool { return strings.Contains(capturedBody(), "Opened the sign-in link.") })
+	waitFor(t, "the prompt says what the click started", func() bool { return strings.Contains(capturedBody(), "Done. What waited for it goes ahead.") })
 
 	// A second click only opens the link again.
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 2)
 }
@@ -611,11 +611,11 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 	require.Equal(t, "id-token-U1", calls[1].bearer)
 	require.NotNil(t, calls[1].declined)
 	require.Nil(t, calls[1].accepted)
-	waitFor(t, "the prompt says nothing was sent", func() bool { return strings.Contains(capturedBody(), "Not signed in.") })
+	waitFor(t, "the prompt says nothing was sent", func() bool { return strings.Contains(capturedBody(), "Not now.") })
 	waitFor(t, "the status line is gone", func() bool { return !strings.Contains(statusLine(fake, receipt.TS), "signing in") })
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
 
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 2, "the declined prompt's Sign in submits nothing")
 }
@@ -636,12 +636,12 @@ func TestTeamReview_SignInNotCompletedIsNotLooped(t *testing.T) {
 		return ok
 	})
 	responseSrv, capturedBody := newResponseURLCapture(t)
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 
 	waitFor(t, "the status line says the sign-in did not finish", func() bool {
 		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> did not finish signing in in time")
 	})
-	require.Contains(t, capturedBody(), "Opened the sign-in link.")
+	require.Contains(t, capturedBody(), "Done. What waited for it goes ahead.")
 	require.NotContains(t, capturedBody(), "Signed in.", "the prompt never claims a sign-in that did not finish")
 	require.Len(t, tools.recorded(), 2, "one call per attempt, no loop")
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "the one Connect prompt; no second one, no private repeat")
@@ -669,7 +669,7 @@ func TestTeamReview_DecidedWhileSigningIn(t *testing.T) {
 	clickApprove(t, srv, "U2", receipt.ID, receipt.TS)
 	waitFor(t, "U2's approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U2>") })
 
-	sendClick(t, srv, "connector_connect", stateID, "", true)
+	sendClick(t, srv, "elicitation_done", stateID, "", true)
 	waitFor(t, "U1 is told who decided", func() bool { return ephemeralTo(fake, "U1", "already approved by <@U2>") })
 	require.Len(t, tools.recorded(), 2, "the consent calls no tool")
 }
@@ -776,7 +776,7 @@ func TestTeamReview_ConsentGoneAfterRestartClickApproves(t *testing.T) {
 	restart(t, a1, srv1)
 
 	_, srv2 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
-	sendClick(t, srv2, "connector_connect", stateID, "", true)
+	sendClick(t, srv2, "elicitation_done", stateID, "", true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 1, "the click submits nothing: the state it stood for is gone")
 

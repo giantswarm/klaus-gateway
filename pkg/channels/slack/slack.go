@@ -160,6 +160,14 @@ type Adapter struct {
 	// it on their Not now. Nil leaves a Connect prompt's buttons without a
 	// continuation.
 	SignIns SignInAnswerer
+	// MusterURL is muster's base URL: a URL elicitation's link on its origin
+	// gets the generic return (ElicitationReturnURL) as its redirect.
+	MusterURL string
+	// ElicitationReturnURL is the gateway's public return URL
+	// (<base>ElicitationReturnPath) muster sends the browser back to after the
+	// person acted at an elicitation's link, with its elicitationId. Empty
+	// leaves every link as the server gave it; Done still resumes.
+	ElicitationReturnURL string
 
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults.

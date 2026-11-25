@@ -137,9 +137,9 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 		return ok
 	}, flowWait, 20*time.Millisecond, "the ephemeral Connect prompt is posted")
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
-	require.Contains(t, ephemeral, "*muster* asks you to sign in once:\n>Sign in to agent-manager to continue.")
+	require.Contains(t, ephemeral, "*muster* asks first:\n>Sign in to agent-manager to continue.")
 	require.Contains(t, ephemeral, "Opens *muster.example*\n`"+sessionConnectLink+"`", "the whole link, its domain in bold")
-	require.Contains(t, ephemeral, "your message goes to the agent once you're signed in")
+	require.Contains(t, ephemeral, "Open it, then choose *Done*: your message goes to the agent.")
 	require.Equal(t, sessionConnectLink, buttonURL, "muster's link, unchanged")
 	require.NotEmpty(t, stateID, "the button value is the completion state")
 
@@ -153,7 +153,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	require.Len(t, postsTo(fake, "U1"), 1)
 
 	line := allText(postsTo(fake, "C1"))
-	require.Contains(t, line, "Waiting for <@U1> to sign in (the Sign in button is in a direct message from the app)")
+	require.Contains(t, line, "Waiting for <@U1> to sign in (the prompt is in a direct message from the app)")
 	require.NotContains(t, line, "muster.example", "the line carries no link")
 	require.NotContains(t, line, "The turn failed", "a consent to give is not a failure")
 	for _, c := range postsTo(fake, "C1") {
@@ -175,7 +175,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	gw.mu.Lock()
 	gw.dispatchErr = nil
 	gw.mu.Unlock()
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, responseSrv.URL)
 
 	require.Eventually(t, func() bool { return accepter.count() == 1 }, flowWait, 20*time.Millisecond, "the click accepts the sign-in")
 	accepter.mu.Lock()
@@ -183,7 +183,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	require.Equal(t, "tok", accepter.bearers[0], "as the person")
 	accepter.mu.Unlock()
 	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Opened the sign-in link.")
+		return strings.Contains(capturedBody(), "Done. What waited for it goes ahead.")
 	}, flowWait, 20*time.Millisecond, "the clicked ephemeral says what the click started")
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> signed in.") &&
@@ -206,7 +206,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	}, flowWait, 20*time.Millisecond, "the agent's answer lands in the thread")
 	require.Len(t, updatesIn(fake, "C1"), 1, "the replayed turn finds nothing left to settle")
 
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, responseSrv.URL)
 	time.Sleep(100 * time.Millisecond)
 	require.Equal(t, 1, accepter.count(), "a second click accepts nothing more")
 	require.Equal(t, 2, gw.dispatchCount(), "and runs the held message no second time")
@@ -273,7 +273,7 @@ func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 	require.Eventually(t, func() bool { return strings.Contains(fake.streamedText(), "ok") },
 		flowWait, 20*time.Millisecond, "the agent answers")
 
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, "")
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, "")
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, accepter.count(), "the stale prompt's state is gone")
 	require.Equal(t, 2, gw.dispatchCount(), "the held message is not run after the fact")
@@ -307,7 +307,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 		return ok
 	}, flowWait, 20*time.Millisecond, "the card is posted as a message")
 	require.Equal(t, "D1", card.params["channel"])
-	require.Contains(t, allText([]recordedCall{card}), "*muster* asks you to sign in once:")
+	require.Contains(t, allText([]recordedCall{card}), "*muster* asks first:")
 	require.NotContains(t, fmt.Sprint(card.params["blocks"]), "Asked in", "the conversation is where it was asked")
 	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no ephemeral in a DM")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for", "no line in a DM")
@@ -316,7 +316,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	require.Eventually(t, func() bool { return len(postsTo(fake, "D1")) == 2 },
 		flowWait, 20*time.Millisecond, "the later message gets a card of its own under it")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(updatesIn(fake, "D1")), "Sign in with the newer prompt below.")
+		return strings.Contains(allText(updatesIn(fake, "D1")), "Use the newer prompt below.")
 	}, flowWait, 20*time.Millisecond, "the earlier card loses its button")
 	_, _, _, hasButton := connectButtonIn(updatesIn(fake, "D1"))
 	require.False(t, hasButton)
@@ -328,7 +328,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	gw.mu.Lock()
 	gw.dispatchErr = nil
 	gw.mu.Unlock()
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, false)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, false)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(updatesIn(fake, "D1")), "Signed in. Your message is on its way to the agent.")
 	}, flowWait, 20*time.Millisecond, "the card is rewritten in place")
@@ -408,16 +408,16 @@ func TestSessionConnect_NotNowDeclinesAndDropsTheHeldMessage(t *testing.T) {
 	require.Equal(t, "tok", accepter.bearers[0], "as the person")
 	accepter.mu.Unlock()
 	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Not signed in.") &&
+		return strings.Contains(capturedBody(), "Not now.") &&
 			strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> did not sign in.") &&
-			strings.Contains(allText(updatesIn(fake, "U1")), "Not signed in.")
+			strings.Contains(allText(updatesIn(fake, "U1")), "Not now.")
 	}, flowWait, 20*time.Millisecond, "the ephemeral, the line and the DM card say so")
 	require.NotEmpty(t, logLine(logs, "record=connector_declined", "user=U1"))
 
 	gw.mu.Lock()
 	gw.dispatchErr = nil
 	gw.mu.Unlock()
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, responseSrv.URL)
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, accepter.count(), "the declined prompt's Sign in accepts nothing")
 	require.Equal(t, 1, gw.dispatchCount(), "and the held message never runs")
@@ -440,7 +440,7 @@ func TestSessionConnect_FailedAcceptDoesNotClaimTheSignIn(t *testing.T) {
 		return ok
 	}, flowWait, 20*time.Millisecond, "the prompt is posted")
 
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, "")
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, "")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond, "the held message is replayed")
 	require.Eventually(t, func() bool {
 		_, refreshed, _, ok := connectButtonIn(updatesIn(fake, "U1"))
