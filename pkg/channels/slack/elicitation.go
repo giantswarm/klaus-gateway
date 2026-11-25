@@ -5,7 +5,9 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 
@@ -53,13 +55,27 @@ func shownHost(link string) (shown, host string) {
 }
 
 // elicitationOpenButtonLabel labels a URL elicitation's link button: neutral,
-// with the host it opens.
+// with the host it opens. A host too long for a button keeps its right end,
+// cut at a label and led by "…", so the registrable domain always shows; when
+// not even its last two labels fit, the label names no host and the prompt's
+// text, which shows the host and the whole link, is left to say it.
 func elicitationOpenButtonLabel(link string) string {
 	shown, _ := shownHost(link)
 	if shown == "" {
 		return elicitationOpenLabel
 	}
-	return truncateButtonLabel(elicitationOpenLabel + " " + shown)
+	label := elicitationOpenLabel + " " + shown
+	if utf8.RuneCountInString(label) <= slackButtonLabelMax {
+		return label
+	}
+	labels := strings.Split(shown, ".")
+	for i := 1; i <= len(labels)-2; i++ {
+		label = elicitationOpenLabel + " …" + strings.Join(labels[i:], ".")
+		if utf8.RuneCountInString(label) <= slackButtonLabelMax {
+			return label
+		}
+	}
+	return elicitationOpenLabel
 }
 
 // elicitationDoneButton is a URL elicitation prompt's Done button carrying the

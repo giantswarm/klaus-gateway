@@ -3111,9 +3111,12 @@ func respondURL(ctx context.Context, responseURL, threadTS, text string) error {
 	return nil
 }
 
+// slackButtonLabelMax is Slack's limit on a button's label.
+const slackButtonLabelMax = 75
+
 // truncateButtonLabel keeps a button label within Slack's 75-character limit.
 func truncateButtonLabel(s string) string {
-	return truncateRunes(s, 75)
+	return truncateRunes(s, slackButtonLabelMax)
 }
 
 // truncateRunes caps s at max runes, replacing the tail with an ellipsis.

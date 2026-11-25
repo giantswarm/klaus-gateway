@@ -201,3 +201,18 @@ func TestPromptLink_DropsTheLinksOwnRedirect(t *testing.T) {
 	require.Empty(t, key)
 	require.Equal(t, "https://muster.example/approvals/a", shown)
 }
+
+// A host too long for the Open button is cut on the left, at a label, so the
+// button always shows the registrable domain the link opens (security review
+// M1-KG-S-02); a host whose last two labels alone do not fit is left off.
+func TestElicitationOpenButtonLabel_KeepsTheRightEndOfALongHost(t *testing.T) {
+	link := "https://muster.example.com." + strings.Repeat("a", 60) + ".evil.example/approvals/x"
+	require.NoError(t, muster.ValidateSignInURL(link))
+	label := elicitationOpenButtonLabel(link)
+	require.LessOrEqual(t, utf8.RuneCountInString(label), 75)
+	require.Equal(t, "Open ↗ …evil.example", label)
+
+	label = elicitationOpenButtonLabel("https://muster.example.com.evil-" + strings.Repeat("b", 63) + ".example/x")
+	require.Equal(t, "Open ↗", label, "the registrable domain does not fit: the host is left to the text")
+	require.Equal(t, "Open ↗ a.b.example", elicitationOpenButtonLabel("https://a.b.example/x"))
+}
