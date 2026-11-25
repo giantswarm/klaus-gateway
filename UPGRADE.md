@@ -9,6 +9,26 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — one Slack prompt for every URL elicitation
+
+- A sign-in, a tool approval muster asks for and any later URL elicitation get the same Slack
+  prompt: muster's message as the heading, *Open ↗ <host>*, *Done* and *Not now*. Opening the
+  link no longer continues the conversation: the person chooses *Done* once they are finished
+  there, or muster sends their browser back (below). This is the client side of tool approval
+  (muster's enforcement); roll it out with or before the muster release that asks for
+  approvals. On its own it changes only the prompt's wording and buttons.
+- Links on muster's origin (the origin of `obo.musterUrl`) whose elicitation has an
+  `elicitationId` get `redirect=<obo.callbackBaseUrl>/auth/slack/return` again, and the gateway
+  serves that return (under `/auth/slack/`, which the OBO route already sends to it). To bring
+  the browser back automatically, add `<obo.callbackBaseUrl>/auth/slack/return` to muster's
+  `oauth.mcpClient.postLoginRedirectAllowlist`. Without the entry muster drops the redirect and
+  logs a warning per link; *Done* still continues. Every other link opens exactly as the server
+  gave it.
+- The gateway's muster client also reads a URL elicitation muster sends as the JSON-RPC error
+  `-32042` (protocol 2025-11-25). Nothing to configure.
+- A prompt posted before the upgrade continues nothing: its link button no longer does, and it
+  has no *Done*. The person sends their message again.
+
 ## 4.16.32 — sign-in links open unchanged
 
 - The gateway's muster client declares URL mode elicitation on MCP protocol 2026-07-28 and no

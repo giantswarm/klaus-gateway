@@ -143,9 +143,13 @@ thread to exactly one session:
    first (the server is pinned to a GitHub App, so muster runs its tools for a person only
    after their one-time consent) comes as an `input_required` result with a URL elicitation:
    `ConnectRequiredError`, carrying muster's message, the link and the state to retry with.
+   A session muster speaks 2025-11-25 with gets the same elicitation as the JSON-RPC error
+   `-32042`; the client reads both, and a `-32042` retry is the call again, carrying no answer.
+   A tool approval muster asks for (an `Ask` setting) comes the same way and is not told apart.
    The person is signed in, so the channel answers with its Connect prompt, never the sign-in
-   prompt; once the person agreed to open the link it accepts the sign-in, which muster runs
-   the start for once the sign-in completed, and runs the turn again.
+   prompt; once the person chose *Done* (or muster's return came back) it accepts the
+   elicitation, which muster runs the start for once what it asked is done, and runs the turn
+   again.
 
    The start also carries `sessionName`, the conversation's display name: the message that opened the
    thread, rendered on one line and cut at the controller's 200-character limit on a word
@@ -218,14 +222,17 @@ typed payload under the extension URI in its metadata:
 - `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`);
 - `url_elicitation_request` — `id`, `server`, `message`, `url`, `elicitation_id`: an MCP
   server's URL elicitation, such as muster's sign-in link for a server the person has not
-  connected.
+  connected or muster's approval page for a tool call that asks (kagent relays muster's
+  `-32042`). The gateway keeps `elicitation_id` on the prompt: muster appends it to the
+  gateway's return (`/auth/slack/return`) after the person acted.
 
 `pkg/channels` parses that payload into the `HitlPrompt` the channels render (Approve/Deny,
 a choice widget, a form), and the message's text part is the agent's hint. The channel's
 answer is a `HitlDecision`; the gateway turns it into the matching response — one approval per
 requested tool (all approved or all rejected together, the reason on a rejection), or the
 positional `ask_user_response` under the request's correlation id, or a
-`url_elicitation_response` with `accept` (the person signed in) or `decline` — by reading the paused task
+`url_elicitation_response` with `accept` (the person is done at the link; the server decides the
+outcome on the retry) or `decline` — by reading the paused task
 (`GetTask`) and building the payload against the request it is paused on. The decision travels
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
 place and nothing is left waiting at `input-required` or `auth-required`.

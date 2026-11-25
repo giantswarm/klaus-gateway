@@ -140,15 +140,18 @@ creates one, which a turn that switches agents does mid-thread.
   person's gets a card of its own while the earlier one loses its button; in a channel thread
   the card is ephemeral, so it also goes to the person's DM with the app, led by a line that
   links the thread, and a line everyone in the thread sees says whom it waits for and where
-  the button is ("Waiting for @Jose to sign in (the Sign in button is in a direct message from
+  the prompt is ("Waiting for @Jose to sign in (the prompt is in a direct message from
   the app)"). A later message of the person's before they sign in posts the ephemeral again
   and refreshes the DM card in place; the line stays. Once the person has signed in, the line
-  reads "@Jose signed in." and the card is a confirmation: the click's continuation does it and
+  reads "@Jose signed in." and the card is a confirmation: *Done*'s continuation does it and
   runs the held message ("Signed in. Your message is on its way to the agent."), and so does
   the person's next turn in the thread that starts its Session, however they signed in, when
   the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
-  Every surface's button carries the completion state; the ephemeral is replaced at the click
-  through its `response_url` ("Opened the sign-in link. ..."), the cards are rewritten in place. A
+  Every surface's buttons carry the completion state; the ephemeral is replaced at *Done*
+  through its `response_url` ("Done. What waited for it goes ahead."), the cards are rewritten
+  in place. The prompt is the generic URL elicitation prompt (*Open ↗ <host>*, *Done*, *Not
+  now*; `docs/slack-hitl-surface.md` section 7), so a `start_session` muster asks approval for
+  looks the same. A
   collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
@@ -498,7 +501,7 @@ opens from:
 - `/<command> connect` (or `authorize`), anywhere;
 - *Authorize all* beside every muster server's Connect prompt's button (a workspace
   provider's Connect prompt offers the provider's sign-in alone). A grant given from the modal
-  continues nothing the prompt held: the prompt's own *Sign in* does, and muster finds the
+  continues nothing the prompt held: the prompt's own *Done* does, and muster finds the
   grant there.
 
 The modal opens on the click's `trigger_id` with a loading view and is filled by

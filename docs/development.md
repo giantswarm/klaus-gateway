@@ -31,6 +31,7 @@ POST /channels/slack/commands      slash commands
 GET  /auth/slack/link
 GET  /auth/slack/callback
 GET  /auth/slack/client.json       the CIMD document the OAuth client_id points at
+GET  /auth/slack/return            muster's browser return after a URL elicitation (?elicitationId=)
 
 # Team reviews (enabled by --reviews-enabled)
 POST /reviews
