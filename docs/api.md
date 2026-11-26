@@ -77,10 +77,11 @@ volumes:
   the decision and `chat.update` needs the ID. Required.
 - `text` — the change spelled out, Slack mrkdwn, at most 3000 characters. The caller is a trusted
   service, so the text is rendered as written. Required.
-- `summary` — the ask in one line, Slack mrkdwn, at most 300 characters and no line break. Once the
-  review is decided, the message in the channel is shortened to the outcome, the decider and this
-  line, and `text`, the pull requests, the link and what the tool said move into a reply in its
-  thread. Without it, the first line of `text` stands in. Optional.
+- `summary` — the ask in one line, Slack mrkdwn, at most 300 characters and no line break (`\r`,
+  `\n`, U+2028 or U+2029). Once the review is decided, the message in the channel is shortened to
+  the outcome, the decider and this line, and `text`, the pull requests, the link and what the tool
+  said move into a reply in its thread. Without it, the first line of `text` stands in when it
+  fits in 300 characters. Optional.
 - `actor` — the person whose action the review decides, as the gateway knows linked people: the
   **email** of the identity their Slack account was linked to (the gateway verifies the Slack
   profile's email against it at link time; it holds no GitHub login). Their own *Approve* is

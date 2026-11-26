@@ -565,12 +565,16 @@ URL button for anything else, labelled by what it opens (*Open PR*, *Open run*, 
 - **One decision closes it.** A second click is refused with who decided and how (or whose
   decision is in flight).
 - **A decided review takes one line in the channel.** The message is rewritten to the outcome,
-  the decider, the team and the review's `summary` (the first line of the ask without one):
+  the decider, the team and the review's `summary` (without one, the first line of the ask when it
+  fits in 300 characters, otherwise nothing):
   `*Approved* by <@U…> for team-bumblebee: <summary>`. The ask, the reason of a denial, what the
   tool answered — a plain text as written, a JSON object by its `message` field, structured data
   without one not at all — the pull requests and the link as small print go into a reply in its
-  thread, posted first, ahead of the results the manager posts there. When Slack refuses that
-  reply, the message keeps all of it instead.
+  thread. The reason and the tool's answer are a section of their own, so a long ask cannot cut
+  them off. The reply is posted with its mentions as plain text and then rewritten to show them,
+  so the people the ask names are not notified a second time. When Slack refuses that reply, the
+  message keeps all of it instead; a failure Slack gave no answer on may have posted it, so the
+  message is shortened all the same.
 
 The Approve and Deny buttons' `value` is the JSON `{"r":"<review id>"}`; the id is what
 `POST /reviews` returned. The Deny modal (`callback_id: team_review_deny`) carries

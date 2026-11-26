@@ -181,8 +181,9 @@ func TestTeamReview_DenyWithReasonCallsTheDenyToolAsTheMember(t *testing.T) {
 		return updatedWith(fake, receipt.TS, "Denied", "<@U2>") && detailedWith(fake, receipt.TS, "change freeze", "3 pull requests closed")
 	})
 	require.Empty(t, latestButtons(fake, receipt.TS), "a denied review carries no buttons")
-	reply, _ := detailsReply(fake, receipt.TS)
-	require.Contains(t, sectionTexts(blocksOf(reply))[1], "giantswarm/a-configs#12", "the pull requests stay listed, in the thread")
+	reply, ok := detailsReply(fake, receipt.TS)
+	require.True(t, ok, "the details are in the thread")
+	require.Contains(t, shownText(reply), "giantswarm/a-configs#12", "the pull requests stay listed, in the thread")
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
 	waitFor(t, "a later click is told who denied", func() bool {

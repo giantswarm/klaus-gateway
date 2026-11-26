@@ -178,9 +178,12 @@ func TestPostReview_InvalidBodies(t *testing.T) {
 		"notice channel is the channel": func(m map[string]any) {
 			m["noticeChannel"] = m["channel"]
 		},
-		"blank actor":       func(m map[string]any) { m["actor"] = "  " },
-		"summary too long":  func(m map[string]any) { m["summary"] = strings.Repeat("x", channels.TeamSummaryMax+1) },
-		"summary two lines": func(m map[string]any) { m["summary"] = "one\ntwo" },
+		"blank actor":                 func(m map[string]any) { m["actor"] = "  " },
+		"summary too long":            func(m map[string]any) { m["summary"] = strings.Repeat("x", channels.TeamSummaryMax+1) },
+		"summary two lines":           func(m map[string]any) { m["summary"] = "one\ntwo" },
+		"summary carriage return":     func(m map[string]any) { m["summary"] = "one\rtwo" },
+		"summary line separator":      func(m map[string]any) { m["summary"] = "one\u2028two" },
+		"summary paragraph separator": func(m map[string]any) { m["summary"] = "one\u2029two" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

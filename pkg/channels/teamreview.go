@@ -131,7 +131,7 @@ func (r TeamReview) Validate() error {
 		return errors.New("deny.tool is required when deny is given")
 	case utf8.RuneCountInString(r.Summary) > TeamSummaryMax:
 		return fmt.Errorf("summary is longer than %d characters", TeamSummaryMax)
-	case strings.Contains(r.Summary, "\n"):
+	case strings.ContainsAny(r.Summary, "\r\n\u2028\u2029"):
 		return errors.New("summary must be one line")
 	case r.Actor != "" && strings.TrimSpace(r.Actor) == "":
 		return errors.New("actor must not be blank")

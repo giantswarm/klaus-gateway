@@ -1581,6 +1581,7 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 type recordedCall struct {
 	path   string
 	params map[string]any
+	ts     string // the ts the fake answered with
 }
 
 // fakeSlackAPI is a structured fake Slack Web API: it records every request by
@@ -1655,6 +1656,7 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		}
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
+		f.calls[len(f.calls)-1].ts = ts
 		botID := f.botUserID
 		botName := f.botUsername
 		botTeam := f.botTeamID
