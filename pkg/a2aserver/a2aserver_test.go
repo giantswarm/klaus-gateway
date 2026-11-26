@@ -327,9 +327,38 @@ func TestInactiveMCPExtensionValuesAreNotPassedOn(t *testing.T) {
 	require.Empty(t, agents.extensions[0])
 }
 
-func TestMCPExtensionValuesForAnIDNotAcceptedAreRefusedBeforeAnything(t *testing.T) {
+func TestActivatedMCPExtensionWithoutValuesIsPassedOn(t *testing.T) {
+	for name, metadata := range map[string]map[string]any{
+		"omitted": nil,
+		"null":    {a2aserver.ToolCallMetadataExtensionURI: nil},
+		"empty":   {a2aserver.ToolCallMetadataExtensionURI: map[string]any{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			response, body := postJSONRPC(t, server.URL, a2aserver.ToolCallMetadataExtensionURI, map[string]any{
+				"tenant":   tenant,
+				"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
+				"metadata": metadata,
+			})
+			require.Equal(t, http.StatusOK, response.StatusCode)
+			require.Nil(t, body.Error)
+			require.Equal(t, a2aserver.ToolCallMetadataExtensionURI, response.Header.Get("A2A-Extensions"))
+			require.Len(t, agents.streamed, 1)
+			if len(metadata) == 0 {
+				require.Empty(t, agents.metadata[0])
+			} else {
+				require.Equal(t, metadata, agents.metadata[0])
+			}
+			require.Equal(t, []string{a2aserver.ToolCallMetadataExtensionURI}, agents.extensions[0])
+			require.Equal(t, exchangedToken, agents.tokens[0])
+		})
+	}
+}
+
+func TestMCPExtensionValuesForAKeyNotAcceptedAreRefusedBeforeAnything(t *testing.T) {
 	for name, metadata := range map[string]any{
-		"unknown id":    map[string]any{sessionKey: "ref-1", "com.example/config": "secret-value"},
+		"unknown key":   map[string]any{sessionKey: "ref-1", "com.example/config": "secret-value"},
 		"not an object": "ref-1",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -345,7 +374,7 @@ func TestMCPExtensionValuesForAnIDNotAcceptedAreRefusedBeforeAnything(t *testing
 			require.NotNil(t, body.Error)
 			require.Equal(t, -32602, body.Error.Code)
 			require.NotContains(t, body.Error.Message, "secret-value", "the refusal never names a value")
-			if name == "unknown id" {
+			if name == "unknown key" {
 				require.Contains(t, body.Error.Message, "com.example/config")
 			}
 			require.Empty(t, agents.started, "no Session starts")

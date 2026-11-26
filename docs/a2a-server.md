@@ -67,7 +67,8 @@ the extension's URI, as an object keyed by metadata key:
 | Request | Result |
 |---|---|
 | Extension activated, every key listed in `params.keys` | The extension's activation and its metadata entry are passed on to the agent runtime unchanged (a2a-go's extension propagation), and the response's `A2A-Extensions` header names the extension. |
-| Extension activated, a key not listed, or the entry not an object | Refused with JSON-RPC `-32602` (invalid params) naming the key, never a value, before anything runs. |
+| Extension activated, entry omitted, `null`, or an empty object | Activation is passed on and echoed; the entry contributes no tool-call values. |
+| Extension activated, a key not listed, or a non-null entry not an object | Refused with JSON-RPC `-32602` (invalid params) naming the key, never a value, before anything runs. |
 | Extension not activated, or not offered | Its entry is ignored and not echoed. |
 | Any other extension or metadata key | Not passed on. |
 

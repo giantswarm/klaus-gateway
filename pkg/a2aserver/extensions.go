@@ -29,17 +29,17 @@ var toolCallMetadataExtension = &a2a.AgentExtension{URI: ToolCallMetadataExtensi
 
 // toolCallMetadataCardExtension declares the MCP tool-call metadata extension,
 // accepting keys.
-func toolCallMetadataCardExtension(ids []string) a2a.AgentExtension {
+func toolCallMetadataCardExtension(keys []string) a2a.AgentExtension {
 	return a2a.AgentExtension{
 		URI:         ToolCallMetadataExtensionURI,
 		Description: "Values for MCP servers, keyed by metadata key. Only the keys in params.keys are accepted.",
-		Params:      map[string]any{toolCallMetadataParamKeys: slices.Clone(ids)},
+		Params:      map[string]any{toolCallMetadataParamKeys: slices.Clone(keys)},
 	}
 }
 
 // toolCallMetadataInterceptor activates the MCP tool-call metadata extension on a
 // message whose caller requested it, when the gateway accepts every key the
-// message's entry names. An entry that is not an object, or an id not
+// message's entry names. A non-null entry that is not an object, or a key not
 // accepted, refuses the message with invalid params before anything runs.
 // With no accepted key the extension is not offered and never activated.
 func newToolCallMetadataInterceptor(accepted []string) a2asrv.CallInterceptor {
@@ -56,7 +56,7 @@ func (i *toolCallMetadataInterceptor) Before(ctx context.Context, callCtx *a2asr
 	if !ok || send == nil || len(i.accepted) == 0 || !callCtx.Extensions().Requested(toolCallMetadataExtension) {
 		return ctx, nil, nil
 	}
-	if raw, present := send.Metadata[ToolCallMetadataExtensionURI]; present {
+	if raw, present := send.Metadata[ToolCallMetadataExtensionURI]; present && raw != nil {
 		entries, ok := raw.(map[string]any)
 		if !ok {
 			return ctx, nil, fmt.Errorf("%w: metadata %s must be an object keyed by metadata key", a2a.ErrInvalidParams, ToolCallMetadataExtensionURI)
