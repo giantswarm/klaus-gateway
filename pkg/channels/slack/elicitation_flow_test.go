@@ -314,10 +314,10 @@ func TestURLElicitation_SignInReturnResumes(t *testing.T) {
 // thread's waiting note and the prompt alike: no formatting, no direction
 // override.
 func TestURLElicitation_ServerNameShowsAsWritten(t *testing.T) {
-	_, fake, _, _ := pauseOn(t, "157.000", elicitationTurn("evil* (asked by *muster‮", approvalURL))
+	_, fake, _, _ := pauseOn(t, "157.000", elicitationTurn("evil* (asked by *muster\u202e", approvalURL))
 	note := fake.threadText()
 	require.Contains(t, note, "Waiting for <@U1> (asked by *evil＊ (asked by ＊muster*).")
-	require.NotContains(t, ephemeralJSON(fake), "‮")
+	require.NotContains(t, ephemeralJSON(fake), "\u202e")
 }
 
 // A Done or Not now that can continue nothing says so instead of doing

@@ -222,9 +222,9 @@ func TestElicitationOpenButtonLabel_KeepsTheRightEndOfALongHost(t *testing.T) {
 // zero-width characters are dropped, and Slack's formatting characters cannot
 // end the heading's bold or start a format of their own.
 func TestElicitationHeading_NeutralisesFormattingAndDirection(t *testing.T) {
-	h := elicitationHeading("third-party", "Approve* _safe_ `x` ‮evil‬ ​hidden ~strike~ *Asked by muster")
-	require.NotContains(t, h, "‮")
-	require.NotContains(t, h, "‬")
+	h := elicitationHeading("third-party", "Approve* _safe_ `x` \u202eevil\u202c ​hidden ~strike~ *Asked by muster")
+	require.NotContains(t, h, "\u202e")
+	require.NotContains(t, h, "\u202c")
 	require.NotContains(t, h, "​")
 	require.NotContains(t, h, "`")
 	require.NotContains(t, h, "~")
@@ -234,10 +234,10 @@ func TestElicitationHeading_NeutralisesFormattingAndDirection(t *testing.T) {
 	require.Contains(t, inner, "Approve")
 	require.Contains(t, inner, "evil")
 
-	h = elicitationHeading("x_github *muster*‮", "")
+	h = elicitationHeading("x_github *muster*\u202e", "")
 	require.Contains(t, h, "x_github", "an underscore inside a word formats nothing and stays")
 	require.NotContains(t, strings.TrimPrefix(h, "*"), "*muster")
-	require.NotContains(t, h, "‮")
+	require.NotContains(t, h, "\u202e")
 }
 
 // A prompt's Done lives as long as muster's longest approval (approval.ttl,
