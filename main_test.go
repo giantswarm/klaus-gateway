@@ -87,7 +87,7 @@ func TestTrustedIssuerCardDefaults(t *testing.T) {
 		"token endpoint":  {config.TrustedIssuer{Issuer: "https://dex.example.com", TokenURL: "https://dex.example.com/token"}, ""}, //nolint:gosec // G101: a test URL
 	} {
 		t.Run(name, func(t *testing.T) {
-			issuer, err := trustedIssuer(t.Context(), test.entry)
+			issuer, err := trustedIssuer(test.entry)
 			require.NoError(t, err)
 			require.Equal(t, test.discovery, issuer.OpenIDConnectURL)
 		})

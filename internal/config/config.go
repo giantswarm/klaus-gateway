@@ -102,6 +102,9 @@ type A2AServerConfig struct {
 	// AllowedClients are the clients whose tokens are accepted, read from a
 	// token's azp. Empty means any client except ExchangeClientID.
 	AllowedClients []string
+	// AllowPrivateIPJWKSHosts lists the hostnames whose key set URL may
+	// resolve to a private address (TrustedIssuer.AllowPrivateIPJWKSHosts).
+	AllowPrivateIPJWKSHosts []string
 	// TokenURL is the issuer's token endpoint; empty means Issuer + /token.
 	// Without ExchangeTokenURL it is also the exchange's endpoint.
 	TokenURL string
@@ -168,6 +171,11 @@ type TrustedIssuer struct {
 	// CAFile optionally names a PEM bundle trusted for the key set next to
 	// the system roots.
 	CAFile string `yaml:"caFile"`
+	// AllowPrivateIPJWKSHosts lists the hostnames whose key set URL may
+	// resolve to a private (RFC 1918, RFC 4193) address, such as an
+	// in-cluster identity provider. Every other host, and loopback and
+	// link-local addresses always, are refused (mcp-oauth's SSRF guard).
+	AllowPrivateIPJWKSHosts []string `yaml:"allowPrivateIpJwksHosts"`
 }
 
 // Subject token types an issuer entry may name (RFC 8693 section 3).
@@ -205,14 +213,15 @@ func (c A2AServerConfig) TrustedIssuers() []TrustedIssuer {
 	}
 	issuer := strings.TrimSuffix(c.Issuer, "/")
 	single := TrustedIssuer{
-		Name:           "oauth2",
-		Issuer:         issuer,
-		JWKSURL:        c.JWKSURL,
-		TokenURL:       c.TokenURL,
-		Audience:       c.Audience,
-		AllowedClients: c.AllowedClients,
-		ConnectorID:    c.ExchangeConnectorID,
-		CAFile:         c.CAFile,
+		Name:                    "oauth2",
+		Issuer:                  issuer,
+		JWKSURL:                 c.JWKSURL,
+		TokenURL:                c.TokenURL,
+		Audience:                c.Audience,
+		AllowedClients:          c.AllowedClients,
+		ConnectorID:             c.ExchangeConnectorID,
+		CAFile:                  c.CAFile,
+		AllowPrivateIPJWKSHosts: c.AllowPrivateIPJWKSHosts,
 	}
 	if single.JWKSURL == "" {
 		single.JWKSURL = issuer + "/keys"
@@ -690,6 +699,10 @@ func Load(args []string) (Config, error) {
 		return nil
 	})
 	fs.Int64Var(&cfg.A2AServer.MaxBodyBytes, "a2a-server-max-body-bytes", cfg.A2AServer.MaxBodyBytes, "Largest /a2a request body in bytes; a larger one is refused with 413 before it is decoded.")
+	fs.Func("a2a-server-allow-private-ip-jwks-hosts", "Comma-separated hostnames whose key set URL may resolve to a private address (an in-cluster identity provider) for --a2a-server-issuer; every other host is refused a private address.", func(v string) error {
+		cfg.A2AServer.AllowPrivateIPJWKSHosts = splitCommaList(v)
+		return nil
+	})
 	fs.StringVar(&cfg.A2AServer.CAFile, "a2a-server-ca-file", cfg.A2AServer.CAFile, "PEM bundle trusted next to the system roots for the exchange's token endpoint and for --a2a-server-issuer's key set.")
 	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
 	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")

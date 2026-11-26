@@ -98,7 +98,9 @@ Dex (`a2aServer.exchange.tokenUrl`).
    with exactly that `issuer`. A token of any other issuer is refused (401
    `invalid_token`).
 3. With that entry alone, the gateway checks the token's signature (against the entry's
-   `jwksUrl`), issuer, `aud` (must contain the entry's `audience`) and expiry, then the
+   `jwksUrl`, with a pinned asymmetric algorithm), issuer, `aud` (must contain the entry's
+   `audience`), expiry, not-before and issued-at, with mcp-oauth's OIDC token validation,
+   then the
    client that requested it: its `azp`, else its `client_id` (RFC 9068 access tokens),
    else its only `aud` entry. A token requested by `a2aServer.exchange.clientId` is a platform
    token and is refused, whichever issuer signed it. When the entry's `allowedClients` is set, only tokens of
@@ -318,6 +320,12 @@ a2aServer:
   caSecret: ""
 ```
 
+The gateway fetches each `jwksUrl` with mcp-oauth's SSRF-safe client: the URL must use
+`https`, and a host that resolves to a private, loopback or link-local address is refused.
+An identity provider reached inside the cluster lists its hostname in the entry's
+`allowPrivateIpJwksHosts` (for example `dex.dex.svc.cluster.local`), which admits private
+addresses (RFC 1918, RFC 4193) for that host only; loopback and link-local stay refused.
+
 The chart renders `a2aServer.issuers` into the ConfigMap `<release>-a2a-server-issuers`, read with
 `--a2a-server-issuers-file`; a change to it rolls the pods. The gateway refuses to start on an
 unknown field in an entry, a missing `name`, `issuer`, `jwksUrl` or `audience`, or a
@@ -336,4 +344,4 @@ renders the exchange client's secret.
 | `--a2a-server-ca-file` | CA bundle for the exchange's token endpoint. |
 | `--a2a-server-max-body-bytes` | Largest `/a2a` request body; 2 MiB by default. |
 | `--a2a-server-tool-call-metadata-keys` | Metadata keys the MCP tool-call metadata extension accepts; empty does not offer it. |
-| `--a2a-server-issuer`, `--a2a-server-jwks-url`, `--a2a-server-audience`, `--a2a-server-allowed-clients`, `--a2a-server-token-url`, `--a2a-server-exchange-connector-id` | One issuer without a file, sending ID tokens, named `oauth2` in the card (an OAuth 2.0 scheme at `--a2a-server-token-url`). `--a2a-server-jwks-url` and `--a2a-server-token-url` default to `<issuer>/keys` and `<issuer>/token`; the exchange runs at `--a2a-server-token-url` unless `--a2a-server-exchange-token-url` is set, and `--a2a-server-ca-file` also covers the key set. Exclusive with `--a2a-server-issuers-file`. |
+| `--a2a-server-issuer`, `--a2a-server-jwks-url`, `--a2a-server-audience`, `--a2a-server-allowed-clients`, `--a2a-server-allow-private-ip-jwks-hosts`, `--a2a-server-token-url`, `--a2a-server-exchange-connector-id` | One issuer without a file, sending ID tokens, named `oauth2` in the card (an OAuth 2.0 scheme at `--a2a-server-token-url`). `--a2a-server-jwks-url` and `--a2a-server-token-url` default to `<issuer>/keys` and `<issuer>/token`; the exchange runs at `--a2a-server-token-url` unless `--a2a-server-exchange-token-url` is set, and `--a2a-server-ca-file` also covers the key set. Exclusive with `--a2a-server-issuers-file`. |

@@ -10,9 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
+	mcpoidc "github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 const (
@@ -106,8 +104,11 @@ type TrustedIssuer struct {
 	Name string
 	// Issuer is the token's iss, exactly.
 	Issuer string
-	// Keys are the issuer's signing keys.
-	Keys oidc.KeySet
+	// JWKSURL is the issuer's key set.
+	JWKSURL string
+	// JWKS fetches and caches the key set, refusing private addresses the
+	// issuer's entry does not allow (mcp-oauth's SSRF guard).
+	JWKS *mcpoidc.JWKSClient
 	// Audience is the client a token must be issued for.
 	Audience string
 	// AllowedClients, when not empty, are the only clients whose tokens are
@@ -136,74 +137,47 @@ func (i TrustedIssuer) subjectTokenType() string {
 	return tokenTypeIDToken
 }
 
-// signingAlgorithms are the token signature algorithms accepted.
-var signingAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.ES256}
-
 // JWTVerifier verifies an A2A client's token against the trusted issuer its
 // iss names, then checks the client that requested it.
 type JWTVerifier struct {
-	issuers map[string]issuerVerifier
+	issuers map[string]TrustedIssuer
 	// exchangeClientID is the gateway's own exchange client. A token it
 	// requested is a platform token, never an A2A client's token.
 	exchangeClientID string
 }
 
-type issuerVerifier struct {
-	issuer   TrustedIssuer
-	verifier *oidc.IDTokenVerifier
-}
-
 // NewJWTVerifier returns a verifier of the tokens of issuers, refusing those
 // exchangeClientID requested.
 func NewJWTVerifier(issuers []TrustedIssuer, exchangeClientID string) *JWTVerifier {
-	algorithms := make([]string, 0, len(signingAlgorithms))
-	for _, alg := range signingAlgorithms {
-		algorithms = append(algorithms, string(alg))
-	}
-	v := &JWTVerifier{issuers: make(map[string]issuerVerifier, len(issuers)), exchangeClientID: exchangeClientID}
+	v := &JWTVerifier{issuers: make(map[string]TrustedIssuer, len(issuers)), exchangeClientID: exchangeClientID}
 	for _, issuer := range issuers {
-		v.issuers[issuer.Issuer] = issuerVerifier{
-			issuer: issuer,
-			verifier: oidc.NewVerifier(issuer.Issuer, issuer.Keys, &oidc.Config{
-				ClientID:             issuer.Audience,
-				SupportedSigningAlgs: algorithms,
-			}),
-		}
+		v.issuers[issuer.Issuer] = issuer
 	}
 	return v
 }
 
-// Verify selects the trusted issuer by the token's unverified iss, checks the
-// token's signature, issuer, audience and expiry with that issuer alone, then
-// the client that requested it. It returns the issuer.
+// Verify selects the trusted issuer by the token's unverified iss and checks
+// the token with that issuer alone (mcp-oauth's ValidateIDToken: signature
+// with a pinned asymmetric algorithm, expiry, not-before, issuer and
+// audience), then the client that requested it. It returns the issuer.
 func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (TrustedIssuer, error) {
-	parsed, err := jwt.ParseSigned(rawToken, signingAlgorithms)
+	unverified, err := mcpoidc.ParseUnverifiedClaims(rawToken)
 	if err != nil {
 		return TrustedIssuer{}, fmt.Errorf("malformed token: %w", err)
 	}
-	var unverified jwt.Claims
-	if err := parsed.UnsafeClaimsWithoutVerification(&unverified); err != nil {
-		return TrustedIssuer{}, fmt.Errorf("malformed token claims: %w", err)
-	}
-	trusted, ok := v.issuers[unverified.Issuer]
+	iss, _ := unverified["iss"].(string)
+	issuer, ok := v.issuers[iss]
 	if !ok {
-		return TrustedIssuer{}, fmt.Errorf("issuer %q is not trusted", unverified.Issuer)
+		return TrustedIssuer{}, fmt.Errorf("issuer %q is not trusted", iss)
 	}
-	token, err := trusted.verifier.Verify(ctx, rawToken)
+	claims, err := mcpoidc.ValidateIDToken(ctx, rawToken, issuer.JWKS, issuer.JWKSURL, issuer.Issuer, []string{issuer.Audience})
 	if err != nil {
 		return TrustedIssuer{}, err
 	}
-	var claims struct {
-		AuthorizedParty string `json:"azp"`
-		ClientID        string `json:"client_id"`
-	}
-	if err := token.Claims(&claims); err != nil {
-		return TrustedIssuer{}, fmt.Errorf("token claims: %w", err)
-	}
-	if err := v.checkClient(trusted.issuer, requestingClient(claims.AuthorizedParty, claims.ClientID, token.Audience)); err != nil {
+	if err := v.checkClient(issuer, requestingClient(claims.AuthorizedParty, claims.ClientID, []string(claims.Audience))); err != nil {
 		return TrustedIssuer{}, err
 	}
-	return trusted.issuer, nil
+	return issuer, nil
 }
 
 func (v *JWTVerifier) checkClient(issuer TrustedIssuer, client string) error {

@@ -263,6 +263,9 @@ a2aServer:
   #     (getUserInfo: true on the connector).
   #   caFile: a CA bundle path inside the container trusted for jwksUrl,
   #     e.g. /etc/klaus-gateway/a2a-server-ca/ca.crt from a2aServer.caSecret.
+  #   allowPrivateIpJwksHosts: hostnames whose jwksUrl may resolve to a
+  #     private address (an in-cluster identity provider). jwksUrl must use
+  #     https; any other private, loopback or link-local address is refused.
   issuers: []  # @schema item: object; itemRequired: [name, issuer, jwksUrl, audience]; itemAdditionalProperties: true
   exchange:
     # tokenUrl is the token endpoint of the installation's identity

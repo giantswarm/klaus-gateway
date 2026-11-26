@@ -1,14 +1,15 @@
 package a2aserver_test
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
+	mcpoidc "github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
@@ -25,20 +26,30 @@ const (
 	outsideBackend  = "outside-backend"
 )
 
+// tokenSigner signs tokens of issuer and serves its key set over HTTP.
 type tokenSigner struct {
-	t      *testing.T
-	issuer string
-	key    *rsa.PrivateKey
-	signer jose.Signer
+	t       *testing.T
+	issuer  string
+	signer  jose.Signer
+	jwksURL string
+	jwks    *http.Client
 }
 
 func newTokenSigner(t *testing.T, issuer string) *tokenSigner {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, nil)
+	const kid = "test-key"
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, (&jose.SignerOptions{}).WithHeader(jose.HeaderKey("kid"), kid))
 	require.NoError(t, err)
-	return &tokenSigner{t: t, issuer: issuer, key: key, signer: signer}
+	set, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: kid, Algorithm: string(jose.RS256), Use: "sig"}}})
+	require.NoError(t, err)
+	jwks := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(set)
+	}))
+	t.Cleanup(jwks.Close)
+	return &tokenSigner{t: t, issuer: issuer, signer: signer, jwksURL: jwks.URL, jwks: jwks.Client()}
 }
 
 func (s *tokenSigner) sign(claims map[string]any) string {
@@ -62,9 +73,12 @@ func (s *tokenSigner) sign(claims map[string]any) string {
 
 func (s *tokenSigner) trusted(name, audience, connector string, allowed ...string) a2aserver.TrustedIssuer {
 	return a2aserver.TrustedIssuer{
-		Name:           name,
-		Issuer:         s.issuer,
-		Keys:           &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{&s.key.PublicKey}},
+		Name:    name,
+		Issuer:  s.issuer,
+		JWKSURL: s.jwksURL,
+		// The test key set is served on loopback with a test certificate,
+		// which the SSRF-safe default client refuses.
+		JWKS:           mcpoidc.NewJWKSClientWithOptions(mcpoidc.JWKSClientOptions{HTTPClient: s.jwks, AllowPrivateIP: true}),
 		Audience:       audience,
 		AllowedClients: allowed,
 		ConnectorID:    connector,

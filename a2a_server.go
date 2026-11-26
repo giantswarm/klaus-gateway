@@ -11,12 +11,14 @@ import (
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-chi/chi/v5"
+
+	mcpoidc "github.com/giantswarm/mcp-oauth/providers/oidc"
 
 	"github.com/giantswarm/klaus-gateway/internal/config"
 	"github.com/giantswarm/klaus-gateway/internal/version"
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+
 	"github.com/giantswarm/klaus-gateway/pkg/a2aserver"
 )
 
@@ -38,7 +40,7 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 	}
 	issuers := make([]a2aserver.TrustedIssuer, 0, len(cfg.TrustedIssuers()))
 	for _, entry := range cfg.TrustedIssuers() {
-		issuer, err := trustedIssuer(ctx, entry)
+		issuer, err := trustedIssuer(entry)
 		if err != nil {
 			return fmt.Errorf("issuer %q: %w", entry.Name, err)
 		}
@@ -74,8 +76,8 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 
 // trustedIssuer is entry with its signing keys read from its key set URL,
 // trusting its CA bundle next to the system roots.
-func trustedIssuer(ctx context.Context, entry config.TrustedIssuer) (a2aserver.TrustedIssuer, error) {
-	client, err := issuerHTTPClient(entry.CAFile)
+func trustedIssuer(entry config.TrustedIssuer) (a2aserver.TrustedIssuer, error) {
+	pool, err := issuerCertPool(entry.CAFile)
 	if err != nil {
 		return a2aserver.TrustedIssuer{}, err
 	}
@@ -84,9 +86,13 @@ func trustedIssuer(ctx context.Context, entry config.TrustedIssuer) (a2aserver.T
 		discovery = strings.TrimSuffix(entry.Issuer, "/") + "/.well-known/openid-configuration"
 	}
 	return a2aserver.TrustedIssuer{
-		Name:             entry.Name,
-		Issuer:           entry.Issuer,
-		Keys:             oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), entry.JWKSURL),
+		Name:    entry.Name,
+		Issuer:  entry.Issuer,
+		JWKSURL: entry.JWKSURL,
+		JWKS: mcpoidc.NewJWKSClientWithOptions(mcpoidc.JWKSClientOptions{
+			AllowPrivateIPHosts: entry.AllowPrivateIPJWKSHosts,
+			RootCAs:             pool,
+		}),
 		Audience:         entry.Audience,
 		AllowedClients:   entry.AllowedClients,
 		ConnectorID:      entry.ConnectorID,
@@ -97,9 +103,11 @@ func trustedIssuer(ctx context.Context, entry config.TrustedIssuer) (a2aserver.T
 	}, nil
 }
 
-func issuerHTTPClient(caFile string) (*http.Client, error) {
+// issuerCertPool is the system roots with the PEM bundle at caFile, or nil
+// (the system roots alone) when caFile is empty.
+func issuerCertPool(caFile string) (*x509.CertPool, error) {
 	if caFile == "" {
-		return http.DefaultClient, nil
+		return nil, nil
 	}
 	pem, err := os.ReadFile(caFile) //nolint:gosec // G304: the CA bundle path is operator configuration (a chart value), not user input
 	if err != nil {
@@ -111,6 +119,14 @@ func issuerHTTPClient(caFile string) (*http.Client, error) {
 	}
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("issuer CA bundle %s holds no certificate", caFile)
+	}
+	return pool, nil
+}
+
+func issuerHTTPClient(caFile string) (*http.Client, error) {
+	pool, err := issuerCertPool(caFile)
+	if err != nil || pool == nil {
+		return http.DefaultClient, err
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
