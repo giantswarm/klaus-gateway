@@ -246,7 +246,9 @@ type SessionStarter interface {
 
 // SessionTarget is the Agent namespace/name as SessionStarter.Target resolved
 // it for one start: named by Organization, the name of the organization whose
-// namespace Namespace is, when that is set, else by Namespace.
+// namespace Namespace is, when that is set, else by Namespace. It is not
+// Config.Target, the controller's address, and Organization is the Agent
+// Platform organization the Agent's namespace is of.
 type SessionTarget struct {
 	Namespace    string
 	Name         string
