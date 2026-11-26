@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // TeamReview is an ask a manager posts into a team's channel: the change
@@ -26,6 +27,11 @@ type TeamReview struct {
 	// giving and the receiving team for a transfer; for an action the actor,
 	// the targets, the capability and the inputs that changed.
 	Text string `json:"text"`
+	// Summary is the ask in one line, Slack mrkdwn: what the message is
+	// shortened to once the review is decided, Text then moving into its
+	// thread. Optional; without it the first line of Text stands in. At most
+	// TeamSummaryMax characters.
+	Summary string `json:"summary,omitempty"`
 	// Link opens whatever carries the change — a pull request, a workflow
 	// run, a repository — for anything else. Optional; http(s) only.
 	Link string `json:"link,omitempty"`
@@ -106,6 +112,9 @@ var slackChannelID = regexp.MustCompile(`^[CDG][A-Z0-9]{5,}$`)
 // Slack section block, whose limit is 3000 characters.
 const TeamTextMax = 3000
 
+// TeamSummaryMax bounds a review's summary: one line in the channel.
+const TeamSummaryMax = 300
+
 // TeamPullRequestsMax bounds the pull requests of a review or notice; the list
 // is one section block, and 25 links fit its 3000 characters.
 const TeamPullRequestsMax = 25
@@ -120,6 +129,10 @@ func (r TeamReview) Validate() error {
 		return errors.New("approve.tool is required")
 	case r.Deny.Tool == "" && len(r.Deny.Arguments) > 0:
 		return errors.New("deny.tool is required when deny is given")
+	case utf8.RuneCountInString(r.Summary) > TeamSummaryMax:
+		return fmt.Errorf("summary is longer than %d characters", TeamSummaryMax)
+	case strings.ContainsAny(r.Summary, "\r\n\u2028\u2029"):
+		return errors.New("summary must be one line")
 	case r.Actor != "" && strings.TrimSpace(r.Actor) == "":
 		return errors.New("actor must not be blank")
 	case r.NoticeChannel != "" && !slackChannelID.MatchString(r.NoticeChannel):

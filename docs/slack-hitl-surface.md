@@ -536,8 +536,8 @@ URL button for anything else, labelled by what it opens (*Open PR*, *Open run*, 
 - **Deny takes a reason.** The *Deny* click opens a modal with one required box; on submit the
   manager's deny tool is called as the member with the arguments plus `reason`. The modal claims
   nothing until it is submitted, so one left open holds the review for nobody. The denied message
-  reads `*Denied* by <@U…> for team-bumblebee.`, the ask, the reason as a quote, then what the
-  tool said.
+  reads `*Denied* by <@U…> for team-bumblebee: <summary>`; the reason, as a quote, is in the
+  thread reply under the ask.
 - **A second channel is informed.** A review naming a `noticeChannel` posts the same text, pull
   requests and link there as a notice (section 11) before the review itself.
 - **The results come back into the thread.** The manager posts the action's outcome — merged,
@@ -563,9 +563,18 @@ URL button for anything else, labelled by what it opens (*Open PR*, *Open run*, 
   is reserved for what is theirs alone — a sign-in or Connect button, or a click on a review
   somebody else decided.
 - **One decision closes it.** A second click is refused with who decided and how (or whose
-  decision is in flight); the message is rewritten to the outcome, the decider and what the tool
-  answered — a plain text as written, a JSON object by its `message` field, structured data
-  without one not at all — the pull requests still listed and the link kept as small print.
+  decision is in flight).
+- **A decided review takes one line in the channel.** The message is rewritten to the outcome,
+  the decider, the team and the review's `summary` (without one, the first line of the ask when it
+  fits in 300 characters, otherwise nothing):
+  `*Approved* by <@U…> for team-bumblebee: <summary>`. The ask, the reason of a denial, what the
+  tool answered — a plain text as written, a JSON object by its `message` field, structured data
+  without one not at all — the pull requests and the link as small print go into a reply in its
+  thread. The reason and the tool's answer are a section of their own, so a long ask cannot cut
+  them off. The reply is posted with its mentions as plain text and then rewritten to show them,
+  so the people the ask names are not notified a second time. When Slack refuses that reply, the
+  message keeps all of it instead; a failure Slack gave no answer on may have posted it, so the
+  message is shortened all the same.
 
 The Approve and Deny buttons' `value` is the JSON `{"r":"<review id>"}`; the id is what
 `POST /reviews` returned. The Deny modal (`callback_id: team_review_deny`) carries

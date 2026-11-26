@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -177,7 +178,12 @@ func TestPostReview_InvalidBodies(t *testing.T) {
 		"notice channel is the channel": func(m map[string]any) {
 			m["noticeChannel"] = m["channel"]
 		},
-		"blank actor": func(m map[string]any) { m["actor"] = "  " },
+		"blank actor":                 func(m map[string]any) { m["actor"] = "  " },
+		"summary too long":            func(m map[string]any) { m["summary"] = strings.Repeat("x", channels.TeamSummaryMax+1) },
+		"summary two lines":           func(m map[string]any) { m["summary"] = "one\ntwo" },
+		"summary carriage return":     func(m map[string]any) { m["summary"] = "one\rtwo" },
+		"summary line separator":      func(m map[string]any) { m["summary"] = "one\u2028two" },
+		"summary paragraph separator": func(m map[string]any) { m["summary"] = "one\u2029two" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -201,6 +207,7 @@ func TestPostReview_ActionFieldsReachThePoster(t *testing.T) {
 	body["pullRequests"] = []string{"https://github.com/giantswarm/a-configs/pull/12", "https://github.com/giantswarm/b-configs/pull/7"}
 	body["deny"] = map[string]any{"tool": "x_giantswarm-platform-manager_deny_action", "arguments": map[string]any{"action": "a1"}}
 	body["noticeChannel"] = "C0456FGHIJ"
+	body["summary"] = "*alex* asks to enable *agent-platform* on *a*, *b*"
 	resp := post(t, srv, "/reviews", "good", body)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	var receipt channels.PostReceipt
@@ -214,6 +221,7 @@ func TestPostReview_ActionFieldsReachThePoster(t *testing.T) {
 	require.Equal(t, "x_giantswarm-platform-manager_deny_action", got.Deny.Tool)
 	require.Equal(t, map[string]any{"action": "a1"}, got.Deny.Arguments)
 	require.Equal(t, "C0456FGHIJ", got.NoticeChannel)
+	require.Equal(t, "*alex* asks to enable *agent-platform* on *a*, *b*", got.Summary)
 }
 
 func TestPostResult_AllowedCallerPostsIntoTheThread(t *testing.T) {

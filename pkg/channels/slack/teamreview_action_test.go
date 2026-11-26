@@ -147,7 +147,7 @@ func TestTeamReview_ActorCannotApproveTheirOwnAction(t *testing.T) {
 
 	clickApprove(t, srv, "U2", receipt.ID, receipt.TS)
 	waitFor(t, "a second person's approval lands", func() bool {
-		return updatedWith(fake, receipt.TS, "Approved", "<@U2>", "approving reviews submitted")
+		return updatedWith(fake, receipt.TS, "Approved", "<@U2>") && detailedWith(fake, receipt.TS, "approving reviews submitted")
 	})
 	calls := tools.recorded()
 	require.Len(t, calls, 1)
@@ -178,10 +178,12 @@ func TestTeamReview_DenyWithReasonCallsTheDenyToolAsTheMember(t *testing.T) {
 	require.Equal(t, map[string]any{"action": "a1", "reason": "The customer asked to wait for their change freeze to end."}, call.args, "the deny arguments plus the typed reason")
 
 	waitFor(t, "the message shows the denial, the decider and the reason", func() bool {
-		return updatedWith(fake, receipt.TS, "Denied", "<@U2>", "change freeze", "3 pull requests closed")
+		return updatedWith(fake, receipt.TS, "Denied", "<@U2>") && detailedWith(fake, receipt.TS, "change freeze", "3 pull requests closed")
 	})
 	require.Empty(t, latestButtons(fake, receipt.TS), "a denied review carries no buttons")
-	require.Contains(t, sectionTexts(blocksOf(fake.pathCalls("chat.update")[len(fake.pathCalls("chat.update"))-1]))[1], "giantswarm/a-configs#12", "the pull requests stay listed")
+	reply, ok := detailsReply(fake, receipt.TS)
+	require.True(t, ok, "the details are in the thread")
+	require.Contains(t, shownText(reply), "giantswarm/a-configs#12", "the pull requests stay listed, in the thread")
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
 	waitFor(t, "a later click is told who denied", func() bool {
@@ -200,7 +202,7 @@ func TestTeamReview_ActorMayDenyTheirOwnAction(t *testing.T) {
 	view := openedView(t, fake)
 	submitDeny(t, srv, "U1", view["private_metadata"].(string), "Wrong installation, I'll run it again.")
 	waitFor(t, "the actor's denial withdraws the action", func() bool {
-		return updatedWith(fake, receipt.TS, "Denied", "<@U1>", "Wrong installation")
+		return updatedWith(fake, receipt.TS, "Denied", "<@U1>") && detailedWith(fake, receipt.TS, "Wrong installation")
 	})
 	require.Equal(t, "id-token-U1", tools.recorded()[0].bearer)
 }

@@ -286,6 +286,9 @@ type Review struct {
 	Team string `json:"team"`
 	Text string `json:"text"`
 	Link string `json:"link,omitempty"`
+	// Summary is the ask in one line, what the message is shortened to once
+	// the review is decided; "" for the first line of Text.
+	Summary string `json:"summary,omitempty"`
 	// Actor is the email of the person whose action the review decides; ""
 	// for a review without one. Their own approval is refused.
 	Actor string `json:"actor,omitempty"`
