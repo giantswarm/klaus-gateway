@@ -229,15 +229,30 @@ type OrganizationNames interface {
 }
 
 // SessionStarter starts the Session of a conversation as the person bearer
-// belongs to, with the Agent namespace/name, keyed by requestID (a retried
-// start answers the Session the first one created) and named sessionName
-// (empty: unnamed), in the workspace grant admits it to (zero: none). It
-// returns the Session as created, ready or not. Its refusals are the errors a
-// channel renders: AgentUnavailableError, ErrNoIdentity, ErrAgentUnknown,
+// belongs to. Target resolves how a start names the Agent namespace/name;
+// StartSession starts the Session with that target, keyed by requestID (a
+// retried start answers the Session the first one created) and named
+// sessionName (empty: unnamed), in the workspace grant admits it to (zero:
+// none), and returns it as created, ready or not. Client.StartSession
+// resolves the target once for each start, and its unnamed retry takes the
+// same target. Their refusals are the errors a channel renders:
+// AgentUnavailableError, ErrNoIdentity, ErrAgentUnknown,
 // ErrInvalidSessionName, and ErrAgentNotPermitted for a caller the controller
 // refuses the Agent to. *agentmanager.Starter satisfies it.
 type SessionStarter interface {
-	StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (Session, error)
+	Target(ctx context.Context, bearer, namespace, name string) (SessionTarget, error)
+	StartSession(ctx context.Context, bearer string, target SessionTarget, requestID, sessionName string, grant workspaces.Grant) (Session, error)
+}
+
+// SessionTarget is the Agent namespace/name as SessionStarter.Target resolved
+// it for one start: named by Organization, the name of the organization whose
+// namespace Namespace is, when that is set, else by Namespace. It is not
+// Config.Target, the controller's address, and Organization is the Agent
+// Platform organization the Agent's namespace is of.
+type SessionTarget struct {
+	Namespace    string
+	Name         string
+	Organization string
 }
 
 // Client speaks to one kagent controller. It is safe for concurrent use.

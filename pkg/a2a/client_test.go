@@ -1,7 +1,9 @@
 package a2a_test
 
 import (
+	"maps"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -783,21 +785,60 @@ func TestClient_StartSession_WaitsForReady(t *testing.T) {
 
 // A name agent-manager will not take costs the name, never the conversation:
 // the refused start reserved nothing, so the same request id goes again
-// unnamed.
+// unnamed, naming the Agent as the refused start did. The person's
+// organizations are asked for once for each start, not for each attempt, and
+// again for the next start: nothing of the lookup is kept between starts.
 func TestClient_StartSession_FallsBackWhenTheNameIsRefused(t *testing.T) {
-	f := readyFake(t)
-	client := f.serve(t, pkga2a.Config{})
-	tooLong := strings.Repeat("x", 201)
+	for name, tc := range map[string]struct {
+		fake   func(*testing.T) *fakeKagent
+		user   string
+		agent  string
+		target map[string]any // how start_session names the Agent
+		tools  []string       // the muster calls of a refused start, its retry and the next start
+	}{
+		"the platform's agent": {
+			fake: readyFake, user: userToken, agent: "sre-agent",
+			target: map[string]any{"namespace": "kagent", "name": "sre-agent"},
+			tools:  []string{startSessionTool, startSessionTool, startSessionTool},
+		},
+		"an organization's agent": {
+			fake: func(t *testing.T) *fakeKagent {
+				f := organizationsFake(t)
+				f.organizations = map[string]string{"acme": "agents-acme-q9w8e"}
+				return f
+			},
+			user: "alice", agent: "agents-acme-q9w8e/billing",
+			target: map[string]any{"organization": "acme", "name": "billing"},
+			tools:  []string{listOrganizationsTool, startSessionTool, startSessionTool, listOrganizationsTool, startSessionTool},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := tc.fake(t)
+			client := f.serve(t, pkga2a.Config{})
+			ctx := asUser(t.Context(), tc.user)
+			tooLong := strings.Repeat("x", 201)
 
-	session, err := client.StartSession(asUser(t.Context(), userToken), "sre-agent", "req-1", tooLong, workspaces.Grant{})
-	require.NoError(t, err)
-	require.True(t, session.Ready())
-	calls := f.muster.Calls()
-	require.Len(t, calls, 2)
-	require.Equal(t, tooLong, calls[0].Args["sessionName"])
-	require.Equal(t, "req-1", calls[1].Args["requestId"], "the retry reuses the request id, so no second conversation")
-	require.NotContains(t, calls[1].Args, "sessionName")
-	require.Len(t, f.created, 1)
+			session, err := client.StartSession(ctx, tc.agent, "req-1", tooLong, workspaces.Grant{})
+			require.NoError(t, err)
+			require.True(t, session.Ready())
+			_, err = client.StartSession(ctx, tc.agent, "req-2", "", workspaces.Grant{})
+			require.NoError(t, err)
+
+			calls := f.muster.Calls()
+			tools := make([]string, len(calls))
+			for i, call := range calls {
+				tools[i] = call.Tool
+			}
+			require.Equal(t, tc.tools, tools)
+			first := slices.Index(tools, startSessionTool)
+			want := map[string]any{"requestId": "req-1", "noWorkspace": true}
+			maps.Copy(want, tc.target)
+			require.Equal(t, want, calls[first+1].Args, "the retry reuses the request id, so no second conversation, and names the Agent as the refused start did")
+			want["sessionName"] = tooLong
+			require.Equal(t, want, calls[first].Args)
+			require.Len(t, f.created, 2, "one Session for each start")
+		})
+	}
 }
 
 func TestClient_StartSession_RefusesAnUnavailableAgent(t *testing.T) {

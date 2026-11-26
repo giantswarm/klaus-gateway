@@ -68,6 +68,11 @@ type fakeKagent struct {
 	// createDenied refuses every Session create with PermissionDenied: access
 	// revoked between the roster read and the start.
 	createDenied bool
+	// organizations, when set, makes the fake agent-manager the one whose
+	// start_session takes an organization's Agent by the organization's name:
+	// its list_organizations lists these, organization name -> namespace.
+	// Unset, list_organizations is not behind muster.
+	organizations map[string]string
 
 	serverOpts []grpc.ServerOption // the controller's gRPC options (size limits)
 	clientOpts []grpc.DialOption   // the client connection's extra options
