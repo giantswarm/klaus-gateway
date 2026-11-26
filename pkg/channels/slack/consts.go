@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -815,6 +816,32 @@ func failureLogLevel(err error) slog.Level {
 	return slog.LevelError
 }
 
+// startRefusedNoteFormat is the refusal of a Session start that names its
+// reason: an Agent that cannot run, or one (or its organization) that is not
+// there. The reason is agent-manager's or the controller's own sentence.
+const startRefusedNoteFormat = "The conversation did not start: %s. Nothing was sent to the agent."
+
+// startRefusedNote is the note of a Session start refused with a reason, when
+// err is one.
+func startRefusedNote(err error) (string, bool) {
+	var reason string
+	var unavailable *pkga2a.AgentUnavailableError
+	var notFound *pkga2a.AgentNotFoundError
+	switch {
+	case errors.As(err, &unavailable):
+		reason = unavailable.Reason
+	case errors.As(err, &notFound):
+		reason = notFound.Reason
+	default:
+		return "", false
+	}
+	reason = strings.TrimSuffix(strings.Join(strings.Fields(reason), " "), ".")
+	if reason == "" {
+		return "", false
+	}
+	return fmt.Sprintf(startRefusedNoteFormat, escapeMrkdwn(reason)), true
+}
+
 // failureNote is the note of a turn that failed with err before the agent
 // answered: the class's own note, or failedNote when no class names it.
 func failureNote(err error) string {
@@ -822,6 +849,9 @@ func failureNote(err error) string {
 		return note
 	}
 	if note, ok := shareNote(err); ok {
+		return note
+	}
+	if note, ok := startRefusedNote(err); ok {
 		return note
 	}
 	switch channels.ClassifyFailure(err) {
