@@ -222,10 +222,10 @@ func TestElicitationOpenButtonLabel_KeepsTheRightEndOfALongHost(t *testing.T) {
 // zero-width characters are dropped, and Slack's formatting characters cannot
 // end the heading's bold or start a format of their own.
 func TestElicitationHeading_NeutralisesFormattingAndDirection(t *testing.T) {
-	h := elicitationHeading("third-party", "Approve* _safe_ `x` \u202eevil\u202c ​hidden ~strike~ *Asked by muster")
+	h := elicitationHeading("third-party", "Approve* _safe_ `x` \u202eevil\u202c \u200bhidden ~strike~ *Asked by muster")
 	require.NotContains(t, h, "\u202e")
 	require.NotContains(t, h, "\u202c")
-	require.NotContains(t, h, "​")
+	require.NotContains(t, h, "\u200b")
 	require.NotContains(t, h, "`")
 	require.NotContains(t, h, "~")
 	inner := strings.TrimSuffix(strings.TrimPrefix(h, "*"), "*")

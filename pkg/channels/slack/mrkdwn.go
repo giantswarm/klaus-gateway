@@ -173,7 +173,7 @@ func plainMrkdwn(s string) string {
 			b.WriteRune('\uFF5E')
 		case r == '`':
 			b.WriteRune('\uFF40')
-		case r == '_' && !(i > 0 && i < len(runes)-1 && isWordRune(runes[i-1]) && isWordRune(runes[i+1])):
+		case r == '_' && (i == 0 || i == len(runes)-1 || !isWordRune(runes[i-1]) || !isWordRune(runes[i+1])):
 			b.WriteRune('\uFF3F')
 		default:
 			b.WriteRune(r)
