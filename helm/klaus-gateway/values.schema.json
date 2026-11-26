@@ -75,7 +75,8 @@
                             "name",
                             "issuer",
                             "jwksUrl",
-                            "audience"
+                            "audience",
+                            "allowedClients"
                         ],
                         "additionalProperties": true
                     }

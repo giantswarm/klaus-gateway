@@ -17,7 +17,7 @@ endpoints. The installation's ingress or agentgateway route must send them to th
 | Path | What |
 |---|---|
 | `/.well-known/agent-card.json` | Public Agent Card: the `/a2a` interface and one security scheme per trusted issuer, any one of which is enough. Needs no token. |
-| `/a2a` | A2A JSON-RPC. Every request needs `Authorization: Bearer <token>`. A body larger than `a2aServer.maxBodyBytes` (2 MiB by default) is refused with 413 before it is read as JSON or its token is checked. The authenticated extended card lists one interface per agent the caller may use. |
+| `/a2a` | A2A JSON-RPC. Every request needs `Authorization: Bearer <token>`. The body is read only after the token is verified: a request without a valid token gets 401 with its body unread. A body larger than `a2aServer.maxBodyBytes` (2 MiB by default) is then refused with 413 before it is read as JSON or the token is exchanged. The authenticated extended card lists one interface per agent the caller may use. |
 
 Every call must send `A2A-Version: 1.0`: a call without it is an A2A 0.3 call (A2A 1.0
 section 3.6.2) and is refused with `-32009` (version not supported).
@@ -70,8 +70,8 @@ Dex (`a2aServer.exchange.tokenUrl`).
    and the resource audience is never used as their client identity. Access-token support uses
    these JWT conventions; it does not enforce the complete RFC 9068 profile's `typ`, `jti`
    and other required claims. A token requested by `a2aServer.exchange.clientId` is a platform
-   token and is refused, whichever issuer signed it. When the entry's `allowedClients` is set, only tokens of
-   those clients are accepted. It does not check groups.
+   token and is refused, whichever issuer signed it. Only tokens of the entry's `allowedClients`
+   are accepted; every entry must list at least one. It does not check groups.
 4. The gateway exchanges the token at `a2aServer.exchange.tokenUrl` (RFC 8693), authenticated
    as `a2aServer.exchange.clientId`, through the entry's `connectorId`, for the audiences in
    `a2aServer.exchange.audiences`. The subject token type is the entry's `subjectTokenType`
@@ -146,10 +146,9 @@ When dexidp/dex#5165 is released, also set `validateTokenExchangeAudience: true`
 `clientID: <audience>` (the Dex entry's) on the self connector. Together with item 1 it refuses any
 subject token not issued for the application audience, exchanged tokens included.
 
-Without `allowedClients`, a token whose `aud` contains the entry's `audience` is
-accepted whichever client other than the exchange client requested it, which is why
-items 1 and 3 must hold. Set `allowedClients` to the application clients (`example-app`
-below) to also refuse tokens other clients request for the application audience.
+Each entry's `allowedClients` (the application clients, `example-app` below) refuses
+tokens other clients request for the application audience; items 1 and 3 still keep
+the self connector from exchanging them.
 
 Example, with one application client `example-app` (secrets omitted):
 
@@ -296,7 +295,7 @@ addresses (RFC 1918, RFC 4193) for that host only; loopback and link-local stay 
 
 The chart renders `a2aServer.issuers` into the ConfigMap `<release>-a2a-server-issuers`, read with
 `--a2a-server-issuers-file`; a change to it rolls the pods. The gateway refuses to start on an
-unknown field in an entry, a missing `name`, `issuer`, `jwksUrl` or `audience`, or a
+unknown field in an entry, a missing `name`, `issuer`, `jwksUrl`, `audience` or `allowedClients`, or a
 `name` or `issuer` used twice. The render fails when `a2aServer.enabled` is set without
 `a2a.enabled`, `publicUrl`, an issuer, `exchange.tokenUrl`, `exchange.clientId`,
 `exchange.existingSecret`, `exchange.audiences` or `obo.musterUrl`. The chart never
@@ -307,8 +306,7 @@ renders the exchange client's secret.
 | Flag | Meaning |
 |---|---|
 | `--a2a-server-issuers-file` | YAML list of issuer entries, the fields of `a2aServer.issuers`. |
-| `--a2a-server-exchange-token-url` | Token endpoint the exchange runs at. Required with `--a2a-server-issuers-file`. |
+| `--a2a-server-exchange-token-url` | Token endpoint the exchange runs at. |
 | `--a2a-server-exchange-client-id`, `--a2a-server-exchange-client-secret-file`, `--a2a-server-exchange-audiences` | The exchange client and the audiences it asks for. |
 | `--a2a-server-ca-file` | CA bundle for the exchange's token endpoint. |
 | `--a2a-server-max-body-bytes` | Largest `/a2a` request body; 2 MiB by default. |
-| `--a2a-server-issuer`, `--a2a-server-jwks-url`, `--a2a-server-audience`, `--a2a-server-allowed-clients`, `--a2a-server-allow-private-ip-jwks-hosts`, `--a2a-server-token-url`, `--a2a-server-exchange-connector-id` | One issuer without a file, sending ID tokens, named `oauth2` in the card (an OAuth 2.0 scheme at `--a2a-server-token-url`). `--a2a-server-jwks-url` and `--a2a-server-token-url` default to `<issuer>/keys` and `<issuer>/token`; the exchange runs at `--a2a-server-token-url` unless `--a2a-server-exchange-token-url` is set, and `--a2a-server-ca-file` also covers the key set. Exclusive with `--a2a-server-issuers-file`. |

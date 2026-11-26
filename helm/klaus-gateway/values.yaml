@@ -243,9 +243,9 @@ a2aServer:
   #   jwksUrl: the issuer's key set (Dex: <issuer>/keys).
   #   audience: the client a token must be issued for. For the
   #     installation's own Dex, keep it apart from a2aServer.exchange.clientId.
-  #   allowedClients: the only clients whose tokens are accepted (azp, or
-  #     the only aud). Empty accepts any client except
-  #     a2aServer.exchange.clientId, whose tokens are always refused.
+  #   allowedClients: the only clients whose tokens are accepted (azp,
+  #     client_id for access tokens, or the only aud). At least one is
+  #     required; a2aServer.exchange.clientId is always refused.
   #   connectorId: the connector of the exchange's identity provider that
   #     verifies this issuer's tokens (Dex's connector_id).
   #   tokenUrl: the issuer's token endpoint. Set, the Agent Card declares
@@ -266,7 +266,7 @@ a2aServer:
   #   allowPrivateIpJwksHosts: hostnames whose jwksUrl may resolve to a
   #     private address (an in-cluster identity provider). jwksUrl must use
   #     https; any other private, loopback or link-local address is refused.
-  issuers: []  # @schema item: object; itemRequired: [name, issuer, jwksUrl, audience]; itemAdditionalProperties: true
+  issuers: []  # @schema item: object; itemRequired: [name, issuer, jwksUrl, audience, allowedClients]; itemAdditionalProperties: true
   exchange:
     # tokenUrl is the token endpoint of the installation's identity
     # provider the exchange runs at, for every issuer
