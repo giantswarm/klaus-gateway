@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -193,10 +194,10 @@ func serve(t *testing.T, agents a2aserver.Agents, exchanger a2aserver.TokenExcha
 		{Name: "outside", Issuer: "https://idp.example.org", Audience: outsideAudience, OpenIDConnectURL: "https://idp.example.org/.well-known/openid-configuration"},
 		{Name: "rfc8414", Issuer: "https://as.example.net", Audience: outsideAudience, TokenURL: "https://as.example.net/oauth/token", MetadataURL: "https://as.example.net/.well-known/oauth-authorization-server"}, //nolint:gosec // G101: a test URL
 	}})
-	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, Realm: "klaus-gateway"}
+	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, MaxBodyBytes: testBodyLimit, Realm: "klaus-gateway"}
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}})
-	mux.Handle("/a2a", a2aserver.LimitBody(testBodyLimit, auth.Middleware(a2asrv.NewJSONRPCHandler(handler))))
+	mux.Handle("/a2a", auth.Middleware(a2asrv.NewJSONRPCHandler(handler)))
 	return srv, card
 }
 
@@ -338,7 +339,11 @@ func TestRequestMetadataValuesRemainOpaque(t *testing.T) {
 }
 
 func TestMalformedRequestMetadataIsRefusedBeforeDispatch(t *testing.T) {
-	for _, key := range []string{"not valid/key", "io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo", "io.modelcontextprotocol/clientCapabilities", "progressToken", "traceparent"} {
+	for _, key := range []string{
+		"not valid/key", "", "io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo",
+		"io.modelcontextprotocol/clientCapabilities", "io.modelcontextprotocol/related-task", "io.modelcontextprotocol/model-immediate-response",
+		"dev.mcp/anything", "org.modelcontextprotocol.api/x", "com.mcp.tools/x", "progressToken", "traceparent",
+	} {
 		t.Run(key, func(t *testing.T) {
 			agents := &fakeAgents{}
 			server, _ := serve(t, agents, staticExchanger{})
@@ -387,7 +392,17 @@ type jsonrpcResponse struct {
 
 func postJSONRPC(t *testing.T, base, extensions string, params map[string]any) (*http.Response, jsonrpcResponse) {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": params})
+	return postJSONRPCRequest(t, base, extensions, "SendMessage", params)
+}
+
+func postJSONRPCMethod(t *testing.T, base, method string, params map[string]any) (*http.Response, jsonrpcResponse) {
+	t.Helper()
+	return postJSONRPCRequest(t, base, "", method, params)
+}
+
+func postJSONRPCRequest(t *testing.T, base, extensions, method string, params map[string]any) (*http.Response, jsonrpcResponse) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	require.NoError(t, err)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/a2a", bytes.NewReader(payload))
 	require.NoError(t, err)
@@ -484,9 +499,10 @@ func TestExchangerSendsAnRFC8693Request(t *testing.T) {
 	require.Equal(t, "urn:ietf:params:oauth:token-type:id_token", form.Get("requested_token_type"), "the platform still gets an ID token")
 }
 
-func TestOversizedBodyIsRefusedBeforeAnything(t *testing.T) {
+func TestOversizedBodyIsRefusedBeforeTheExchange(t *testing.T) {
 	agents := &fakeAgents{}
-	srv, _ := serve(t, agents, staticExchanger{})
+	exchanger := &countingExchanger{}
+	srv, _ := serve(t, agents, exchanger)
 	text := strings.Repeat("x", testBodyLimit)
 	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": map[string]any{
 		"tenant":  tenant,
@@ -509,9 +525,64 @@ func TestOversizedBodyIsRefusedBeforeAnything(t *testing.T) {
 		})
 	}
 	require.Empty(t, agents.refs, "nothing is asked of the platform")
+	require.Zero(t, exchanger.calls.Load(), "nothing is asked of the identity provider")
 
 	small := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(strings.Repeat("x", testBodyLimit/2)))
 	_, err = client(t, &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{{URL: srv.URL + "/a2a", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version}}}, clientToken).
 		SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: small})
 	require.NoError(t, err, "a body under the cap is served whole")
+}
+
+// countingExchanger is staticExchanger counting its exchanges.
+type countingExchanger struct{ calls atomic.Int32 }
+
+func (e *countingExchanger) Exchange(ctx context.Context, subject string, issuer a2aserver.TrustedIssuer) (string, error) {
+	e.calls.Add(1)
+	return staticExchanger{}.Exchange(ctx, subject, issuer)
+}
+
+// unreadBody fails the test when it is read.
+type unreadBody struct{ t *testing.T }
+
+func (b unreadBody) Read([]byte) (int, error) {
+	b.t.Error("the body of an unauthenticated request was read")
+	return 0, io.EOF
+}
+
+func TestUnauthenticatedBodyIsNeverRead(t *testing.T) {
+	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: staticExchanger{}, MaxBodyBytes: testBodyLimit, Realm: "klaus-gateway"}
+	handler := auth.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("an unauthenticated request was served") }))
+	for name, header := range map[string]string{"no token": "", "invalid token": "Bearer forged"} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/a2a", unreadBody{t: t})
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			require.Equal(t, http.StatusUnauthorized, recorder.Code)
+		})
+	}
+}
+
+func TestCancelMetadataIsValidated(t *testing.T) {
+	agents := &fakeAgents{}
+	server, _ := serve(t, agents, staticExchanger{})
+	response, body := postJSONRPCMethod(t, server.URL, "CancelTask", map[string]any{"tenant": tenant, "id": "task-1", "metadata": map[string]any{"io.modelcontextprotocol/related-task": "x"}})
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NotNil(t, body.Error)
+	require.Equal(t, -32602, body.Error.Code)
+	require.Empty(t, agents.refs, "the cancel never reaches the platform")
+}
+
+func TestMetadataPrefixesOutsideMCPsReservationPass(t *testing.T) {
+	for _, key := range []string{"com.example.mcp/x", "mcp/x", "io.example/modelcontextprotocol"} {
+		t.Run(key, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			_, body := postJSONRPC(t, server.URL, "", map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": map[string]any{key: "v"}})
+			require.Nil(t, body.Error, "only a second label of modelcontextprotocol or mcp is reserved")
+			require.Equal(t, map[string]any{key: "v"}, agents.metadata[0])
+		})
+	}
 }

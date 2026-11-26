@@ -30,6 +30,10 @@ type TokenExchanger interface {
 type Authenticator struct {
 	Verifier  TokenVerifier
 	Exchanger TokenExchanger
+	// MaxBodyBytes, when positive, caps the request body. The body is read
+	// only after the token is verified, and the exchange runs only for a
+	// body within the cap.
+	MaxBodyBytes int64
 	// Realm is the realm of the WWW-Authenticate challenge.
 	Realm  string
 	Logger *slog.Logger
@@ -52,6 +56,17 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			a.challenge(w, "invalid_token", "the access token is invalid or expired")
 			return
 		}
+		exchange := a.exchange(raw, issuer, next)
+		if a.MaxBodyBytes > 0 {
+			exchange = limitBody(a.MaxBodyBytes, exchange)
+		}
+		exchange.ServeHTTP(w, r)
+	})
+}
+
+// exchange runs next with the exchanged token of raw.
+func (a *Authenticator) exchange(raw string, issuer TrustedIssuer, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		exchanged, err := a.Exchanger.Exchange(r.Context(), raw, issuer)
 		if err != nil {
 			a.logger().WarnContext(r.Context(), "a2a server: token exchange failed", "issuer", issuer.Name, "error", err)
@@ -92,10 +107,10 @@ func bearerToken(header string) (string, bool) {
 	return token, token != ""
 }
 
-// LimitBody refuses a request whose body is larger than limit bytes with 413
+// limitBody refuses a request whose body is larger than limit bytes with 413
 // before next reads any of it. The body is read into memory first, so next
 // never sees a truncated one.
-func LimitBody(limit int64, next http.Handler) http.Handler {
+func limitBody(limit int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > limit {
 			http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)

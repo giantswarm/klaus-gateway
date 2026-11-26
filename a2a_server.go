@@ -38,8 +38,8 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 	if err != nil {
 		return err
 	}
-	issuers := make([]a2aserver.TrustedIssuer, 0, len(cfg.TrustedIssuers()))
-	for _, entry := range cfg.TrustedIssuers() {
+	issuers := make([]a2aserver.TrustedIssuer, 0, len(cfg.Issuers))
+	for _, entry := range cfg.Issuers {
 		issuer, err := trustedIssuer(entry)
 		if err != nil {
 			return fmt.Errorf("issuer %q: %w", entry.Name, err)
@@ -54,22 +54,23 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 	auth := &a2aserver.Authenticator{
 		Verifier: a2aserver.NewJWTVerifier(issuers, cfg.ExchangeClientID),
 		Exchanger: &a2aserver.Exchanger{
-			TokenURL:     cfg.ExchangeEndpoint(),
+			TokenURL:     cfg.ExchangeTokenURL,
 			ClientID:     cfg.ExchangeClientID,
 			ClientSecret: strings.TrimSpace(string(secret)),
 			Audiences:    cfg.ExchangeAudiences,
 			HTTPClient:   exchangeClient,
 		},
-		Realm:  "klaus-gateway",
-		Logger: logger,
+		MaxBodyBytes: cfg.MaxBodyBytes,
+		Realm:        "klaus-gateway",
+		Logger:       logger,
 	}
 	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger})
 	r.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	r.Handle(a2aServerPath, a2aserver.LimitBody(cfg.MaxBodyBytes, auth.Middleware(a2asrv.NewJSONRPCHandler(handler))))
+	r.Handle(a2aServerPath, auth.Middleware(a2asrv.NewJSONRPCHandler(handler)))
 	for _, issuer := range issuers {
 		logger.Info("A2A server trusts issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience, "allowed_clients", issuer.AllowedClients, "connector_id", issuer.ConnectorID)
 	}
-	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeEndpoint(), "exchange_audiences", cfg.ExchangeAudiences, "max_body_bytes", cfg.MaxBodyBytes)
+	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeTokenURL, "exchange_audiences", cfg.ExchangeAudiences, "max_body_bytes", cfg.MaxBodyBytes)
 	return nil
 }
 
