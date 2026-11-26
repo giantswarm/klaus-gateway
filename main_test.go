@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
+
+	"github.com/giantswarm/klaus-gateway/internal/config"
 )
 
 func TestKubeClientsLoadsConfigOnceOnFirstAsk(t *testing.T) {
@@ -71,5 +74,22 @@ func TestOrganizationNamesFallsBackWithoutClient(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if got := organizationNames(context.Background(), kube, logger); got != nil {
 		t.Fatalf("organizationNames = %v, want nil (namespace labels)", got)
+	}
+}
+
+func TestTrustedIssuerCardDefaults(t *testing.T) {
+	for name, test := range map[string]struct {
+		entry     config.TrustedIssuer
+		discovery string
+	}{
+		"neither":         {config.TrustedIssuer{Issuer: "https://dex.example.com/"}, "https://dex.example.com/.well-known/openid-configuration"},
+		"discovery named": {config.TrustedIssuer{Issuer: "https://idp.example.org", OpenIDConnectURL: "https://idp.example.org/oidc"}, "https://idp.example.org/oidc"},
+		"token endpoint":  {config.TrustedIssuer{Issuer: "https://dex.example.com", TokenURL: "https://dex.example.com/token"}, ""}, //nolint:gosec // G101: a test URL
+	} {
+		t.Run(name, func(t *testing.T) {
+			issuer, err := trustedIssuer(t.Context(), test.entry)
+			require.NoError(t, err)
+			require.Equal(t, test.discovery, issuer.OpenIDConnectURL)
+		})
 	}
 }

@@ -54,7 +54,11 @@ type fakeKagent struct {
 	byRequest    map[string]string // creator|request_id -> session id
 	tasks        map[string]*a2apkg.Task
 	events       []a2apkg.Event // played back by SendStreamingMessage
-	busy         bool           // refuse a new task: one is active
+	// requestMetadata and requestExtensions are the metadata and the
+	// a2a-extensions values of the last SendStreamingMessage.
+	requestMetadata   map[string]any
+	requestExtensions []string
+	busy              bool // refuse a new task: one is active
 	// shareRefusal, when set, is the controller's refusal to share any
 	// session, answered to its creator as FailedPrecondition.
 	shareRefusal string
@@ -261,6 +265,11 @@ func (f *fakeKagent) routedSession(ctx context.Context, tenant, contextID, taskI
 func (f *fakeKagent) SendStreamingMessage(req *a2apb.SendMessageRequest, stream grpc.ServerStreamingServer[a2apb.StreamResponse]) error {
 	ctx := stream.Context()
 	f.record(ctx, "SendStreamingMessage")
+	f.mu.Lock()
+	f.requestMetadata = req.GetMetadata().AsMap()
+	md, _ := metadata.FromIncomingContext(ctx)
+	f.requestExtensions = md.Get("a2a-extensions")
+	f.mu.Unlock()
 	msg, err := pbconv.FromProtoMessage(req.GetMessage())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())

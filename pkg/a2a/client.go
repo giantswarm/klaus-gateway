@@ -22,10 +22,12 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2aext"
 	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -213,7 +215,12 @@ type Config struct {
 	// organization. Nil, or a namespace it does not know, leaves the
 	// namespace's own label (Tenant).
 	Organizations OrganizationNames
-	Logger        *slog.Logger
+	// PropagatedExtensions are the A2A extensions of a request the gateway
+	// serves that a turn passes on to the agent runtime: their activation
+	// and their request metadata entry, as the server's a2a-go propagator
+	// recorded them. Empty passes none.
+	PropagatedExtensions []string
+	Logger               *slog.Logger
 }
 
 // OrganizationNames names an organization namespace (agents-<name>-<random>)
@@ -343,6 +350,7 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 	a2aClient, err := a2aclient.NewFromEndpoints(context.Background(),
 		[]*a2apkg.AgentInterface{{URL: cfg.Target, ProtocolBinding: a2apkg.TransportProtocolGRPC, ProtocolVersion: a2apkg.Version}},
 		a2aclient.WithDefaultsDisabled(),
+		a2aclient.WithCallInterceptors(extensionPropagator(cfg.PropagatedExtensions)),
 		a2aclient.WithTransport(a2apkg.TransportProtocolGRPC, a2aclient.TransportFactoryFn(
 			func(context.Context, *a2apkg.AgentCard, *a2apkg.AgentInterface) (a2aclient.Transport, error) {
 				return transport, nil
@@ -666,4 +674,19 @@ func isSizeRefusal(err error) bool {
 // size limits says "larger than max".
 func isMessageSizeLimit(err error) bool {
 	return errors.Is(err, a2apkg.ErrInternalError) && strings.Contains(err.Error(), "larger than max")
+}
+
+// extensionPropagator passes on the extensions uris names, and only those:
+// their A2A-Extensions activation and their request metadata entry, when ctx
+// carries what the server's a2a-go propagator recorded.
+func extensionPropagator(uris []string) a2aclient.CallInterceptor {
+	uris = slices.Clone(uris)
+	return a2aext.NewClientPropagator(&a2aext.ClientPropagatorConfig{
+		MetadataPredicate: func(_ context.Context, _ *a2apkg.AgentCard, key string) bool {
+			return slices.Contains(uris, key)
+		},
+		HeaderPredicate: func(_ context.Context, _ *a2apkg.AgentCard, key, value string) bool {
+			return strings.EqualFold(key, a2apkg.SvcParamExtensions) && slices.Contains(uris, value)
+		},
+	})
 }

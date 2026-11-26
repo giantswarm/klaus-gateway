@@ -53,7 +53,9 @@ roles separate when reading or writing code:
   `(channel, channelID, threadID)`, binds it to one agent and one kagent Session, and
   runs the turn as A2A v1 over gRPC through agentgateway.
 
-Slack is the only channel. There is no web or CLI adapter, no OpenAI-compatible `/v1` front
+Slack is the only chat channel. Outside A2A clients (an application's backend) reach agents
+through the gateway's A2A server (`pkg/a2aserver`, off by default, `docs/a2a-server.md`). There
+is no web or CLI adapter, no OpenAI-compatible `/v1` front
 door, no Klaus instance path and no lifecycle driver: they were removed in the Slack-only
 release (issue #319).
 
@@ -73,6 +75,7 @@ pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, Agent rost
 pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
 pkg/channels/           Gateway interface (turns, resumes, sessions, thread records) + its Facade
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + Socket Mode
+pkg/a2aserver/          A2A server for outside A2A clients (/a2a): trusted issuers, RFC 8693 exchange, the MCP tool-call metadata extension
 pkg/routing/store/      Store interface + three backends (memory, valkey, bolt); thread state + team reviews, decisions and conversations
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/auth/satoken/       TokenReview verifier of the team-review endpoint

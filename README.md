@@ -43,7 +43,7 @@ the agent carrier under the channel in [docs/kagent-a2a.md](docs/kagent-a2a.md).
 - [Deployment guide](docs/deployment.md) — Helm chart, agentgateway wiring, channel configuration
 - [API reference](docs/api.md) — the HTTP surface: Slack, muster linking, team reviews, admin
 - [kagent integration](docs/kagent-a2a.md) — A2A v1 over gRPC, the Agent roster, one Session per thread, HITL and stop
-- Channel guide: [Slack](docs/channels-slack.md) ([interactive surface](docs/slack-hitl-surface.md))
+- Channel guide: [Slack](docs/channels-slack.md) ([interactive surface](docs/slack-hitl-surface.md)), [A2A server](docs/a2a-server.md)
 - [Upgrade notes](UPGRADE.md) — what an operator has to do or decide between releases
 
 ## Quick start

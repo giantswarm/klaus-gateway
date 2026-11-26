@@ -7,13 +7,19 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -73,6 +79,203 @@ type A2AConfig struct {
 	// x_agent-manager_start_session). Every Session a thread runs on is started
 	// through that tool, as the person behind the turn, so it needs OBO.
 	AgentManagerToolsPrefix string
+}
+
+// A2AServerConfig holds the A2A server (pkg/a2aserver).
+type A2AServerConfig struct {
+	// Enabled serves the channel at /a2a and its Agent Card.
+	Enabled bool
+	// PublicURL is the gateway's public base URL the Agent Card names.
+	PublicURL string
+	// IssuersFile names the YAML list of trusted issuers Load reads into
+	// Issuers.
+	IssuersFile string
+	// Issuers are the identity providers whose tokens are accepted. It is
+	// exclusive with the single-issuer fields Issuer to ExchangeConnectorID.
+	Issuers []TrustedIssuer
+	// Issuer is the identity provider an A2A client's token is issued by.
+	Issuer string
+	// JWKSURL is where the issuer's keys are read; empty means Issuer + /keys.
+	JWKSURL string
+	// Audience is the client an A2A client's token must be issued for.
+	Audience string
+	// AllowedClients are the clients whose tokens are accepted, read from a
+	// token's azp. Empty means any client except ExchangeClientID.
+	AllowedClients []string
+	// TokenURL is the issuer's token endpoint; empty means Issuer + /token.
+	// Without ExchangeTokenURL it is also the exchange's endpoint.
+	TokenURL string
+	// ExchangeConnectorID names the identity provider connector that
+	// verifies an A2A client's token in the exchange.
+	ExchangeConnectorID string
+	// ExchangeTokenURL is the token endpoint of the identity provider the
+	// exchange runs at, whichever issuer the A2A client's token is from.
+	ExchangeTokenURL string
+	// ExchangeClientID and ExchangeClientSecretFile are the gateway's own
+	// confidential client the RFC 8693 exchange authenticates as.
+	ExchangeClientID         string
+	ExchangeClientSecretFile string
+	// ExchangeAudiences are the clients the exchanged token is issued for.
+	ExchangeAudiences []string
+	// CAFile optionally names a PEM bundle trusted next to the system roots
+	// for the exchange's identity provider and for the single issuer.
+	CAFile string
+	// ToolCallMetadataKeys are the metadata keys an A2A client may send
+	// values for through the MCP tool-call metadata A2A extension. Empty does not offer
+	// the extension.
+	ToolCallMetadataKeys []string
+	// MaxBodyBytes caps an /a2a request body; a larger one is refused with
+	// 413 before it is decoded.
+	MaxBodyBytes int64
+}
+
+// DefaultA2AServerMaxBodyBytes is the default /a2a request body cap, 2 MiB.
+const DefaultA2AServerMaxBodyBytes = 2 << 20
+
+// TrustedIssuer is one identity provider whose tokens the A2A server accepts.
+// A token is matched to the entry by its iss and verified with that entry
+// alone.
+type TrustedIssuer struct {
+	// Name names the issuer's security scheme in the Agent Card.
+	Name string `yaml:"name"`
+	// Issuer is the token's iss, exactly.
+	Issuer string `yaml:"issuer"`
+	// JWKSURL is the issuer's key set.
+	JWKSURL string `yaml:"jwksUrl"`
+	// TokenURL is the issuer's token endpoint. Set, the Agent Card declares
+	// the issuer as an OAuth 2.0 client credentials scheme at it.
+	TokenURL string `yaml:"tokenUrl"`
+	// MetadataURL is the issuer's RFC 8414 authorization server metadata
+	// the OAuth 2.0 scheme names. It needs TokenURL.
+	MetadataURL string `yaml:"metadataUrl"`
+	// OpenIDConnectURL is the issuer's OpenID Connect discovery document.
+	// Without TokenURL the Agent Card declares the issuer as an OpenID
+	// Connect scheme at it; empty means Issuer +
+	// /.well-known/openid-configuration. It excludes TokenURL.
+	OpenIDConnectURL string `yaml:"openIdConnectUrl"`
+	// Audience is the client a token must be issued for.
+	Audience string `yaml:"audience"`
+	// AllowedClients are the clients whose tokens are accepted, read from a
+	// token's azp. Empty means any client except the exchange client.
+	AllowedClients []string `yaml:"allowedClients"`
+	// ConnectorID names the connector of the exchange's identity provider
+	// that verifies this issuer's tokens.
+	ConnectorID string `yaml:"connectorId"`
+	// SubjectTokenType is the RFC 8693 token type of the tokens the issuer
+	// sends, the exchange's subject_token_type: SubjectTokenIDToken or
+	// SubjectTokenAccessToken. Empty means SubjectTokenIDToken.
+	SubjectTokenType string `yaml:"subjectTokenType"`
+	// CAFile optionally names a PEM bundle trusted for the key set next to
+	// the system roots.
+	CAFile string `yaml:"caFile"`
+}
+
+// Subject token types an issuer entry may name (RFC 8693 section 3).
+const (
+	SubjectTokenIDToken     = "urn:ietf:params:oauth:token-type:id_token"     //nolint:gosec // G101: an RFC 8693 identifier, not a credential
+	SubjectTokenAccessToken = "urn:ietf:params:oauth:token-type:access_token" //nolint:gosec // G101: an RFC 8693 identifier, not a credential
+)
+
+// ReadTrustedIssuers reads the YAML list of trusted issuers at path. Unknown
+// fields are refused.
+func ReadTrustedIssuers(path string) ([]TrustedIssuer, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the issuers file is operator configuration (a chart ConfigMap)
+	if err != nil {
+		return nil, fmt.Errorf("read the trusted issuers file: %w", err)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	var issuers []TrustedIssuer
+	if err := decoder.Decode(&issuers); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse the trusted issuers file %s: %w", path, err)
+	}
+	return issuers, nil
+}
+
+// singleIssuer reports whether any single-issuer field is set.
+func (c A2AServerConfig) singleIssuer() bool {
+	return c.Issuer != "" || c.JWKSURL != "" || c.Audience != "" || len(c.AllowedClients) > 0 || c.TokenURL != "" || c.ExchangeConnectorID != ""
+}
+
+// TrustedIssuers returns Issuers or, without them, the one issuer the
+// single-issuer fields describe, named oauth2.
+func (c A2AServerConfig) TrustedIssuers() []TrustedIssuer {
+	if len(c.Issuers) > 0 || !c.singleIssuer() {
+		return c.Issuers
+	}
+	issuer := strings.TrimSuffix(c.Issuer, "/")
+	single := TrustedIssuer{
+		Name:           "oauth2",
+		Issuer:         issuer,
+		JWKSURL:        c.JWKSURL,
+		TokenURL:       c.TokenURL,
+		Audience:       c.Audience,
+		AllowedClients: c.AllowedClients,
+		ConnectorID:    c.ExchangeConnectorID,
+		CAFile:         c.CAFile,
+	}
+	if single.JWKSURL == "" {
+		single.JWKSURL = issuer + "/keys"
+	}
+	if single.TokenURL == "" {
+		single.TokenURL = issuer + "/token"
+	}
+	return []TrustedIssuer{single}
+}
+
+// ExchangeEndpoint is the token endpoint the exchange runs at:
+// ExchangeTokenURL or, without it, the single issuer's token endpoint.
+func (c A2AServerConfig) ExchangeEndpoint() string {
+	if c.ExchangeTokenURL != "" || len(c.Issuers) > 0 {
+		return c.ExchangeTokenURL
+	}
+	if c.TokenURL != "" {
+		return c.TokenURL
+	}
+	if c.Issuer == "" {
+		return ""
+	}
+	return strings.TrimSuffix(c.Issuer, "/") + "/token"
+}
+
+func (c A2AServerConfig) validate() error {
+	switch {
+	case c.PublicURL == "":
+		return fmt.Errorf("--a2a-server-enabled requires --a2a-server-public-url")
+	case c.MaxBodyBytes <= 0:
+		return fmt.Errorf("--a2a-server-max-body-bytes must be positive")
+	case len(c.Issuers) > 0 && c.singleIssuer():
+		return fmt.Errorf("--a2a-server-issuers-file is exclusive with --a2a-server-issuer, --a2a-server-jwks-url, --a2a-server-audience, --a2a-server-allowed-clients, --a2a-server-token-url and --a2a-server-exchange-connector-id")
+	case len(c.Issuers) == 0 && (c.Issuer == "" || c.Audience == ""):
+		return fmt.Errorf("--a2a-server-enabled requires --a2a-server-issuers-file, or --a2a-server-issuer and --a2a-server-audience")
+	case c.ExchangeEndpoint() == "":
+		return fmt.Errorf("--a2a-server-issuers-file requires --a2a-server-exchange-token-url")
+	case c.ExchangeClientID == "", c.ExchangeClientSecretFile == "", len(c.ExchangeAudiences) == 0:
+		return fmt.Errorf("--a2a-server-enabled requires --a2a-server-exchange-client-id, --a2a-server-exchange-client-secret-file and --a2a-server-exchange-audiences")
+	}
+	names := map[string]bool{}
+	issuers := map[string]bool{}
+	for i, issuer := range c.TrustedIssuers() {
+		switch {
+		case issuer.Name == "", issuer.Issuer == "", issuer.JWKSURL == "", issuer.Audience == "":
+			return fmt.Errorf("issuer %d: name, issuer, jwksUrl and audience are required", i)
+		case names[issuer.Name]:
+			return fmt.Errorf("issuer %d: name %q is not unique", i, issuer.Name)
+		case issuers[issuer.Issuer]:
+			return fmt.Errorf("issuer %d: issuer %q is not unique", i, issuer.Issuer)
+		case issuer.MetadataURL != "" && issuer.TokenURL == "":
+			return fmt.Errorf("issuer %q: metadataUrl needs tokenUrl: the OAuth 2.0 scheme it belongs to is a client credentials flow", issuer.Name)
+		case issuer.OpenIDConnectURL != "" && issuer.TokenURL != "":
+			return fmt.Errorf("issuer %q: openIdConnectUrl and tokenUrl are exclusive: the card declares the issuer either as OpenID Connect or as OAuth 2.0", issuer.Name)
+		case issuer.SubjectTokenType != "" && issuer.SubjectTokenType != SubjectTokenIDToken && issuer.SubjectTokenType != SubjectTokenAccessToken:
+			return fmt.Errorf("issuer %q: subjectTokenType must be %s or %s", issuer.Name, SubjectTokenIDToken, SubjectTokenAccessToken)
+		case slices.Contains(issuer.AllowedClients, c.ExchangeClientID):
+			return fmt.Errorf("issuer %q: allowed clients must not contain the exchange client %q: its tokens are platform tokens", issuer.Name, c.ExchangeClientID)
+		}
+		names[issuer.Name] = true
+		issuers[issuer.Issuer] = true
+	}
+	return nil
 }
 
 // DefaultSlashCommand is the slash command deploy/slack/manifest.yaml
@@ -327,6 +530,7 @@ type Config struct {
 	Slack      SlackConfig
 	A2A        A2AConfig
 	OBO        OBOConfig
+	A2AServer  A2AServerConfig
 	Reviews    ReviewsConfig
 	Refusals   RefusalsConfig
 	Workspaces WorkspacesConfig
@@ -368,6 +572,7 @@ func Defaults() Config {
 		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
 		Valkey:        ValkeyConfig{Timeout: 2 * time.Second},
 		ThreadTTL:     channels.DefaultThreadTTL,
+		A2AServer:     A2AServerConfig{MaxBodyBytes: DefaultA2AServerMaxBodyBytes},
 		Slack: SlackConfig{
 			Enabled:             false,
 			Mode:                "events",
@@ -461,6 +666,31 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
 	fs.DurationVar(&cfg.OBO.MinTokenLifetime, "obo-min-token-lifetime", cfg.OBO.MinTokenLifetime, "Least remaining lifetime of the human token a turn is dispatched with; a cached token with less left is refreshed first, since the agent keeps it for the whole turn. Set it above the longest turn. 0 means 25m; values below 1m are raised to 1m.")
 	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Offer muster's grants in the Slack authorize modal (and Authorize all on Connect prompts). Requires --obo-enabled.")
+	fs.BoolVar(&cfg.A2AServer.Enabled, "a2a-server-enabled", cfg.A2AServer.Enabled, "Serve the A2A server at /a2a and its Agent Card. Requires --a2a-enabled and --obo-muster-url.")
+	fs.StringVar(&cfg.A2AServer.PublicURL, "a2a-server-public-url", cfg.A2AServer.PublicURL, "Public base URL of the gateway the Agent Card names.")
+	fs.StringVar(&cfg.A2AServer.IssuersFile, "a2a-server-issuers-file", cfg.A2AServer.IssuersFile, "YAML list of the issuers whose tokens are accepted, each with its name, issuer, jwksUrl, audience, allowedClients, connectorId and optional metadataUrl, tokenUrl and caFile. Exclusive with the single-issuer flags --a2a-server-issuer to --a2a-server-exchange-connector-id.")
+	fs.StringVar(&cfg.A2AServer.Issuer, "a2a-server-issuer", cfg.A2AServer.Issuer, "Issuer of the A2A clients' tokens.")
+	fs.StringVar(&cfg.A2AServer.JWKSURL, "a2a-server-jwks-url", cfg.A2AServer.JWKSURL, "Key set of the issuer; empty means the issuer + /keys.")
+	fs.StringVar(&cfg.A2AServer.Audience, "a2a-server-audience", cfg.A2AServer.Audience, "Client an A2A client's token must be issued for.")
+	fs.Func("a2a-server-allowed-clients", "Comma-separated clients whose tokens are accepted (the token's azp); empty means any client except --a2a-server-exchange-client-id.", func(v string) error {
+		cfg.A2AServer.AllowedClients = splitCommaList(v)
+		return nil
+	})
+	fs.StringVar(&cfg.A2AServer.TokenURL, "a2a-server-token-url", cfg.A2AServer.TokenURL, "Token endpoint of the issuer, named in the Agent Card; empty means the issuer + /token.")
+	fs.StringVar(&cfg.A2AServer.ExchangeTokenURL, "a2a-server-exchange-token-url", cfg.A2AServer.ExchangeTokenURL, "Token endpoint the exchange runs at, for every issuer. Required with --a2a-server-issuers-file; empty with --a2a-server-issuer means --a2a-server-token-url.")
+	fs.StringVar(&cfg.A2AServer.ExchangeClientID, "a2a-server-exchange-client-id", cfg.A2AServer.ExchangeClientID, "Confidential client the token exchange authenticates as.")
+	fs.StringVar(&cfg.A2AServer.ExchangeClientSecretFile, "a2a-server-exchange-client-secret-file", cfg.A2AServer.ExchangeClientSecretFile, "File holding the exchange client's secret.")
+	fs.StringVar(&cfg.A2AServer.ExchangeConnectorID, "a2a-server-exchange-connector-id", cfg.A2AServer.ExchangeConnectorID, "Identity provider connector that verifies an A2A client's token in the exchange.")
+	fs.Func("a2a-server-exchange-audiences", "Comma-separated clients the exchanged token is issued for: every audience the platform's components check.", func(v string) error {
+		cfg.A2AServer.ExchangeAudiences = splitCommaList(v)
+		return nil
+	})
+	fs.Func("a2a-server-tool-call-metadata-keys", "Comma-separated metadata keys an A2A client may send values for through kagent's MCP tool-call metadata A2A extension; empty does not offer the extension.", func(v string) error {
+		cfg.A2AServer.ToolCallMetadataKeys = splitCommaList(v)
+		return nil
+	})
+	fs.Int64Var(&cfg.A2AServer.MaxBodyBytes, "a2a-server-max-body-bytes", cfg.A2AServer.MaxBodyBytes, "Largest /a2a request body in bytes; a larger one is refused with 413 before it is decoded.")
+	fs.StringVar(&cfg.A2AServer.CAFile, "a2a-server-ca-file", cfg.A2AServer.CAFile, "PEM bundle trusted next to the system roots for the exchange's token endpoint and for --a2a-server-issuer's key set.")
 	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
 	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")
 	fs.Func("reviews-allowed-callers", "Comma-separated ServiceAccounts (system:serviceaccount:<namespace>:<name>) that may post team reviews.", func(v string) error {
@@ -486,6 +716,13 @@ func Load(args []string) (Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	if cfg.A2AServer.IssuersFile != "" {
+		issuers, err := ReadTrustedIssuers(cfg.A2AServer.IssuersFile)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.A2AServer.Issuers = issuers
 	}
 
 	return cfg, nil
@@ -807,6 +1044,17 @@ func (c Config) Validate() error {
 			}
 		default:
 			return fmt.Errorf("invalid --obo-store %q: must be one of memory, bolt, secret", c.OBO.Store)
+		}
+	}
+	if c.A2AServer.Enabled {
+		switch {
+		case !c.A2A.Enabled:
+			return fmt.Errorf("--a2a-server-enabled requires --a2a-enabled")
+		case c.OBO.MusterURL == "":
+			return fmt.Errorf("--a2a-server-enabled requires --obo-muster-url: Sessions are started through agent-manager")
+		}
+		if err := c.A2AServer.validate(); err != nil {
+			return err
 		}
 	}
 	if c.Reviews.Enabled {

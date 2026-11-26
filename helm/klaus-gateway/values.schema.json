@@ -33,6 +33,67 @@
                 }
             }
         },
+        "a2aServer": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "caFile": {
+                    "type": "string"
+                },
+                "caSecret": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "exchange": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "audiences": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "clientId": {
+                            "type": "string"
+                        },
+                        "existingSecret": {
+                            "type": "string"
+                        },
+                        "tokenUrl": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "issuers": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "name",
+                            "issuer",
+                            "jwksUrl",
+                            "audience"
+                        ],
+                        "additionalProperties": true
+                    }
+                },
+                "maxBodyBytes": {
+                    "type": "integer"
+                },
+                "publicUrl": {
+                    "type": "string"
+                },
+                "toolCallMetadataKeys": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "admin": {
             "type": "object",
             "additionalProperties": false,

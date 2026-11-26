@@ -1,0 +1,13 @@
+{{- if .Values.a2aServer.enabled }}
+# The issuers the A2A server trusts, read by --a2a-server-issuers-file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "resource.default.name" . }}-a2a-server-issuers
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+data:
+  issuers.yaml: |
+    {{- toYaml .Values.a2aServer.issuers | nindent 4 }}
+{{- end }}
