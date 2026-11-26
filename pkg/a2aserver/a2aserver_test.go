@@ -22,6 +22,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/a2aserver"
+	"github.com/giantswarm/klaus-gateway/pkg/server"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
@@ -185,7 +186,7 @@ const sessionKey = "com.example/session"
 func serve(t *testing.T, agents a2aserver.Agents, exchanger a2aserver.TokenExchanger) (*httptest.Server, *a2a.AgentCard) {
 	t.Helper()
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(server.New(server.Options{Public: mux}).PublicHandler())
 	t.Cleanup(srv.Close)
 	card := a2aserver.NewCard(a2aserver.CardConfig{URL: srv.URL + "/a2a", Version: "test", Issuers: []a2aserver.TrustedIssuer{
 		{Name: "dex", Issuer: "https://dex.example", Audience: clientAudience, TokenURL: "https://dex.example/token"}, //nolint:gosec // G101: a test URL

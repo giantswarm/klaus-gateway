@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -188,36 +189,19 @@ func (m *Metrics) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			rw := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(rw, r)
+			status := rw.Status()
+			if status == 0 {
+				status = http.StatusOK
+			}
 			labels := prometheus.Labels{
 				labelRoute:  publicRoute,
 				labelMethod: r.Method,
-				labelStatus: strconv.Itoa(rw.status),
+				labelStatus: strconv.Itoa(status),
 			}
 			m.RequestsTotal.With(labels).Inc()
 			m.RequestDuration.With(labels).Observe(time.Since(start).Seconds())
 		})
 	}
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status  int
-	written bool
-}
-
-func (r *statusRecorder) WriteHeader(code int) {
-	if !r.written {
-		r.status = code
-		r.written = true
-	}
-	r.ResponseWriter.WriteHeader(code)
-}
-
-func (r *statusRecorder) Write(b []byte) (int, error) {
-	if !r.written {
-		r.written = true
-	}
-	return r.ResponseWriter.Write(b)
 }
