@@ -141,7 +141,7 @@ func run(args []string) error {
 	// person: agent-manager's start_session, the workspace-manager's tools and
 	// a team review's approval.
 	var musterClient *muster.Client
-	if cfg.OBO.Enabled {
+	if cfg.OBO.Enabled || cfg.A2AServer.Enabled {
 		musterClient = muster.NewClient(cfg.OBO.MusterURL)
 	}
 
@@ -293,10 +293,11 @@ func run(args []string) error {
 		} else {
 			logger.Warn("kagent client without obo: no Session can be started (agent-manager's start_session runs as the linked person)")
 		}
+		organizations := organizationNames(ctx, kube, logger)
 		kagentClient, err := pkga2a.Dial(pkga2a.Config{
 			Target:                  cfg.A2A.URL,
 			Starter:                 starter,
-			Organizations:           organizationNames(ctx, kube, logger),
+			Organizations:           organizations,
 			CAFile:                  cfg.A2A.CAFile,
 			Namespace:               cfg.A2A.Namespace,
 			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
@@ -323,6 +324,11 @@ func run(args []string) error {
 			"ca_file", cfg.A2A.CAFile,
 			"agent_manager_tools_prefix", cfg.A2A.AgentManagerToolsPrefix,
 		)
+		if cfg.A2AServer.Enabled {
+			if err := mountA2AServer(ctx, cfg.A2AServer, kagentClient, organizations, publicMux, logger); err != nil {
+				return fmt.Errorf("a2a server: %w", err)
+			}
+		}
 	}
 
 	// Everything a resubscription needs is wired now: the turns the previous

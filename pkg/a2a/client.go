@@ -26,6 +26,7 @@ import (
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2aext"
 	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -343,6 +344,7 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 	a2aClient, err := a2aclient.NewFromEndpoints(context.Background(),
 		[]*a2apkg.AgentInterface{{URL: cfg.Target, ProtocolBinding: a2apkg.TransportProtocolGRPC, ProtocolVersion: a2apkg.Version}},
 		a2aclient.WithDefaultsDisabled(),
+		a2aclient.WithCallInterceptors(metadataPropagator()),
 		a2aclient.WithTransport(a2apkg.TransportProtocolGRPC, a2aclient.TransportFactoryFn(
 			func(context.Context, *a2apkg.AgentCard, *a2apkg.AgentInterface) (a2aclient.Transport, error) {
 				return transport, nil
@@ -493,6 +495,36 @@ func (c *Client) tenant(ctx context.Context) (string, error) {
 // other value. A session the controller reports SUSPENDED is resumed once and
 // the message sent again.
 func (c *Client) Stream(ctx context.Context, sessionID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
+	return c.StreamWithConfig(ctx, sessionID, msg, nil)
+}
+
+// SendMessage delegates task execution and blocking behavior to the controller.
+func (c *Client) SendMessage(ctx context.Context, sessionID string, message *a2apkg.Message, configuration *a2apkg.SendMessageConfig) (a2apkg.SendMessageResult, error) {
+	callCtx, err := c.a2aCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tenant, err := c.tenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	messageCopy := *message
+	messageCopy.ContextID = sessionID
+	request := &a2apkg.SendMessageRequest{Tenant: tenant, Message: &messageCopy, Config: configuration}
+	for attempt := 0; ; attempt++ {
+		result, err := c.a2a.SendMessage(callCtx, request)
+		if err == nil {
+			return result, nil
+		}
+		refusal := c.mapA2AError(ctx, err)
+		if attempt > 0 || !c.resumeIfSuspended(ctx, sessionID, refusal) {
+			return nil, refusal
+		}
+	}
+}
+
+// StreamWithConfig sends a turn with the caller's response configuration.
+func (c *Client) StreamWithConfig(ctx context.Context, sessionID string, msg *a2apkg.Message, configuration *a2apkg.SendMessageConfig) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
 		callCtx, err := c.a2aCtx(ctx)
 		if err != nil {
@@ -504,12 +536,13 @@ func (c *Client) Stream(ctx context.Context, sessionID string, msg *a2apkg.Messa
 			yield(nil, err)
 			return
 		}
-		msg.ContextID = sessionID
+		messageCopy := *msg
+		messageCopy.ContextID = sessionID
 		resumed := false
 		for {
 			var refused error
 			first := true
-			for event, err := range c.a2a.SendStreamingMessage(callCtx, &a2apkg.SendMessageRequest{Tenant: tenant, Message: msg}) {
+			for event, err := range c.a2a.SendStreamingMessage(callCtx, &a2apkg.SendMessageRequest{Tenant: tenant, Message: &messageCopy, Config: configuration}) {
 				if err != nil {
 					// The controller refuses an oversize request on the stream's first
 					// read. The same refusal later is an event too large for this
@@ -587,6 +620,11 @@ func (c *Client) Subscribe(ctx context.Context, taskID a2apkg.TaskID) iter.Seq2[
 
 // GetTask returns a task of the agent's, found by its id.
 func (c *Client) GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
+	return c.GetTaskWithHistory(ctx, taskID, nil)
+}
+
+// GetTaskWithHistory retrieves at most historyLength recent task messages.
+func (c *Client) GetTaskWithHistory(ctx context.Context, taskID a2apkg.TaskID, historyLength *int) (*a2apkg.Task, error) {
 	callCtx, err := c.a2aCtx(ctx)
 	if err != nil {
 		return nil, err
@@ -595,7 +633,7 @@ func (c *Client) GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Tas
 	if err != nil {
 		return nil, err
 	}
-	task, err := c.a2a.GetTask(callCtx, &a2apkg.GetTaskRequest{Tenant: tenant, ID: taskID})
+	task, err := c.a2a.GetTask(callCtx, &a2apkg.GetTaskRequest{Tenant: tenant, ID: taskID, HistoryLength: historyLength})
 	if err != nil {
 		if isMessageSizeLimit(err) {
 			return nil, fmt.Errorf("%w: %s", ErrTaskTooLarge, err.Error())
@@ -666,4 +704,12 @@ func isSizeRefusal(err error) bool {
 // size limits says "larger than max".
 func isMessageSizeLimit(err error) bool {
 	return errors.Is(err, a2apkg.ErrInternalError) && strings.Contains(err.Error(), "larger than max")
+}
+
+// metadataPropagator forwards the metadata recorded by the server propagator.
+func metadataPropagator() a2aclient.CallInterceptor {
+	return a2aext.NewClientPropagator(&a2aext.ClientPropagatorConfig{
+		MetadataPredicate: func(context.Context, *a2apkg.AgentCard, string) bool { return true },
+		HeaderPredicate:   func(context.Context, *a2apkg.AgentCard, string, string) bool { return false },
+	})
 }

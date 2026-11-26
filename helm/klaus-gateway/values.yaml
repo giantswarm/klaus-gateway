@@ -218,6 +218,83 @@ a2a:
   # x_agent-manager_ (the Agent Platform's server name).
   agentManagerToolsPrefix: ""
 
+# A2A server: an A2A client, such as an application's backend, talks A2A v1.0 to
+# the gateway at /a2a (Agent Card at /.well-known/agent-card.json) with a
+# bearer token one of a2aServer.issuers issued for that issuer's audience. The
+# gateway picks the issuer by the token's iss, checks the token's signature,
+# issuer, audience, expiry and client with that issuer alone, exchanges it
+# at the installation's identity provider (RFC 8693) for a token for
+# a2aServer.exchange.audiences and acts with that token only. The A2A tenant names
+# the agent as <organization>/<agent>. Requires a2a.enabled and
+# obo.musterUrl (Sessions start through agent-manager, called through
+# muster); obo.enabled is not needed. The identity provider configuration
+# this relies on is in docs/a2a-server.md: read it before enabling the
+# channel.
+a2aServer:
+  enabled: false
+  # publicUrl is the gateway's public base URL the Agent Card names
+  # (e.g. https://klaus-gateway.example.com). Required when a2aServer.enabled.
+  publicUrl: ""
+  # issuers are the identity providers A2A clients get their token from,
+  # rendered into a ConfigMap the gateway reads. At least one is required
+  # when a2aServer.enabled. Each entry:
+  #   name: the issuer's security scheme in the Agent Card (unique).
+  #   issuer: the token's iss, exactly (unique).
+  #   jwksUrl: the issuer's key set (Dex: <issuer>/keys).
+  #   audience: the client a token must be issued for. For the
+  #     installation's own Dex, keep it apart from a2aServer.exchange.clientId.
+  #   allowedClients: the only clients whose tokens are accepted (azp, or
+  #     the only aud). Empty accepts any client except
+  #     a2aServer.exchange.clientId, whose tokens are always refused.
+  #   connectorId: the connector of the exchange's identity provider that
+  #     verifies this issuer's tokens (Dex's connector_id).
+  #   tokenUrl: the issuer's token endpoint. Set, the Agent Card declares
+  #     the issuer as an OAuth 2.0 client credentials scheme at it.
+  #   metadataUrl: the issuer's RFC 8414 authorization server metadata the
+  #     OAuth 2.0 scheme names. Needs tokenUrl. Not Dex's OpenID Connect
+  #     discovery document.
+  #   openIdConnectUrl: without tokenUrl, the card declares the issuer as an
+  #     OpenID Connect scheme at this discovery document. Empty means
+  #     <issuer>/.well-known/openid-configuration. Excludes tokenUrl.
+  #   subjectTokenType: the RFC 8693 token type of the tokens the issuer
+  #     sends, named in the exchange: urn:ietf:params:oauth:token-type:id_token
+  #     (default) or urn:ietf:params:oauth:token-type:access_token. Dex exchanges an
+  #     access token only through the issuer's userinfo endpoint
+  #     (getUserInfo: true on the connector).
+  #   caFile: a CA bundle path inside the container trusted for jwksUrl,
+  #     e.g. /etc/klaus-gateway/a2a-server-ca/ca.crt from a2aServer.caSecret.
+  #   allowPrivateIpJwksHosts: hostnames whose jwksUrl may resolve to a
+  #     private address (an in-cluster identity provider). jwksUrl must use
+  #     https; any other private, loopback or link-local address is refused.
+  issuers: []  # @schema item: object; itemRequired: [name, issuer, jwksUrl, audience]; itemAdditionalProperties: true
+  exchange:
+    # tokenUrl is the token endpoint of the installation's identity
+    # provider the exchange runs at, for every issuer
+    # (e.g. https://dex.example.com/token). Required when a2aServer.enabled.
+    tokenUrl: ""
+    # clientId is the confidential client the gateway authenticates as for
+    # the token exchange. Required when a2aServer.enabled.
+    clientId: ""
+    # existingSecret names a Secret in the release namespace whose key
+    # client-secret holds clientId's secret. The chart renders no Secret for
+    # it. Required when a2aServer.enabled.
+    existingSecret: ""
+    # audiences are the clients the exchanged token is issued for: every
+    # audience the platform's components check, kagent for kagent and the
+    # Kubernetes API server's client (dex-k8s-authenticator) for muster.
+    # Required when a2aServer.enabled.
+    audiences: []  # @schema item: string
+  # maxBodyBytes caps an /a2a request body; a larger one is refused with
+  # 413 before it is decoded. 2 MiB by default.
+  maxBodyBytes: 2097152
+  # caSecret names a Secret (key ca.crt) with a CA bundle trusted for the
+  # exchange's token endpoint in addition to the system roots, mounted at
+  # /etc/klaus-gateway/a2a-server-ca/ca.crt. Empty trusts the system roots only.
+  caSecret: ""
+  # caFile is a path inside the container to a CA bundle for the exchange's
+  # token endpoint. caSecret takes precedence.
+  caFile: ""
+
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a
 # Kubernetes Secret named by slack.secretName containing the following keys:
