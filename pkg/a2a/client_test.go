@@ -1109,22 +1109,25 @@ func TestClient_Stream_RefusesACollaboratorWithoutTheAgent(t *testing.T) {
 	require.Len(t, f.sent, 1)
 }
 
-func TestClientStreamPassesOrdinaryRequestMetadata(t *testing.T) {
-	const unrelated = "https://example.com/extensions/other/v1"
+func TestClientStreamPassesRequestMetadataAndRequestedExtensions(t *testing.T) {
+	const requested = "https://example.com/extensions/other/v1"
 	fake := readyFake(t)
 	client := fake.serve(t, pkga2a.Config{})
-	ctx, callContext := a2asrv.NewCallContext(asUser(t.Context(), userToken), a2asrv.NewServiceParams(map[string][]string{a2apkg.SvcParamExtensions: {unrelated}}))
+	ctx, callContext := a2asrv.NewCallContext(asUser(t.Context(), userToken), a2asrv.NewServiceParams(map[string][]string{a2apkg.SvcParamExtensions: {requested}}))
 	values := map[string]any{"com.example/session": "ref-1", "plain": "y", "options": map[string]any{"any field": true}}
-	ctx, _, err := a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{MetadataPredicate: func(context.Context, string) bool { return true }}).Before(ctx, callContext, &a2asrv.Request{Payload: &a2apkg.SendMessageRequest{Message: a2apkg.NewMessage(a2apkg.MessageRoleUser), Metadata: values}})
+	ctx, _, err := a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{
+		MetadataPredicate: func(context.Context, string) bool { return true },
+		HeaderPredicate:   func(_ context.Context, key string) bool { return strings.EqualFold(key, a2apkg.SvcParamExtensions) },
+	}).Before(ctx, callContext, &a2asrv.Request{Payload: &a2apkg.SendMessageRequest{Message: a2apkg.NewMessage(a2apkg.MessageRoleUser), Metadata: values}})
 	require.NoError(t, err)
 	for _, err := range client.StreamWithConfig(ctx, sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping")), nil) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, values, fake.requestMetadata)
-	require.NotContains(t, fake.requestExtensions, unrelated)
-	require.Contains(t, fake.requestExtensions, pkga2a.HITLExtensionURI)
+	require.Equal(t, []string{pkga2a.HITLExtensionURI, requested}, fake.requestExtensions, "the caller's extensions are requested next to HITL")
 	for _, err := range client.StreamWithConfig(asUser(t.Context(), userToken), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping")), nil) {
 		require.NoError(t, err)
 	}
 	require.Empty(t, fake.requestMetadata)
+	require.Equal(t, []string{pkga2a.HITLExtensionURI}, fake.requestExtensions, "a call without a caller requests HITL alone")
 }

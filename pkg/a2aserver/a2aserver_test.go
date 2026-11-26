@@ -339,7 +339,7 @@ func TestMalformedRequestMetadataIsRefusedBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestStreamingMetadataNeedsNoExtensionHeader(t *testing.T) {
+func TestRequestedExtensionsReachTheAgent(t *testing.T) {
 	agents := &fakeAgents{}
 	server, _ := serve(t, agents)
 	values := map[string]any{sessionKey: "ref-1"}
@@ -360,7 +360,27 @@ func TestStreamingMetadataNeedsNoExtensionHeader(t *testing.T) {
 	require.Empty(t, response.Header.Get("A2A-Extensions"))
 	require.Contains(t, string(events), "TASK_STATE_COMPLETED")
 	require.Equal(t, values, agents.metadata[0])
-	require.Empty(t, agents.extensions[0])
+	require.Equal(t, []string{"https://example.com/extensions/other/v1"}, agents.extensions[0])
+}
+
+func TestExtensionDataIsKeyedByItsRequestedURI(t *testing.T) {
+	const extension = "https://example.com/extensions/geolocation/v1"
+	values := map[string]any{extension: map[string]any{"latitude": 37.7749}}
+	params := map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": values}
+
+	agents := &fakeAgents{}
+	server, _ := serve(t, agents)
+	_, body := postJSONRPC(t, server.URL, extension, params)
+	require.Nil(t, body.Error, "the requested extension owns its key")
+	require.Equal(t, values, agents.metadata[0])
+	require.Equal(t, []string{extension}, agents.extensions[0])
+
+	agents = &fakeAgents{}
+	server, _ = serve(t, agents)
+	_, body = postJSONRPC(t, server.URL, "", params)
+	require.NotNil(t, body.Error, "without the extension requested, the key is an invalid MCP _meta key")
+	require.Equal(t, -32602, body.Error.Code)
+	require.Empty(t, agents.streamed)
 }
 
 type jsonrpcResponse struct {

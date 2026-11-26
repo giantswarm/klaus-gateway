@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -25,7 +26,7 @@ type mcpRequestMetadataInterceptor struct {
 
 // Before validates the metadata of every request that carries it: the server
 // propagator forwards it, whichever method the request is for.
-func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, _ *a2asrv.CallContext, request *a2asrv.Request) (context.Context, any, error) {
+func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallContext, request *a2asrv.Request) (context.Context, any, error) {
 	var metadata map[string]any
 	switch payload := request.Payload.(type) {
 	case *a2a.SendMessageRequest:
@@ -37,11 +38,21 @@ func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, _ *a2asrv.Call
 			metadata = payload.Metadata
 		}
 	}
-	return ctx, nil, validateMCPRequestMetadata(metadata)
+	var requested []string
+	if callCtx != nil {
+		requested = callCtx.Extensions().RequestedURIs()
+	}
+	return ctx, nil, validateMCPRequestMetadata(metadata, requested)
 }
 
-func validateMCPRequestMetadata(values map[string]any) error {
+// validateMCPRequestMetadata checks the keys bound for MCP _meta. A key
+// naming an extension the caller requested holds that extension's data
+// (A2A, "Extensions") and belongs to the agent's extension, not to MCP.
+func validateMCPRequestMetadata(values map[string]any, requestedExtensions []string) error {
 	for key := range values {
+		if slices.Contains(requestedExtensions, key) {
+			continue
+		}
 		switch {
 		case key == "" || !mcpMetadataKey.MatchString(key):
 			return fmt.Errorf("%w: invalid MCP metadata key %q", a2a.ErrInvalidParams, key)
@@ -63,13 +74,14 @@ func reservedMCPPrefix(key string) bool {
 	return len(labels) > 1 && (strings.EqualFold(labels[1], "modelcontextprotocol") || strings.EqualFold(labels[1], "mcp"))
 }
 
-// NewRequestHandler validates and propagates ordinary request metadata.
+// NewRequestHandler validates request metadata and propagates it with the
+// extensions the caller requests (A2A-Extensions) to the agent.
 func NewRequestHandler(handler *Handler) a2asrv.RequestHandler {
 	return &a2asrv.InterceptedHandler{
 		Handler: handler,
 		Interceptors: []a2asrv.CallInterceptor{&mcpRequestMetadataInterceptor{}, a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{
 			MetadataPredicate: func(context.Context, string) bool { return true },
-			HeaderPredicate:   func(context.Context, string) bool { return false },
+			HeaderPredicate:   func(_ context.Context, key string) bool { return strings.EqualFold(key, a2a.SvcParamExtensions) },
 		})},
 		Logger: handler.Logger,
 	}

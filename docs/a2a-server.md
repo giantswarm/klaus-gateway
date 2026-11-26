@@ -47,7 +47,16 @@ No custom A2A or MCP extension, URI, activation header, capability declaration o
 
 Each follow-up or approval request supplies its own values. A request without metadata inherits nothing. Values are added after the model chooses a tool, outside prompts and tool arguments; a server can still expose them to the model by echoing them in results.
 
-See the [metadata contract](a2a-metadata-contract.md) for top-level key validation, transport-owned fields and collision rules. Forwarding data does not implement an extension's behavior or replace capability negotiation for extensions that require it.
+See the [metadata contract](a2a-metadata-contract.md) for top-level key validation, transport-owned fields and collision rules.
+
+## Extensions
+
+The extensions an A2A client requests with the `A2A-Extensions` header are requested on the
+agent's call too, next to kagent's HITL extension, which the gateway always requests. The gateway
+neither activates nor interprets them: the agent runtime does. Request metadata keyed by the
+URI of a requested extension is that extension's data (A2A, Extensions) and is forwarded
+without the MCP key check; the same key without the extension requested is refused as an
+invalid MCP `_meta` key. The public Agent Card declares no extensions.
 
 ## How a request is authenticated
 
