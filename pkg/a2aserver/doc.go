@@ -14,7 +14,7 @@
 // is the context id of every later message.
 //
 // The only A2A extension passed on to the agent runtime is kagent's MCP
-// tool-call metadata extension (ToolCallMetadataExtensionURI): its request
+// tool-call metadata extension (MCPRequestMetadataExtensionURI): its request
 // metadata entry, keyed by metadata key, and its activation travel with the
 // turn unchanged, for the runtime to send to MCP servers that declare support.
 // The payload is an opaque JSON object; every other request metadata entry is

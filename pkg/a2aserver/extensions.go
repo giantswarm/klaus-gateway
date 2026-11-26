@@ -4,66 +4,87 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aext"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// ToolCallMetadataExtensionURI is kagent's A2A extension for request-scoped MCP
-// tool-call metadata. Its request metadata entry is an object keyed by
-// metadata key; the agent runtime sends the payload in tool calls to servers
-// declaring kagent's MCP extension dev.kagent/tool-call-metadata.
-const ToolCallMetadataExtensionURI = "https://kagent.dev/extensions/mcp-tool-call-metadata/v1"
+// MCPRequestMetadataExtensionURI identifies the optional A2A envelope whose
+// entries the runtime forwards directly into MCP tools/call _meta.
+const MCPRequestMetadataExtensionURI = "https://kagent.dev/extensions/mcp-request-metadata/v1"
 
-var toolCallMetadataExtension = &a2a.AgentExtension{URI: ToolCallMetadataExtensionURI}
+var mcpRequestMetadataExtension = &a2a.AgentExtension{URI: MCPRequestMetadataExtensionURI}
 
-func toolCallMetadataCardExtension() a2a.AgentExtension {
+var mcpMetadataKey = regexp.MustCompile(`^([A-Za-z]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z]([A-Za-z0-9-]*[A-Za-z0-9])?)*/)?([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)?$`)
+
+func mcpRequestMetadataCardExtension() a2a.AgentExtension {
 	return a2a.AgentExtension{
-		URI:         ToolCallMetadataExtensionURI,
-		Description: "Request-scoped tool-call metadata for MCP servers that opt in",
+		URI:         MCPRequestMetadataExtensionURI,
+		Description: "Request-scoped metadata forwarded to MCP tools/call",
 	}
 }
 
-type toolCallMetadataInterceptor struct {
+type mcpRequestMetadataInterceptor struct {
 	a2asrv.PassthroughCallInterceptor
 }
 
-func (*toolCallMetadataInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
+func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
 	send, ok := req.Payload.(*a2a.SendMessageRequest)
-	if !ok || send == nil || !callCtx.Extensions().Requested(toolCallMetadataExtension) {
+	if !ok || send == nil || !callCtx.Extensions().Requested(mcpRequestMetadataExtension) {
 		return ctx, nil, nil
 	}
-	if raw, present := send.Metadata[ToolCallMetadataExtensionURI]; present && raw != nil {
-		if _, ok := raw.(map[string]any); !ok {
-			return ctx, nil, fmt.Errorf("%w: metadata %s must be an object", a2a.ErrInvalidParams, ToolCallMetadataExtensionURI)
+	if raw, present := send.Metadata[MCPRequestMetadataExtensionURI]; present && raw != nil {
+		values, ok := raw.(map[string]any)
+		if !ok {
+			return ctx, nil, fmt.Errorf("%w: metadata %s must be an object", a2a.ErrInvalidParams, MCPRequestMetadataExtensionURI)
+		}
+		if err := validateMCPRequestMetadata(values); err != nil {
+			return ctx, nil, err
 		}
 	}
-	activate(ctx, toolCallMetadataExtension)
+	activate(ctx, mcpRequestMetadataExtension)
 	return ctx, nil, nil
 }
 
-// toolCallMetadataPropagator passes the MCP tool-call metadata extension on to the
+func validateMCPRequestMetadata(values map[string]any) error {
+	for key := range values {
+		if !mcpMetadataKey.MatchString(key) {
+			return fmt.Errorf("%w: invalid MCP metadata key %q", a2a.ErrInvalidParams, key)
+		}
+		switch key {
+		case mcp.MetaKeyProtocolVersion, mcp.MetaKeyClientInfo, mcp.MetaKeyClientCapabilities,
+			mcp.MetaKeyLogLevel, mcp.MetaKeyServerInfo, mcp.MetaKeySubscriptionID,
+			"progressToken", "traceparent", "tracestate", "baggage":
+			return fmt.Errorf("%w: MCP metadata key %q is owned by the transport", a2a.ErrInvalidParams, key)
+		}
+	}
+	return nil
+}
+
+// mcpRequestMetadataPropagator passes the MCP request metadata extension on to the
 // agent runtime when the interceptor activated it: its request metadata entry
 // and its A2A-Extensions activation (a2a-go's propagation, read by the kagent
 // client's propagator). No other request metadata key or extension is passed
 // on.
-func toolCallMetadataPropagator() a2asrv.CallInterceptor {
+func mcpRequestMetadataPropagator() a2asrv.CallInterceptor {
 	return a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{
 		MetadataPredicate: func(ctx context.Context, key string) bool {
-			return key == ToolCallMetadataExtensionURI && toolCallMetadataActive(ctx)
+			return key == MCPRequestMetadataExtensionURI && mcpRequestMetadataActive(ctx)
 		},
 		HeaderPredicate: func(ctx context.Context, key string) bool {
-			return strings.EqualFold(key, a2a.SvcParamExtensions) && toolCallMetadataActive(ctx)
+			return strings.EqualFold(key, a2a.SvcParamExtensions) && mcpRequestMetadataActive(ctx)
 		},
 	})
 }
 
-func toolCallMetadataActive(ctx context.Context) bool {
+func mcpRequestMetadataActive(ctx context.Context) bool {
 	extensions, ok := a2asrv.ExtensionsFrom(ctx)
-	return ok && extensions.Active(toolCallMetadataExtension)
+	return ok && extensions.Active(mcpRequestMetadataExtension)
 }
 
 type activationKey struct{}
@@ -155,7 +176,7 @@ func (w *echoWriter) Unwrap() http.ResponseWriter {
 func NewRequestHandler(h *Handler) a2asrv.RequestHandler {
 	return &a2asrv.InterceptedHandler{
 		Handler:      h,
-		Interceptors: []a2asrv.CallInterceptor{&toolCallMetadataInterceptor{}, toolCallMetadataPropagator()},
+		Interceptors: []a2asrv.CallInterceptor{&mcpRequestMetadataInterceptor{}, mcpRequestMetadataPropagator()},
 		Logger:       h.Logger,
 	}
 }

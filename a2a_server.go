@@ -133,10 +133,10 @@ func issuerHTTPClient(caFile string) (*http.Client, error) {
 }
 
 // propagatedExtensions are the A2A extensions the kagent client passes on from
-// a request the A2A server serves: the MCP tool-call metadata extension.
+// a request the A2A server serves: the MCP request metadata extension.
 func propagatedExtensions(cfg config.A2AServerConfig) []string {
 	if !cfg.Enabled {
 		return nil
 	}
-	return []string{a2aserver.ToolCallMetadataExtensionURI}
+	return []string{a2aserver.MCPRequestMetadataExtensionURI}
 }

@@ -268,21 +268,24 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 	}, card.SecuritySchemes["outside"], "an issuer without a token endpoint names its metadata only, never the exchange's identity provider")
 	require.Len(t, card.Security, 3, "any one scheme is enough")
 	require.Equal(t, []any{map[string]any{
-		"uri":         a2aserver.ToolCallMetadataExtensionURI,
-		"description": "Request-scoped tool-call metadata for MCP servers that opt in",
+		"uri":         a2aserver.MCPRequestMetadataExtensionURI,
+		"description": "Request-scoped metadata forwarded to MCP tools/call",
 	}}, card.Capabilities["extensions"])
 	require.Len(t, card.SupportedInterfaces, 1)
 	require.Equal(t, "1.0", card.SupportedInterfaces[0]["protocolVersion"])
 	require.NotContains(t, card.SupportedInterfaces[0], "tenant", "the public card names no agent")
 }
 
-func TestConversationStartsASessionAndPassesOnTheMCPExtensionValues(t *testing.T) {
+func TestConversationStartsASessionAndPassesOnTheMCPRequestMetadataValues(t *testing.T) {
 	agents := &fakeAgents{}
 	_, card := serve(t, agents, staticExchanger{})
-	c := client(t, card, clientToken, a2aserver.ToolCallMetadataExtensionURI)
+	c := client(t, card, clientToken, a2aserver.MCPRequestMetadataExtensionURI)
 	metadata := map[string]any{
-		a2aserver.ToolCallMetadataExtensionURI: map[string]any{sessionKey: map[string]any{"sid": "ref-1"}, "format": "csv"},
-		"com.example/other":                    "stripped",
+		a2aserver.MCPRequestMetadataExtensionURI: map[string]any{
+			sessionKey: map[string]any{"sid": "ref-1"}, "format": "csv",
+			"io.giantswarm/tool-call-metadata": map[string]any{"session": "application-session", "any nested field": true},
+		},
+		"com.example/other": "stripped",
 	}
 
 	first := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("export as csv"))
@@ -299,10 +302,10 @@ func TestConversationStartsASessionAndPassesOnTheMCPExtensionValues(t *testing.T
 
 	require.Equal(t, []string{first.ID}, agents.started, "only the first message starts a Session, keyed by its message id")
 	require.Equal(t, []string{newSessionID, newSessionID}, agents.streamed)
-	require.Equal(t, map[string]any{a2aserver.ToolCallMetadataExtensionURI: metadata[a2aserver.ToolCallMetadataExtensionURI]}, agents.metadata[0], "the extension's complete payload is passed on unchanged, every other entry is dropped")
-	require.Equal(t, []string{a2aserver.ToolCallMetadataExtensionURI}, agents.extensions[0], "the extension's activation is passed on")
+	require.Equal(t, map[string]any{a2aserver.MCPRequestMetadataExtensionURI: metadata[a2aserver.MCPRequestMetadataExtensionURI]}, agents.metadata[0], "the extension's complete payload is passed on unchanged, every other entry is dropped")
+	require.Equal(t, []string{a2aserver.MCPRequestMetadataExtensionURI}, agents.extensions[0], "the extension's activation is passed on")
 	require.Empty(t, agents.metadata[1], "a request without metadata inherits nothing")
-	require.Equal(t, []string{a2aserver.ToolCallMetadataExtensionURI}, agents.extensions[1], "an activation without values is passed on too")
+	require.Equal(t, []string{a2aserver.MCPRequestMetadataExtensionURI}, agents.extensions[1], "an activation without values is passed on too")
 	for i, token := range agents.tokens {
 		require.Equal(t, exchangedToken, token, "the platform is called with the exchanged token only")
 		if agents.refs[i] != "" {
@@ -311,13 +314,13 @@ func TestConversationStartsASessionAndPassesOnTheMCPExtensionValues(t *testing.T
 	}
 }
 
-func TestInactiveMCPExtensionValuesAreNotPassedOn(t *testing.T) {
+func TestInactiveMCPRequestMetadataValuesAreNotPassedOn(t *testing.T) {
 	agents := &fakeAgents{}
 	_, card := serve(t, agents, staticExchanger{})
 	c := client(t, card, clientToken)
 	metadata := map[string]any{
-		a2aserver.ToolCallMetadataExtensionURI: map[string]any{sessionKey: "ref-1", "com.example/unknown": "x"},
-		sessionKey:                             "flat",
+		a2aserver.MCPRequestMetadataExtensionURI: map[string]any{sessionKey: "ref-1", "com.example/unknown": "x"},
+		sessionKey:                               "flat",
 	}
 	_, err := c.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: metadata})
 	require.NoError(t, err)
@@ -326,49 +329,55 @@ func TestInactiveMCPExtensionValuesAreNotPassedOn(t *testing.T) {
 	require.Empty(t, agents.extensions[0])
 }
 
-func TestActivatedMCPExtensionWithoutValuesIsPassedOn(t *testing.T) {
+func TestActivatedMCPRequestMetadataWithoutValuesIsPassedOn(t *testing.T) {
 	for name, metadata := range map[string]map[string]any{
 		"omitted": nil,
-		"null":    {a2aserver.ToolCallMetadataExtensionURI: nil},
-		"empty":   {a2aserver.ToolCallMetadataExtensionURI: map[string]any{}},
+		"null":    {a2aserver.MCPRequestMetadataExtensionURI: nil},
+		"empty":   {a2aserver.MCPRequestMetadataExtensionURI: map[string]any{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agents := &fakeAgents{}
 			server, _ := serve(t, agents, staticExchanger{})
-			response, body := postJSONRPC(t, server.URL, a2aserver.ToolCallMetadataExtensionURI, map[string]any{
+			response, body := postJSONRPC(t, server.URL, a2aserver.MCPRequestMetadataExtensionURI, map[string]any{
 				"tenant":   tenant,
 				"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
 				"metadata": metadata,
 			})
 			require.Equal(t, http.StatusOK, response.StatusCode)
 			require.Nil(t, body.Error)
-			require.Equal(t, a2aserver.ToolCallMetadataExtensionURI, response.Header.Get("A2A-Extensions"))
+			require.Equal(t, a2aserver.MCPRequestMetadataExtensionURI, response.Header.Get("A2A-Extensions"))
 			require.Len(t, agents.streamed, 1)
 			if len(metadata) == 0 {
 				require.Empty(t, agents.metadata[0])
 			} else {
 				require.Equal(t, metadata, agents.metadata[0])
 			}
-			require.Equal(t, []string{a2aserver.ToolCallMetadataExtensionURI}, agents.extensions[0])
+			require.Equal(t, []string{a2aserver.MCPRequestMetadataExtensionURI}, agents.extensions[0])
 			require.Equal(t, exchangedToken, agents.tokens[0])
 		})
 	}
 }
 
-func TestMalformedMCPExtensionPayloadsAreRefusedBeforeAnything(t *testing.T) {
+func TestMalformedMCPRequestMetadataPayloadsAreRefusedBeforeAnything(t *testing.T) {
 	for name, metadata := range map[string]any{
-		"string": "ref-1",
-		"array":  []any{"ref-1"},
-		"number": 42,
-		"bool":   true,
+		"string":                 "ref-1",
+		"array":                  []any{"ref-1"},
+		"number":                 42,
+		"bool":                   true,
+		"invalid top-level name": map[string]any{"not valid/key": "ref-1"},
+		"protocol version":       map[string]any{"io.modelcontextprotocol/protocolVersion": "ref-1"},
+		"client information":     map[string]any{"io.modelcontextprotocol/clientInfo": "ref-1"},
+		"client capabilities":    map[string]any{"io.modelcontextprotocol/clientCapabilities": "ref-1"},
+		"progress token":         map[string]any{"progressToken": "ref-1"},
+		"trace context":          map[string]any{"traceparent": "ref-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agents := &fakeAgents{}
 			srv, _ := serve(t, agents, staticExchanger{})
-			resp, body := postJSONRPC(t, srv.URL, a2aserver.ToolCallMetadataExtensionURI, map[string]any{
+			resp, body := postJSONRPC(t, srv.URL, a2aserver.MCPRequestMetadataExtensionURI, map[string]any{
 				"tenant":   tenant,
 				"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
-				"metadata": map[string]any{a2aserver.ToolCallMetadataExtensionURI: metadata},
+				"metadata": map[string]any{a2aserver.MCPRequestMetadataExtensionURI: metadata},
 			})
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			require.Empty(t, resp.Header.Get("A2A-Extensions"), "a refused extension is not echoed")
@@ -388,12 +397,12 @@ func TestActivatedExtensionIsEchoedAndPassedOnAlone(t *testing.T) {
 	params := map[string]any{
 		"tenant":   tenant,
 		"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
-		"metadata": map[string]any{a2aserver.ToolCallMetadataExtensionURI: map[string]any{sessionKey: "ref-1"}},
+		"metadata": map[string]any{a2aserver.MCPRequestMetadataExtensionURI: map[string]any{sessionKey: "ref-1"}},
 	}
-	resp, body := postJSONRPC(t, srv.URL, a2aserver.ToolCallMetadataExtensionURI+", https://example.com/unknown/v1", params)
+	resp, body := postJSONRPC(t, srv.URL, a2aserver.MCPRequestMetadataExtensionURI+", https://example.com/unknown/v1", params)
 	require.Nil(t, body.Error)
-	require.Equal(t, a2aserver.ToolCallMetadataExtensionURI, resp.Header.Get("A2A-Extensions"), "only the activated extension is echoed")
-	require.Contains(t, agents.extensions[0], a2aserver.ToolCallMetadataExtensionURI, "the activation is passed on; the kagent client keeps only the extensions it propagates")
+	require.Equal(t, a2aserver.MCPRequestMetadataExtensionURI, resp.Header.Get("A2A-Extensions"), "only the activated extension is echoed")
+	require.Contains(t, agents.extensions[0], a2aserver.MCPRequestMetadataExtensionURI, "the activation is passed on; the kagent client keeps only the extensions it propagates")
 
 	resp, body = postJSONRPC(t, srv.URL, "", params)
 	require.Nil(t, body.Error)
@@ -404,7 +413,7 @@ func TestActivatedExtensionIsEchoedAndPassedOnAlone(t *testing.T) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/a2a", bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+clientToken)
-	req.Header.Set("A2A-Extensions", a2aserver.ToolCallMetadataExtensionURI)
+	req.Header.Set("A2A-Extensions", a2aserver.MCPRequestMetadataExtensionURI)
 	req.Header.Set("A2A-Version", "1.0")
 	stream, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -412,7 +421,7 @@ func TestActivatedExtensionIsEchoedAndPassedOnAlone(t *testing.T) {
 	events, err := io.ReadAll(stream.Body)
 	require.NoError(t, err)
 	require.Equal(t, "text/event-stream", stream.Header.Get("Content-Type"))
-	require.Equal(t, a2aserver.ToolCallMetadataExtensionURI, stream.Header.Get("A2A-Extensions"), "a stream names it before its first event")
+	require.Equal(t, a2aserver.MCPRequestMetadataExtensionURI, stream.Header.Get("A2A-Extensions"), "a stream names it before its first event")
 	require.Contains(t, string(events), "TASK_STATE_COMPLETED")
 }
 

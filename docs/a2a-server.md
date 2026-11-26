@@ -27,24 +27,24 @@ organization are offered; an unknown or unoffered tenant is refused with the sam
 A message without a context id starts a platform Session, and the Session id is the
 context id of every later message.
 
-Only the [MCP tool-call metadata extension](#mcp-tool-call-metadata-extension) is passed on
+Only the [MCP request metadata extension](#mcp-request-metadata-extension) is passed on
 to the agent runtime: every other extension and every other key of the request's
 `metadata` stays at the gateway. A later request without values inherits nothing.
 
-## MCP tool-call metadata extension
+## MCP request metadata extension
 
-URI: `https://kagent.dev/extensions/mcp-tool-call-metadata/v1`, kagent's extension (proposed in
-kagent-dev/kagent#3807, contract in kagent's `docs/architecture/mcp-tool-call-metadata-extension.md`).
+URI: `https://kagent.dev/extensions/mcp-request-metadata/v1`, kagent's extension (proposed in
+kagent-dev/kagent#3807, contract in kagent's `docs/architecture/mcp-request-metadata-extension.md`).
 It carries values an A2A client has for MCP servers, for example a session reference,
-through the agent to MCP servers that declare support for the extension.
+through the agent into MCP `tools/call._meta`. It defines no MCP capability or carrier.
 
 **Declaration.** The Agent Card lists the optional extension in `capabilities.extensions`
 whenever the A2A server is enabled:
 
 ```json
 {
-  "uri": "https://kagent.dev/extensions/mcp-tool-call-metadata/v1",
-  "description": "Request-scoped tool-call metadata for MCP servers that opt in"
+  "uri": "https://kagent.dev/extensions/mcp-request-metadata/v1",
+  "description": "Request-scoped metadata forwarded to MCP tools/call"
 }
 ```
 
@@ -54,7 +54,7 @@ the extension's URI, as an object keyed by metadata key:
 
 ```json
 "metadata": {
-  "https://kagent.dev/extensions/mcp-tool-call-metadata/v1": {
+  "https://kagent.dev/extensions/mcp-request-metadata/v1": {
     "com.example/session": {"sid": "<A2A context id>"}
   }
 }
@@ -71,12 +71,11 @@ the extension's URI, as an object keyed by metadata key:
 | Any other extension or metadata key | Not passed on. |
 
 **Past the gateway.** kagent's runtime reads the values only when the extension is
-active. On a tool call it sends the complete payload in `_meta["dev.kagent/tool-call-metadata"]`
-when the MCP server declares `dev.kagent/tool-call-metadata: {}` in its
-`capabilities.extensions` (in `initialize` on MCP
-2025-11-25, in `server/discover` on 2026-07-28). A server that does not declare it gets
-nothing. Every participating server called during the request can receive the full payload;
-there is no per-key filtering. Values are application data, never credentials. They are
+active. On a tool call it adds the complete payload's entries directly to `_meta`,
+without checking server extension declarations or changing the metadata identifiers.
+Every MCP server called during the request can receive the full payload;
+there is no per-key filtering. This does not declare support for, negotiate or implement
+the MCP extensions whose data the caller supplies. Values are application data, never credentials. They are
 added after the model chose the tool, never as tool arguments;
 an MCP server that echoes a value in its result can still show it to the model.
 
@@ -84,6 +83,9 @@ an MCP server that echoes a value in its result can still show it to the model.
 carries them again; a request without them runs its tool calls without them. The A2A
 context id is the recommended session reference; the MCP server binds it to the caller
 its token names.
+
+See the [metadata contract](a2a-metadata-contract.md) for top-level key validation,
+SDK-owned fields, collision rules and an application metadata example.
 
 ## How a request is authenticated
 
