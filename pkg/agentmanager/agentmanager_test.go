@@ -42,6 +42,17 @@ func starterWith(t *testing.T, tools map[string]func(map[string]any) mustertest.
 	return agentmanager.New(muster.NewClient(srv.URL), prefix, options), srv
 }
 
+// start starts a Session of the Agent namespace/name as the gateway does, as
+// bearer with request id req-1: its target, then the start by that target.
+func start(starter *agentmanager.Starter, namespace, name, sessionName string, grant workspaces.Grant) (pkga2a.Session, error) {
+	ctx := context.Background()
+	target, err := starter.Target(ctx, bearer, namespace, name)
+	if err != nil {
+		return pkga2a.Session{}, err
+	}
+	return starter.StartSession(ctx, bearer, target, "req-1", sessionName, grant)
+}
+
 // The two contracts of agent-manager: the one whose start_session takes an
 // organization's agent by the organization's name (list_organizations lists
 // an organization by name and namespace), and the one before it, whose
@@ -101,7 +112,7 @@ func TestStartSession_NamesTheAgentAsTheInstallationsAgentManagerTakesIt(t *test
 			}
 			starter, srv := starterWith(t, tools)
 
-			_, err := starter.StartSession(context.Background(), bearer, tc.namespace, "billing", "req-1", "", workspaces.Grant{})
+			_, err := start(starter, tc.namespace, "billing", "", workspaces.Grant{})
 			require.NoError(t, err)
 			calls := srv.Calls()
 			require.Len(t, calls, tc.calls)
@@ -139,7 +150,7 @@ func TestStartSession_RefusesASessionOutsideTheOrganization(t *testing.T) {
 			return mustertest.Answer{Text: `{"session":{"id":"` + sessionID + `","state":"RUNTIME_STATE_READY","agent":{"namespace":"kagent","name":"billing"}}}`}
 		},
 	})
-	_, err := starter.StartSession(context.Background(), bearer, "agents-acme", "billing", "req-1", "", workspaces.Grant{})
+	_, err := start(starter, "agents-acme", "billing", "", workspaces.Grant{})
 	require.ErrorContains(t, err, "not in organization acme")
 }
 
@@ -173,7 +184,7 @@ func TestStartSession_CarriesTheOrganizationsRefusal(t *testing.T) {
 				prefix + "list_organizations": func(map[string]any) mustertest.Answer { return mustertest.Answer{Text: listed} },
 				tool:                          func(map[string]any) mustertest.Answer { return mustertest.Answer{IsError: true, Text: tc.answer} },
 			})
-			_, err := starter.StartSession(context.Background(), bearer, "agents-acme", "billing", "req-1", "", workspaces.Grant{})
+			_, err := start(starter, "agents-acme", "billing", "", workspaces.Grant{})
 			require.ErrorIs(t, err, tc.is)
 			var unavailable *pkga2a.AgentUnavailableError
 			var notFound *pkga2a.AgentNotFoundError
@@ -196,7 +207,7 @@ func TestStartSession_CallsStartSessionAsThePerson(t *testing.T) {
 		Text: `{"session":{"id":"` + sessionID + `","contextId":"` + sessionID + `","state":"RUNTIME_STATE_READY","agent":{"namespace":"kagent","name":"sre-agent"}}}`,
 	})
 
-	session, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "restart kong", workspaces.Grant{})
+	session, err := start(starter, "kagent", "sre-agent", "restart kong", workspaces.Grant{})
 	require.NoError(t, err)
 	require.Equal(t, pkga2a.Session{ID: sessionID, State: "RUNTIME_STATE_READY"}, session)
 	require.True(t, session.Ready())
@@ -224,7 +235,7 @@ func TestStartSession_PassesTheWorkspaceGrant(t *testing.T) {
 	auth, err := workspaces.New(muster.NewClient(wm.URL), "x_workspace-manager_").Authorize(context.Background(), bearer, "platform")
 	require.NoError(t, err)
 
-	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", auth.Grant)
+	_, err = start(starter, "kagent", "sre-agent", "", auth.Grant)
 	require.NoError(t, err)
 	calls := srv.Calls()
 	require.Len(t, calls, 1)
@@ -236,7 +247,7 @@ func TestStartSession_CarriesAFailedSessionsReason(t *testing.T) {
 		Text: `{"session":{"id":"` + sessionID + `","state":"RUNTIME_STATE_FAILED","failure":{"reason":"ImagePullBackOff"}}}`,
 	})
 
-	session, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	session, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 	require.NoError(t, err)
 	require.Equal(t, "ImagePullBackOff", session.Failure)
 }
@@ -269,13 +280,13 @@ func TestStartSession_MapsRefusals(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			starter, _ := starterAnswering(t, tc.answer)
-			_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+			_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 			require.ErrorIs(t, err, tc.is)
 		})
 	}
 
 	starter, _ := starterAnswering(t, mustertest.Answer{IsError: true, Text: "conflict: conflict: kagent: a session of agent kagent/sre-agent: Agent has no ready revision"})
-	_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 	var unavailable *pkga2a.AgentUnavailableError
 	require.ErrorAs(t, err, &unavailable)
 	require.Equal(t, "Agent has no ready revision", unavailable.Reason, "the controller's own sentence, for the agent-not-runnable notice")
@@ -289,7 +300,7 @@ func TestStartSession_MusterRefusingTheTokenIsNoIdentity(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := agentmanager.New(muster.NewClient(srv.URL), prefix, options).StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	_, err := start(agentmanager.New(muster.NewClient(srv.URL), prefix, options), "kagent", "sre-agent", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 }
 
@@ -299,7 +310,7 @@ func TestStartSession_MusterRefusingTheTokenIsNoIdentity(t *testing.T) {
 func TestStartSession_MusterSignInIsConnectRequired(t *testing.T) {
 	const link = "https://muster.example/oauth/proxy/start?state=abc"
 	starter, _ := starterAnswering(t, mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to agent-manager to continue.", URL: link}})
-	_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 	var connect *pkga2a.ConnectRequiredError
 	require.ErrorAs(t, err, &connect)
 	require.Equal(t, link, connect.SignIn.URL)
@@ -316,7 +327,7 @@ func TestStartSession_MusterSignInIsConnectRequired(t *testing.T) {
 			return mustertest.Answer{Text: `{"session":{"id":"` + sessionID + `"}}`}
 		},
 	})
-	_, err = starter.StartSession(context.Background(), bearer, "agents-acme", "billing", "req-1", "", workspaces.Grant{})
+	_, err = start(starter, "agents-acme", "billing", "", workspaces.Grant{})
 	require.ErrorAs(t, err, &connect)
 	require.Equal(t, link, connect.SignIn.URL)
 	require.Len(t, srv.Calls(), 1)
@@ -324,13 +335,13 @@ func TestStartSession_MusterSignInIsConnectRequired(t *testing.T) {
 	// agent-manager's own auth_required, without a link, is a caller the
 	// gateway cannot act for: no identity, as before.
 	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "auth_required: auth required: a commit without the caller's GitHub authorization"})
-	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	_, err = start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 
 	// A refusal that names a server and carries a link, without muster's
 	// sign-in markers, is no challenge: the person gets no Connect prompt.
 	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "rate limited by server 'agent-manager', see https://docs.example/limits"})
-	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	_, err = start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 	require.Error(t, err)
 	require.NotErrorAs(t, err, &connect)
 }
@@ -344,7 +355,7 @@ func TestStartSession_RefusesWhatIsNoSession(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			starter, _ := starterAnswering(t, answer)
-			_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+			_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
 			require.Error(t, err)
 			require.NotErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 		})

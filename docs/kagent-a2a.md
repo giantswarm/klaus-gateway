@@ -159,8 +159,9 @@ thread to exactly one session:
    gateway then starts by `namespace`. No entry, or a lookup that does not answer (no
    organizations on the installation, the tool not behind muster), starts by `namespace`, which
    the later agent-manager refuses for an organization's namespace rather than starting another
-   Agent. Nothing of the lookup is cached, so a first turn costs one more muster call for an
-   organization's Agent, and none more for an Agent of `a2a.namespace`. A refused token or a
+   Agent. The lookup runs once for each start, and the start's unnamed retry (below) names the
+   Agent by its answer; nothing of it is kept between starts, so a first turn costs one more
+   muster call for an organization's Agent, and none more for an Agent of `a2a.namespace`. A refused token or a
    sign-in muster asks for on the lookup is answered as on the start. A start by `organization`
    whose answer does not name that organization (an agent-manager without the argument answered
    it, another replica mid-rollout) is refused: nothing is sent to that Session. agent-manager's refusal of
@@ -172,7 +173,8 @@ thread to exactly one session:
    boundary: the line Slack titles its own session with, the mention and the command
    stripped. A message with nothing to name a conversation after — an upload with no caption —
    starts it unnamed, and a name agent-manager refuses (`invalid_request`) is dropped and the
-   start retried unnamed, with the same request id, rather than failing the turn.
+   start retried unnamed, with the same request id and the Agent named as the refused start
+   named it, rather than failing the turn.
 2. The session id and the agent it belongs to are persisted as fields of the thread's row in
    the routing store (`store.Entry.AgentInstanceID` and `.AgentRef`, the field keeping the
    name it is stored under; key

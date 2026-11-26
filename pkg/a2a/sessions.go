@@ -64,29 +64,41 @@ func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name str
 	if err != nil {
 		return Session{}, err
 	}
-	session, err := c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, name, grant)
+	target, err := c.starter.Target(ctx, token, info.Namespace, info.Name)
+	if err != nil {
+		return Session{}, c.startRefusal(agentRef, err)
+	}
+	session, err := c.starter.StartSession(ctx, token, target, requestID, name, grant)
 	if err != nil && name != "" && errors.Is(err, ErrInvalidSessionName) {
 		// A name the controller will not take costs the name, never the
 		// conversation, so a refused start goes again unnamed. The request id
-		// is reused: a refused start reserved nothing. The retry is the whole
-		// of what is known here: the refusal may just as well be about
-		// something else, in which case it comes back the same way and is
-		// returned below.
+		// is reused: a refused start reserved nothing. So is the target: the
+		// retry names the Agent as the refused start did, without resolving
+		// it again. The retry is the whole of what is known here: the refusal
+		// may just as well be about something else, in which case it comes
+		// back the same way and is returned below.
 		c.logger.Warn("a2a: session start refused, retrying it unnamed", "agent", agentRef, "error", err)
-		session, err = c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, "", grant)
+		session, err = c.starter.StartSession(ctx, token, target, requestID, "", grant)
 	}
 	if err != nil {
-		var unavailable *AgentUnavailableError
-		if errors.As(err, &unavailable) {
-			unavailable.Ref = agentRef
-		}
-		var notPermitted *AgentNotPermittedError
-		if errors.Is(err, ErrAgentNotPermitted) && !errors.As(err, &notPermitted) {
-			return Session{}, c.notPermitted(agentRef, err)
-		}
-		return Session{}, err
+		return Session{}, c.startRefusal(agentRef, err)
 	}
 	return c.awaitReady(ctx, session)
+}
+
+// startRefusal is a SessionStarter's refusal of the Agent agentRef names, as
+// a channel renders it: an unavailable Agent under the ref as selected, and
+// the controller's PermissionDenied as the caller's refusal of that Agent.
+func (c *Client) startRefusal(agentRef string, err error) error {
+	var unavailable *AgentUnavailableError
+	if errors.As(err, &unavailable) {
+		unavailable.Ref = agentRef
+	}
+	var notPermitted *AgentNotPermittedError
+	if errors.Is(err, ErrAgentNotPermitted) && !errors.As(err, &notPermitted) {
+		return c.notPermitted(agentRef, err)
+	}
+	return err
 }
 
 // awaitReady polls the session until it is READY, FAILED, or the deadline

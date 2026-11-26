@@ -8,8 +8,9 @@
 // with the tool's own name (x_agent-manager_start_session).
 //
 // An organization's agent is started by the organization's name where the
-// installation's agent-manager takes it: the Starter learns the organization
-// from agent-manager's list_organizations, as the person.
+// installation's agent-manager takes it: the Starter's Target learns the
+// organization from agent-manager's list_organizations, as the person, once
+// for each start.
 package agentmanager
 
 import (
@@ -77,8 +78,20 @@ func New(tools ToolCaller, prefix string, opts Options) *Starter {
 	}
 }
 
-// StartSession starts the Session of a conversation with the Agent
-// namespace/name as the person bearer belongs to, keyed by requestID and
+// Target is how a start names the Agent namespace/name, asked as the person
+// bearer belongs to: the Agent of an organization by the organization's name
+// where agent-manager takes the organization (organizationOf), any other
+// Agent by its namespace. Its refusals are those of organizationOf.
+func (s *Starter) Target(ctx context.Context, bearer, namespace, name string) (pkga2a.SessionTarget, error) {
+	organization, err := s.organizationOf(ctx, bearer, namespace)
+	if err != nil {
+		return pkga2a.SessionTarget{}, err
+	}
+	return pkga2a.SessionTarget{Namespace: namespace, Name: name, Organization: organization}, nil
+}
+
+// StartSession starts the Session of a conversation with the Agent target
+// names as the person bearer belongs to, keyed by requestID and
 // named name (empty: unnamed), in the workspace a non-zero grant admits the
 // person to (start_session's workspaceGrant), else in none (noWorkspace). It sends no message: the gateway
 // sends the turn itself. agent-manager's refusals map onto the a2a errors a channel
@@ -90,20 +103,17 @@ func New(tools ToolCaller, prefix string, opts Options) *Starter {
 // has not connected a server the start goes through) is a
 // pkga2a.ConnectRequiredError.
 //
-// The Agent of an organization is named by the organization's name and its
-// own (start_session's organization and name) where agent-manager takes the
-// organization (organizationOf); any other Agent by namespace and name.
-func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (pkga2a.Session, error) {
-	ref := namespace + "/" + name
-	organization, err := s.organizationOf(ctx, bearer, namespace)
-	if err != nil {
-		return pkga2a.Session{}, err
-	}
-	args := map[string]any{"name": name, "requestId": requestID}
+// A target with an organization names the Agent by the organization's name
+// and its own (start_session's organization and name); any other by namespace
+// and name.
+func (s *Starter) StartSession(ctx context.Context, bearer string, target pkga2a.SessionTarget, requestID, sessionName string, grant workspaces.Grant) (pkga2a.Session, error) {
+	ref := target.Namespace + "/" + target.Name
+	organization := target.Organization
+	args := map[string]any{"name": target.Name, "requestId": requestID}
 	if organization != "" {
 		args["organization"] = organization
 	} else {
-		args["namespace"] = namespace
+		args["namespace"] = target.Namespace
 	}
 	if sessionName != "" {
 		args["sessionName"] = sessionName
@@ -184,8 +194,9 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 // organization lists an organization by name and namespace alone, while the
 // one before it (AgentPlatformOrganizations, start_session by namespace)
 // lists each with its parent namespace. Nothing is cached: an organization
-// is looked up again for every Session start, so a namespace that changed
-// hands never sends a start to another organization.
+// is looked up again for every Session start (the gateway's unnamed retry of
+// a start takes the start's Target), so a namespace that changed hands never
+// sends a start to another organization.
 //
 // A platform namespace asks nothing. A lookup that does not answer starts by
 // namespace: that is the earlier contract's start, and the later one refuses
