@@ -34,65 +34,19 @@ Zero omits history, a positive limit returns at most that many recent messages, 
 an omitted limit leaves history unrestricted. Negative limits are refused. Recognized
 downstream A2A errors retain their protocol codes with safe descriptions.
 
-Only the [MCP request metadata extension](#mcp-request-metadata-extension) is passed on
-to the agent runtime: every other extension and every other key of the request's
-`metadata` stays at the gateway. A later request without values inherits nothing.
+## Request metadata
 
-## MCP request metadata extension
-
-URI: `https://kagent.dev/extensions/mcp-request-metadata/v1`, kagent's extension (proposed in
-kagent-dev/kagent#3807, contract in kagent's `docs/architecture/mcp-request-metadata-extension.md`).
-It carries values an A2A client has for MCP servers, for example a session reference,
-through the agent into MCP `tools/call._meta`. It defines no MCP capability or carrier.
-
-**Declaration.** The Agent Card lists the optional extension in `capabilities.extensions`
-whenever the A2A server is enabled:
+Request-level `params.metadata` is forwarded unchanged to the agent runtime, which adds its application entries directly to MCP `tools/call` request `_meta`:
 
 ```json
-{
-  "uri": "https://kagent.dev/extensions/mcp-request-metadata/v1",
-  "description": "Request-scoped metadata forwarded to MCP tools/call"
-}
+{"metadata":{"com.example/session":{"sid":"<A2A context id>"},"format":"csv"}}
 ```
 
-**Activation.** The A2A client activates it per request with the `A2A-Extensions`
-header, and puts its values in the request's `params.metadata` under
-the extension's URI, as an object keyed by metadata key:
+No custom A2A or MCP extension, URI, activation header, capability declaration or wrapper is required. Message and part metadata retain their existing meanings. Every called MCP server can receive the full application metadata; there is no application-key or destination filtering. Values are application data, never credentials.
 
-```json
-"metadata": {
-  "https://kagent.dev/extensions/mcp-request-metadata/v1": {
-    "com.example/session": {"sid": "<A2A context id>"}
-  }
-}
-```
+Each follow-up or approval request supplies its own values. A request without metadata inherits nothing. Values are added after the model chooses a tool, outside prompts and tool arguments; a server can still expose them to the model by echoing them in results.
 
-**Gateway rules.**
-
-| Request | Result |
-|---|---|
-| Extension activated, payload is an object | The extension's activation and its complete metadata entry are passed on to the agent runtime unchanged (a2a-go's extension propagation), and the response's `A2A-Extensions` header names the extension. |
-| Extension activated, entry omitted, `null`, or an empty object | Activation is passed on and echoed; the entry contributes no tool-call values. |
-| Extension activated, non-null payload is not an object | Refused with JSON-RPC `-32602` (invalid params) before anything runs. |
-| Extension not activated | Its entry is ignored and not echoed. |
-| Any other extension or metadata key | Not passed on. |
-
-**Past the gateway.** kagent's runtime reads the values only when the extension is
-active. On a tool call it adds the complete payload's entries directly to `_meta`,
-without checking server extension declarations or changing the metadata identifiers.
-Every MCP server called during the request can receive the full payload;
-there is no per-key filtering. This does not declare support for, negotiate or implement
-the MCP extensions whose data the caller supplies. Values are application data, never credentials. They are
-added after the model chose the tool, never as tool arguments;
-an MCP server that echoes a value in its result can still show it to the model.
-
-**Every request.** The values are not stored. Each request, an approval's answer included,
-carries them again; a request without them runs its tool calls without them. The A2A
-context id is the recommended session reference; the MCP server binds it to the caller
-its token names.
-
-See the [metadata contract](a2a-metadata-contract.md) for top-level key validation,
-SDK-owned fields, collision rules and an application metadata example.
+See the [metadata contract](a2a-metadata-contract.md) for top-level key validation, transport-owned fields and collision rules. Forwarding data does not implement an extension's behavior or replace capability negotiation for extensions that require it.
 
 ## How a request is authenticated
 

@@ -1,6 +1,7 @@
 package a2a_test
 
 import (
+	"context"
 	"maps"
 	"net"
 	"slices"
@@ -1108,34 +1109,22 @@ func TestClient_Stream_RefusesACollaboratorWithoutTheAgent(t *testing.T) {
 	require.Len(t, f.sent, 1)
 }
 
-func TestClient_Stream_PassesOnOnlyThePropagatedExtensions(t *testing.T) {
-	const served = "https://example.com/ext/values/v1"
-	const other = "https://example.com/ext/other/v1"
-	f := readyFake(t)
-	client := f.serve(t, pkga2a.Config{PropagatedExtensions: []string{served}})
-
-	// A request the gateway serves, as a2a-go's server propagator records it.
-	ctx, callCtx := a2asrv.NewCallContext(asUser(t.Context(), userToken), a2asrv.NewServiceParams(map[string][]string{
-		a2apkg.SvcParamExtensions: {served + ", " + other},
-	}))
-	values := map[string]any{"com.example/session": "ref-1"}
-	ctx, _, err := a2aext.NewServerPropagator(nil).Before(ctx, callCtx, &a2asrv.Request{Payload: &a2apkg.SendMessageRequest{
-		Message:  a2apkg.NewMessage(a2apkg.MessageRoleUser),
-		Metadata: map[string]any{served: values, other: "x", "plain": "y"},
-	}})
+func TestClientStreamPassesOrdinaryRequestMetadata(t *testing.T) {
+	const unrelated = "https://example.com/extensions/other/v1"
+	fake := readyFake(t)
+	client := fake.serve(t, pkga2a.Config{})
+	ctx, callContext := a2asrv.NewCallContext(asUser(t.Context(), userToken), a2asrv.NewServiceParams(map[string][]string{a2apkg.SvcParamExtensions: {unrelated}}))
+	values := map[string]any{"com.example/session": "ref-1", "plain": "y", "options": map[string]any{"any field": true}}
+	ctx, _, err := a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{MetadataPredicate: func(context.Context, string) bool { return true }}).Before(ctx, callContext, &a2asrv.Request{Payload: &a2apkg.SendMessageRequest{Message: a2apkg.NewMessage(a2apkg.MessageRoleUser), Metadata: values}})
 	require.NoError(t, err)
-
-	for _, err := range client.Stream(ctx, sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping"))) {
+	for _, err := range client.StreamWithConfig(ctx, sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping")), nil) {
 		require.NoError(t, err)
 	}
-	require.Equal(t, map[string]any{served: values}, f.requestMetadata, "only the propagated extension's entry is passed on")
-	require.Contains(t, f.requestExtensions, served)
-	require.NotContains(t, f.requestExtensions, other)
-	require.Contains(t, f.requestExtensions, pkga2a.HITLExtensionURI, "the client's own activation is kept")
-
-	for _, err := range client.Stream(asUser(t.Context(), userToken), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping"))) {
+	require.Equal(t, values, fake.requestMetadata)
+	require.NotContains(t, fake.requestExtensions, unrelated)
+	require.Contains(t, fake.requestExtensions, pkga2a.HITLExtensionURI)
+	for _, err := range client.StreamWithConfig(asUser(t.Context(), userToken), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping")), nil) {
 		require.NoError(t, err)
 	}
-	require.Empty(t, f.requestMetadata, "a turn of no served request passes nothing on")
-	require.NotContains(t, f.requestExtensions, served)
+	require.Empty(t, fake.requestMetadata)
 }

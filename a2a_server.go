@@ -65,7 +65,7 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 	}
 	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger})
 	r.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	r.Handle(a2aServerPath, a2aserver.LimitBody(cfg.MaxBodyBytes, auth.Middleware(a2aserver.EchoExtensions(a2asrv.NewJSONRPCHandler(handler)))))
+	r.Handle(a2aServerPath, a2aserver.LimitBody(cfg.MaxBodyBytes, auth.Middleware(a2asrv.NewJSONRPCHandler(handler))))
 	for _, issuer := range issuers {
 		logger.Info("A2A server trusts issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience, "allowed_clients", issuer.AllowedClients, "connector_id", issuer.ConnectorID)
 	}
@@ -130,13 +130,4 @@ func issuerHTTPClient(caFile string) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	return &http.Client{Transport: transport}, nil
-}
-
-// propagatedExtensions are the A2A extensions the kagent client passes on from
-// a request the A2A server serves: the MCP request metadata extension.
-func propagatedExtensions(cfg config.A2AServerConfig) []string {
-	if !cfg.Enabled {
-		return nil
-	}
-	return []string{a2aserver.MCPRequestMetadataExtensionURI}
 }

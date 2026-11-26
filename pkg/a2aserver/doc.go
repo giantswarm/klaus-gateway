@@ -13,10 +13,7 @@
 // context id starts a platform Session through agent-manager; the Session id
 // is the context id of every later message.
 //
-// The only A2A extension passed on to the agent runtime is kagent's MCP
-// tool-call metadata extension (MCPRequestMetadataExtensionURI): its request
-// metadata entry, keyed by metadata key, and its activation travel with the
-// turn unchanged, for the runtime to send to MCP servers that declare support.
-// The payload is an opaque JSON object; every other request metadata entry is
-// dropped.
+// Request-level application metadata is forwarded directly to MCP tool calls.
+// It requires no custom extension, wrapper or activation header.
+
 package a2aserver

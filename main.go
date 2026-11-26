@@ -301,7 +301,6 @@ func run(args []string) error {
 			CAFile:                  cfg.A2A.CAFile,
 			Namespace:               cfg.A2A.Namespace,
 			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
-			PropagatedExtensions:    propagatedExtensions(cfg.A2AServer),
 			Logger:                  logger,
 		})
 		if err != nil {

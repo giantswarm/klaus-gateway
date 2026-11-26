@@ -29,7 +29,7 @@ func NewCard(cfg CardConfig) *a2a.AgentCard {
 		schemes[name] = securityScheme(issuer)
 		requirements = append(requirements, a2a.SecurityRequirements{name: {ScopeOpenID}})
 	}
-	capabilities := a2a.AgentCapabilities{Streaming: true, ExtendedAgentCard: true, Extensions: []a2a.AgentExtension{mcpRequestMetadataCardExtension()}}
+	capabilities := a2a.AgentCapabilities{Streaming: true, ExtendedAgentCard: true}
 	return &a2a.AgentCard{
 		Name:        "Agent Platform",
 		Description: "Agents of the platform. The authenticated extended card lists the agents the caller may use, one interface per agent, its tenant naming the agent.",

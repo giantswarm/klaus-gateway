@@ -195,7 +195,7 @@ func serve(t *testing.T, agents a2aserver.Agents, exchanger a2aserver.TokenExcha
 	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, Realm: "klaus-gateway"}
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}})
-	mux.Handle("/a2a", a2aserver.LimitBody(testBodyLimit, auth.Middleware(a2aserver.EchoExtensions(a2asrv.NewJSONRPCHandler(handler)))))
+	mux.Handle("/a2a", a2aserver.LimitBody(testBodyLimit, auth.Middleware(a2asrv.NewJSONRPCHandler(handler))))
 	return srv, card
 }
 
@@ -278,162 +278,103 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 		},
 	}, card.SecuritySchemes["outside"], "an issuer without a token endpoint names its metadata only, never the exchange's identity provider")
 	require.Len(t, card.Security, 3, "any one scheme is enough")
-	require.Equal(t, []any{map[string]any{
-		"uri":         a2aserver.MCPRequestMetadataExtensionURI,
-		"description": "Request-scoped metadata forwarded to MCP tools/call",
-	}}, card.Capabilities["extensions"])
+	require.Empty(t, card.Capabilities["extensions"])
 	require.Len(t, card.SupportedInterfaces, 1)
 	require.Equal(t, "1.0", card.SupportedInterfaces[0]["protocolVersion"])
 	require.NotContains(t, card.SupportedInterfaces[0], "tenant", "the public card names no agent")
 }
 
-func TestConversationStartsASessionAndPassesOnTheMCPRequestMetadataValues(t *testing.T) {
+func TestConversationForwardsRawMetadataWithoutActivation(t *testing.T) {
 	agents := &fakeAgents{}
 	_, card := serve(t, agents, staticExchanger{})
-	c := client(t, card, clientToken, a2aserver.MCPRequestMetadataExtensionURI)
-	metadata := map[string]any{
-		a2aserver.MCPRequestMetadataExtensionURI: map[string]any{
-			sessionKey: map[string]any{"sid": "ref-1"}, "format": "csv",
-			"io.giantswarm/tool-call-metadata": map[string]any{"session": "application-session", "any nested field": true},
-		},
-		"com.example/other": "stripped",
-	}
-
+	caller := client(t, card, clientToken)
+	metadata := map[string]any{sessionKey: map[string]any{"sid": "ref-1"}, "format": "csv", "com.example/options": map[string]any{"any nested field": true}}
 	first := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("export as csv"))
-	result, err := c.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: first, Metadata: metadata})
+	result, err := caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: first, Metadata: metadata})
 	require.NoError(t, err)
 	task, ok := result.(*a2a.Task)
-	require.True(t, ok, "result = %T", result)
-	require.Equal(t, newSessionID, task.ContextID, "the Session id is the context id")
-
+	require.True(t, ok)
+	require.Equal(t, newSessionID, task.ContextID)
 	next := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("and as json"))
 	next.ContextID = task.ContextID
-	_, err = c.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: next})
+	_, err = caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: next})
 	require.NoError(t, err)
-
-	require.Equal(t, []string{first.ID}, agents.started, "only the first message starts a Session, keyed by its message id")
+	require.Equal(t, []string{first.ID}, agents.started)
 	require.Equal(t, []string{newSessionID, newSessionID}, agents.streamed)
-	require.Equal(t, map[string]any{a2aserver.MCPRequestMetadataExtensionURI: metadata[a2aserver.MCPRequestMetadataExtensionURI]}, agents.metadata[0], "the extension's complete payload is passed on unchanged, every other entry is dropped")
-	require.Equal(t, []string{a2aserver.MCPRequestMetadataExtensionURI}, agents.extensions[0], "the extension's activation is passed on")
-	require.Empty(t, agents.metadata[1], "a request without metadata inherits nothing")
-	require.Equal(t, []string{a2aserver.MCPRequestMetadataExtensionURI}, agents.extensions[1], "an activation without values is passed on too")
-	for i, token := range agents.tokens {
-		require.Equal(t, exchangedToken, token, "the platform is called with the exchanged token only")
-		if agents.refs[i] != "" {
-			require.Equal(t, agentRef, agents.refs[i], "the tenant resolves to the agent's reference")
+	require.Equal(t, metadata, agents.metadata[0])
+	require.Empty(t, agents.metadata[1])
+	for index, token := range agents.tokens {
+		require.Equal(t, exchangedToken, token)
+		if agents.refs[index] != "" {
+			require.Equal(t, agentRef, agents.refs[index])
 		}
 	}
-}
-
-func TestInactiveMCPRequestMetadataValuesAreNotPassedOn(t *testing.T) {
-	agents := &fakeAgents{}
-	_, card := serve(t, agents, staticExchanger{})
-	c := client(t, card, clientToken)
-	metadata := map[string]any{
-		a2aserver.MCPRequestMetadataExtensionURI: map[string]any{sessionKey: "ref-1", "com.example/unknown": "x"},
-		sessionKey:                               "flat",
+	for _, extensions := range agents.extensions {
+		require.Empty(t, extensions)
 	}
-	_, err := c.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: metadata})
-	require.NoError(t, err)
-	require.Len(t, agents.metadata, 1)
-	require.Empty(t, agents.metadata[0])
-	require.Empty(t, agents.extensions[0])
 }
 
-func TestActivatedMCPRequestMetadataWithoutValuesIsPassedOn(t *testing.T) {
+func TestRequestMetadataValuesRemainOpaque(t *testing.T) {
 	for name, metadata := range map[string]map[string]any{
-		"omitted": nil,
-		"null":    {a2aserver.MCPRequestMetadataExtensionURI: nil},
-		"empty":   {a2aserver.MCPRequestMetadataExtensionURI: map[string]any{}},
+		"omitted": nil, "empty": {}, "null value": {sessionKey: nil}, "scalar": {sessionKey: 42.0}, "array": {sessionKey: []any{"ref-1", true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agents := &fakeAgents{}
 			server, _ := serve(t, agents, staticExchanger{})
-			response, body := postJSONRPC(t, server.URL, a2aserver.MCPRequestMetadataExtensionURI, map[string]any{
-				"tenant":   tenant,
-				"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
-				"metadata": metadata,
-			})
+			response, body := postJSONRPC(t, server.URL, "", map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": metadata})
 			require.Equal(t, http.StatusOK, response.StatusCode)
 			require.Nil(t, body.Error)
-			require.Equal(t, a2aserver.MCPRequestMetadataExtensionURI, response.Header.Get("A2A-Extensions"))
+			require.Empty(t, response.Header.Get("A2A-Extensions"))
 			require.Len(t, agents.streamed, 1)
 			if len(metadata) == 0 {
 				require.Empty(t, agents.metadata[0])
 			} else {
 				require.Equal(t, metadata, agents.metadata[0])
 			}
-			require.Equal(t, []string{a2aserver.MCPRequestMetadataExtensionURI}, agents.extensions[0])
-			require.Equal(t, exchangedToken, agents.tokens[0])
+			require.Empty(t, agents.extensions[0])
 		})
 	}
 }
 
-func TestMalformedMCPRequestMetadataPayloadsAreRefusedBeforeAnything(t *testing.T) {
-	for name, metadata := range map[string]any{
-		"string":                 "ref-1",
-		"array":                  []any{"ref-1"},
-		"number":                 42,
-		"bool":                   true,
-		"invalid top-level name": map[string]any{"not valid/key": "ref-1"},
-		"protocol version":       map[string]any{"io.modelcontextprotocol/protocolVersion": "ref-1"},
-		"client information":     map[string]any{"io.modelcontextprotocol/clientInfo": "ref-1"},
-		"client capabilities":    map[string]any{"io.modelcontextprotocol/clientCapabilities": "ref-1"},
-		"progress token":         map[string]any{"progressToken": "ref-1"},
-		"trace context":          map[string]any{"traceparent": "ref-1"},
-	} {
-		t.Run(name, func(t *testing.T) {
+func TestMalformedRequestMetadataIsRefusedBeforeDispatch(t *testing.T) {
+	for _, key := range []string{"not valid/key", "io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo", "io.modelcontextprotocol/clientCapabilities", "progressToken", "traceparent"} {
+		t.Run(key, func(t *testing.T) {
 			agents := &fakeAgents{}
-			srv, _ := serve(t, agents, staticExchanger{})
-			resp, body := postJSONRPC(t, srv.URL, a2aserver.MCPRequestMetadataExtensionURI, map[string]any{
-				"tenant":   tenant,
-				"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
-				"metadata": map[string]any{a2aserver.MCPRequestMetadataExtensionURI: metadata},
-			})
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.Empty(t, resp.Header.Get("A2A-Extensions"), "a refused extension is not echoed")
+			server, _ := serve(t, agents, staticExchanger{})
+			response, body := postJSONRPC(t, server.URL, "", map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": map[string]any{key: "ref-1"}})
+			require.Equal(t, http.StatusOK, response.StatusCode)
 			require.NotNil(t, body.Error)
 			require.Equal(t, -32602, body.Error.Code)
-			require.NotContains(t, body.Error.Message, "ref-1", "the refusal never names a value")
-			require.Empty(t, agents.started, "no Session starts")
-			require.Empty(t, agents.streamed, "no turn runs")
-			require.Empty(t, agents.refs, "nothing is asked of the platform")
+			require.NotContains(t, body.Error.Message, "ref-1")
+			require.Empty(t, agents.started)
+			require.Empty(t, agents.streamed)
+			require.Empty(t, agents.refs)
 		})
 	}
 }
 
-func TestActivatedExtensionIsEchoedAndPassedOnAlone(t *testing.T) {
+func TestStreamingMetadataNeedsNoExtensionHeader(t *testing.T) {
 	agents := &fakeAgents{}
-	srv, _ := serve(t, agents, staticExchanger{})
-	params := map[string]any{
-		"tenant":   tenant,
-		"message":  map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}},
-		"metadata": map[string]any{a2aserver.MCPRequestMetadataExtensionURI: map[string]any{sessionKey: "ref-1"}},
-	}
-	resp, body := postJSONRPC(t, srv.URL, a2aserver.MCPRequestMetadataExtensionURI+", https://example.com/unknown/v1", params)
-	require.Nil(t, body.Error)
-	require.Equal(t, a2aserver.MCPRequestMetadataExtensionURI, resp.Header.Get("A2A-Extensions"), "only the activated extension is echoed")
-	require.Contains(t, agents.extensions[0], a2aserver.MCPRequestMetadataExtensionURI, "the activation is passed on; the kagent client keeps only the extensions it propagates")
-
-	resp, body = postJSONRPC(t, srv.URL, "", params)
-	require.Nil(t, body.Error)
-	require.Empty(t, resp.Header.Get("A2A-Extensions"), "an extension the caller did not activate is not echoed")
-
-	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "SendStreamingMessage", "params": params})
+	server, _ := serve(t, agents, staticExchanger{})
+	values := map[string]any{sessionKey: "ref-1"}
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "SendStreamingMessage", "params": map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": values}})
 	require.NoError(t, err)
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/a2a", bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/a2a", bytes.NewReader(payload))
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer "+clientToken)
-	req.Header.Set("A2A-Extensions", a2aserver.MCPRequestMetadataExtensionURI)
-	req.Header.Set("A2A-Version", "1.0")
-	stream, err := http.DefaultClient.Do(req)
+	request.Header.Set("Authorization", "Bearer "+clientToken)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("A2A-Version", "1.0")
+	request.Header.Set("A2A-Extensions", "https://example.com/extensions/other/v1")
+	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)
-	defer func() { _ = stream.Body.Close() }()
-	events, err := io.ReadAll(stream.Body)
+	defer func() { _ = response.Body.Close() }()
+	events, err := io.ReadAll(response.Body)
 	require.NoError(t, err)
-	require.Equal(t, "text/event-stream", stream.Header.Get("Content-Type"))
-	require.Equal(t, a2aserver.MCPRequestMetadataExtensionURI, stream.Header.Get("A2A-Extensions"), "a stream names it before its first event")
+	require.Equal(t, "text/event-stream", response.Header.Get("Content-Type"))
+	require.Empty(t, response.Header.Get("A2A-Extensions"))
 	require.Contains(t, string(events), "TASK_STATE_COMPLETED")
+	require.Equal(t, values, agents.metadata[0])
+	require.Empty(t, agents.extensions[0])
 }
 
 type jsonrpcResponse struct {

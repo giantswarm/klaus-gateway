@@ -1,6 +1,7 @@
 package a2a_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -13,13 +14,12 @@ import (
 )
 
 func TestClientNativeSendPreservesConfigurationAndMetadata(t *testing.T) {
-	const extension = "https://kagent.dev/extensions/mcp-request-metadata/v1"
 	for _, immediately := range []bool{false, true} {
 		fake := readyFake(t)
-		client := fake.serve(t, pkga2a.Config{PropagatedExtensions: []string{extension}})
-		ctx, callContext := a2asrv.NewCallContext(asUser(t.Context(), userToken), a2asrv.NewServiceParams(map[string][]string{a2a.SvcParamExtensions: {extension}}))
-		ctx, _, err := a2aext.NewServerPropagator(nil).Before(ctx, callContext, &a2asrv.Request{Payload: &a2a.SendMessageRequest{
-			Message: a2a.NewMessage(a2a.MessageRoleUser), Metadata: map[string]any{extension: map[string]any{"com.example/session": "ref"}},
+		client := fake.serve(t, pkga2a.Config{})
+		ctx, callContext := a2asrv.NewCallContext(asUser(t.Context(), userToken), a2asrv.NewServiceParams(nil))
+		ctx, _, err := a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{MetadataPredicate: func(context.Context, string) bool { return true }}).Before(ctx, callContext, &a2asrv.Request{Payload: &a2a.SendMessageRequest{
+			Message: a2a.NewMessage(a2a.MessageRoleUser), Metadata: map[string]any{"com.example/session": "ref"},
 		}})
 		require.NoError(t, err)
 		message := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))
@@ -33,11 +33,13 @@ func TestClientNativeSendPreservesConfigurationAndMetadata(t *testing.T) {
 		require.NotNil(t, fake.sendRequest.GetConfiguration().HistoryLength)
 		require.Zero(t, fake.sendRequest.GetConfiguration().GetHistoryLength())
 		require.Equal(t, []string{"text/plain"}, fake.sendRequest.GetConfiguration().GetAcceptedOutputModes())
-		require.Contains(t, fake.requestMetadata, extension)
-		require.Contains(t, fake.requestExtensions, extension)
+		require.Equal(t, map[string]any{"com.example/session": "ref"}, fake.requestMetadata)
 		require.Contains(t, fake.calls, "SendMessage")
 		require.NotContains(t, fake.calls, "SendStreamingMessage")
 		require.Empty(t, message.ContextID)
+		_, err = client.SendMessage(asUser(t.Context(), userToken), sessionID, a2a.NewMessage(a2a.MessageRoleUser), nil)
+		require.NoError(t, err)
+		require.Empty(t, fake.requestMetadata)
 	}
 }
 
