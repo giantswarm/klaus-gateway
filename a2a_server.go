@@ -60,9 +60,10 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 			Audiences:    cfg.ExchangeAudiences,
 			HTTPClient:   exchangeClient,
 		},
-		MaxBodyBytes: cfg.MaxBodyBytes,
-		Realm:        "klaus-gateway",
-		Logger:       logger,
+		MaxBodyBytes:     cfg.MaxBodyBytes,
+		MinTokenLifetime: cfg.MinTokenLifetime,
+		Realm:            "klaus-gateway",
+		Logger:           logger,
 	}
 	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger})
 	r.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
@@ -70,7 +71,7 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 	for _, issuer := range issuers {
 		logger.Info("A2A server trusts issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience, "allowed_clients", issuer.AllowedClients, "connector_id", issuer.ConnectorID)
 	}
-	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeTokenURL, "exchange_audiences", cfg.ExchangeAudiences, "max_body_bytes", cfg.MaxBodyBytes)
+	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeTokenURL, "exchange_audiences", cfg.ExchangeAudiences, "max_body_bytes", cfg.MaxBodyBytes, "min_token_lifetime", cfg.MinTokenLifetime)
 	return nil
 }
 

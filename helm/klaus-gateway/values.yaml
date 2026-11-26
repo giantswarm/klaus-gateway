@@ -287,6 +287,11 @@ a2aServer:
   # maxBodyBytes caps an /a2a request body; a larger one is refused with
   # 413 before it is decoded. 2 MiB by default.
   maxBodyBytes: 2097152
+  # minTokenLifetime is the least lifetime an exchanged token must have left
+  # when a request runs with it: the agent keeps it for the whole turn and
+  # cannot renew it. The identity provider's ID token lifetime (Dex's
+  # expiry.idTokens) must be longer, or every request is refused with 502.
+  minTokenLifetime: 25m
   # caSecret names a Secret (key ca.crt) with a CA bundle trusted for the
   # exchange's token endpoint in addition to the system roots, mounted at
   # /etc/klaus-gateway/a2a-server-ca/ca.crt. Empty trusts the system roots only.

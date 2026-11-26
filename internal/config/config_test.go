@@ -470,6 +470,7 @@ func appBase() config.Config {
 		ExchangeClientSecretFile: "/etc/klaus-gateway/a2a-server/client-secret",
 		ExchangeAudiences:        []string{"kagent"},
 		MaxBodyBytes:             base.A2AServer.MaxBodyBytes,
+		MinTokenLifetime:         base.A2AServer.MinTokenLifetime,
 	}
 	return base
 }
@@ -581,4 +582,18 @@ func TestAppMaxBodyBytes(t *testing.T) {
 	invalid := appBase()
 	invalid.A2AServer.MaxBodyBytes = 0
 	require.ErrorContains(t, invalid.Validate(), "--a2a-server-max-body-bytes")
+}
+
+func TestAppMinTokenLifetime(t *testing.T) {
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, 25*time.Minute, cfg.A2AServer.MinTokenLifetime, "a Slack turn's default")
+
+	cfg, err = config.Load([]string{"--a2a-server-min-token-lifetime", "40m"})
+	require.NoError(t, err)
+	require.Equal(t, 40*time.Minute, cfg.A2AServer.MinTokenLifetime)
+
+	invalid := appBase()
+	invalid.A2AServer.MinTokenLifetime = 30 * time.Second
+	require.ErrorContains(t, invalid.Validate(), "--a2a-server-min-token-lifetime")
 }

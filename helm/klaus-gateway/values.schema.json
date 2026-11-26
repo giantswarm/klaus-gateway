@@ -84,6 +84,9 @@
                 "maxBodyBytes": {
                     "type": "integer"
                 },
+                "minTokenLifetime": {
+                    "type": "string"
+                },
                 "publicUrl": {
                     "type": "string"
                 }

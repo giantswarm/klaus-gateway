@@ -91,9 +91,10 @@ func TestVerifierAcceptsAnApplicationToken(t *testing.T) {
 	v := a2aserver.NewJWTVerifier([]a2aserver.TrustedIssuer{s.trusted("dex", clientAudience, "dex-self")}, exchangeClient)
 
 	token := s.sign(map[string]any{"aud": []string{clientAudience, applicationName}, "azp": applicationName})
-	issuer, err := v.Verify(t.Context(), token)
+	verified, err := v.Verify(t.Context(), token)
 	require.NoError(t, err)
-	require.Equal(t, "dex-self", issuer.ConnectorID)
+	require.Equal(t, "dex-self", verified.Issuer.ConnectorID)
+	require.False(t, verified.Expiry.IsZero(), "the token's exp is returned")
 
 	sameClient := s.sign(map[string]any{"aud": clientAudience})
 	_, err = v.Verify(t.Context(), sameClient)
@@ -138,14 +139,14 @@ func TestVerifierChecksEachTokenAgainstItsOwnIssuer(t *testing.T) {
 		outside.trusted("outside", outsideAudience, "outside-idp", outsideBackend, "outside-backend-2"),
 	}, exchangeClient)
 
-	issuer, err := v.Verify(t.Context(), dex.sign(map[string]any{"aud": clientAudience, "azp": applicationName}))
+	verified, err := v.Verify(t.Context(), dex.sign(map[string]any{"aud": clientAudience, "azp": applicationName}))
 	require.NoError(t, err)
-	require.Equal(t, "dex-self", issuer.ConnectorID)
+	require.Equal(t, "dex-self", verified.Issuer.ConnectorID)
 
-	issuer, err = v.Verify(t.Context(), outside.sign(map[string]any{"aud": outsideAudience, "azp": outsideBackend}))
+	verified, err = v.Verify(t.Context(), outside.sign(map[string]any{"aud": outsideAudience, "azp": outsideBackend}))
 	require.NoError(t, err)
-	require.Equal(t, "outside-idp", issuer.ConnectorID)
-	require.Equal(t, "outside", issuer.Name)
+	require.Equal(t, "outside-idp", verified.Issuer.ConnectorID)
+	require.Equal(t, "outside", verified.Issuer.Name)
 
 	for name, token := range map[string]string{
 		"audience of the other issuer":     outside.sign(map[string]any{"aud": clientAudience, "azp": outsideBackend}),

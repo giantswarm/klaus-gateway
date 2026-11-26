@@ -143,6 +143,7 @@ spec:
         - --a2a-server-exchange-client-secret-file=/etc/klaus-gateway/a2a-server/client-secret
         - --a2a-server-exchange-audiences={{ join "," .exchange.audiences }}
         - --a2a-server-max-body-bytes={{ int64 .maxBodyBytes }}
+        - --a2a-server-min-token-lifetime={{ .minTokenLifetime }}
         {{- if .caSecret }}
         - --a2a-server-ca-file=/etc/klaus-gateway/a2a-server-ca/ca.crt
         {{- else if .caFile }}

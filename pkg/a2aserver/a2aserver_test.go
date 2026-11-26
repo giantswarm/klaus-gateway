@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -23,6 +24,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/a2aserver"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
@@ -41,23 +43,23 @@ const issuerConnector = "dex-self"
 
 type staticVerifier struct{ accept string }
 
-func (v staticVerifier) Verify(_ context.Context, raw string) (a2aserver.TrustedIssuer, error) {
+func (v staticVerifier) Verify(_ context.Context, raw string) (a2aserver.VerifiedToken, error) {
 	if raw != v.accept {
-		return a2aserver.TrustedIssuer{}, errors.New("bad token")
+		return a2aserver.VerifiedToken{}, errors.New("bad token")
 	}
-	return a2aserver.TrustedIssuer{Name: "dex", ConnectorID: issuerConnector}, nil
+	return a2aserver.VerifiedToken{Issuer: a2aserver.TrustedIssuer{Name: "dex", ConnectorID: issuerConnector}, Expiry: time.Now().Add(time.Hour)}, nil
 }
 
 type staticExchanger struct{ err error }
 
-func (e staticExchanger) Exchange(_ context.Context, subject string, issuer a2aserver.TrustedIssuer) (string, error) {
+func (e staticExchanger) Exchange(_ context.Context, subject string, issuer a2aserver.TrustedIssuer) (a2aserver.ExchangedToken, error) {
 	if e.err != nil {
-		return "", e.err
+		return a2aserver.ExchangedToken{}, e.err
 	}
 	if subject != clientToken || issuer.ConnectorID != issuerConnector {
-		return "", a2aserver.ErrExchangeRefused
+		return a2aserver.ExchangedToken{}, a2aserver.ErrExchangeRefused
 	}
-	return exchangedToken, nil
+	return a2aserver.ExchangedToken{Token: exchangedToken, Expiry: time.Now().Add(time.Hour)}, nil
 }
 
 // fakeAgents records what the channel asks of the platform.
@@ -73,6 +75,8 @@ type fakeAgents struct {
 	extensions    [][]string
 	streamErr     error
 	configuration *a2a.SendMessageConfig
+	// startErrs are returned by the next Session starts, one each.
+	startErrs []error
 }
 
 // propagatedExtensions are the A2A-Extensions values ctx passes on.
@@ -100,6 +104,11 @@ func (f *fakeAgents) StartSession(ctx context.Context, agentRef, requestID, _ st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, requestID)
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		return pkga2a.Session{}, err
+	}
 	return pkga2a.Session{ID: newSessionID, State: "READY"}, nil
 }
 
@@ -473,14 +482,16 @@ func TestExchangerSendsAnRFC8693Request(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"` + exchangedToken + `","issued_token_type":"urn:ietf:params:oauth:token-type:id_token","token_type":"bearer"}`))
+		_, _ = w.Write([]byte(`{"access_token":"` + exchangedToken + `","issued_token_type":"urn:ietf:params:oauth:token-type:id_token","token_type":"bearer","expires_in":1800}`))
 	}))
 	t.Cleanup(dex.Close)
 	e := &a2aserver.Exchanger{TokenURL: dex.URL, ClientID: "klaus-gateway-app", ClientSecret: "s3cr3t:/", Audiences: []string{"kagent", "dex-k8s-authenticator"}, HTTPClient: dex.Client()}
 
+	before := time.Now()
 	token, err := e.Exchange(t.Context(), clientToken, a2aserver.TrustedIssuer{ConnectorID: "dex-self"})
 	require.NoError(t, err)
-	require.Equal(t, exchangedToken, token)
+	require.Equal(t, exchangedToken, token.Token)
+	require.WithinRange(t, token.Expiry, before.Add(30*time.Minute), time.Now().Add(30*time.Minute), "expires_in sets the expiry")
 	require.Equal(t, "urn:ietf:params:oauth:grant-type:token-exchange", form.Get("grant_type"))
 	require.Equal(t, "urn:ietf:params:oauth:token-type:id_token", form.Get("subject_token_type"))
 	require.Equal(t, "urn:ietf:params:oauth:token-type:id_token", form.Get("requested_token_type"))
@@ -536,7 +547,7 @@ func TestOversizedBodyIsRefusedBeforeTheExchange(t *testing.T) {
 // countingExchanger is staticExchanger counting its exchanges.
 type countingExchanger struct{ calls atomic.Int32 }
 
-func (e *countingExchanger) Exchange(ctx context.Context, subject string, issuer a2aserver.TrustedIssuer) (string, error) {
+func (e *countingExchanger) Exchange(ctx context.Context, subject string, issuer a2aserver.TrustedIssuer) (a2aserver.ExchangedToken, error) {
 	e.calls.Add(1)
 	return staticExchanger{}.Exchange(ctx, subject, issuer)
 }
@@ -585,4 +596,27 @@ func TestMetadataPrefixesOutsideMCPsReservationPass(t *testing.T) {
 			require.Equal(t, map[string]any{key: "v"}, agents.metadata[0])
 		})
 	}
+}
+
+func TestSessionStartSignInReachesTheCaller(t *testing.T) {
+	const approval = "https://muster.example/approvals/1"
+	agents := &fakeAgents{startErrs: []error{&pkga2a.ConnectRequiredError{SignIn: &muster.SignIn{Message: "Confirm Start session in agent-manager.", URL: approval}}}}
+	_, card := serve(t, agents, staticExchanger{})
+	caller := client(t, card, clientToken)
+	message := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))
+
+	_, err := caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: message})
+	require.ErrorIs(t, err, a2a.ErrUnauthorized)
+	var refusal *a2a.Error
+	require.ErrorAs(t, err, &refusal)
+	metadata, ok := refusal.ErrorInfo().Value["metadata"].(map[string]string)
+	require.True(t, ok, "the step travels in the ErrorInfo detail: %#v", refusal.ErrorInfo().Value)
+	require.Equal(t, approval, metadata["url"])
+	require.Equal(t, "Confirm Start session in agent-manager.", metadata["message"])
+	require.Empty(t, agents.streamed, "no turn runs before the step")
+
+	_, err = caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: message})
+	require.NoError(t, err, "the same message sent again starts the Session")
+	require.Equal(t, []string{message.ID, message.ID}, agents.started, "both starts carry the message id agent-manager deduplicates by")
+	require.Len(t, agents.streamed, 1)
 }

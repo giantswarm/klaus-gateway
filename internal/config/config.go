@@ -108,10 +108,18 @@ type A2AServerConfig struct {
 	// MaxBodyBytes caps an /a2a request body; a larger one is refused with
 	// 413 before it is decoded.
 	MaxBodyBytes int64
+	// MinTokenLifetime is the least lifetime an exchanged token must have
+	// left when a request runs with it: the agent runtime keeps it for the
+	// whole turn.
+	MinTokenLifetime time.Duration
 }
 
 // DefaultA2AServerMaxBodyBytes is the default /a2a request body cap, 2 MiB.
 const DefaultA2AServerMaxBodyBytes = 2 << 20
+
+// DefaultA2AServerMinTokenLifetime is the default least lifetime of an
+// exchanged token, the same as a Slack turn's (--obo-min-token-lifetime).
+const DefaultA2AServerMinTokenLifetime = 25 * time.Minute
 
 // TrustedIssuer is one identity provider whose tokens the A2A server accepts.
 // A token is matched to the entry by its iss and verified with that entry
@@ -185,6 +193,8 @@ func (c A2AServerConfig) validate() error {
 		return fmt.Errorf("--a2a-server-enabled requires --a2a-server-public-url")
 	case c.MaxBodyBytes <= 0:
 		return fmt.Errorf("--a2a-server-max-body-bytes must be positive")
+	case c.MinTokenLifetime < time.Minute:
+		return fmt.Errorf("--a2a-server-min-token-lifetime must be at least 1m")
 	case len(c.Issuers) == 0:
 		return fmt.Errorf("--a2a-server-enabled requires --a2a-server-issuers-file with at least one issuer")
 	case c.ExchangeTokenURL == "":
@@ -515,7 +525,7 @@ func Defaults() Config {
 		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
 		Valkey:        ValkeyConfig{Timeout: 2 * time.Second},
 		ThreadTTL:     channels.DefaultThreadTTL,
-		A2AServer:     A2AServerConfig{MaxBodyBytes: DefaultA2AServerMaxBodyBytes},
+		A2AServer:     A2AServerConfig{MaxBodyBytes: DefaultA2AServerMaxBodyBytes, MinTokenLifetime: DefaultA2AServerMinTokenLifetime},
 		Slack: SlackConfig{
 			Enabled:             false,
 			Mode:                "events",
@@ -620,6 +630,7 @@ func Load(args []string) (Config, error) {
 		return nil
 	})
 	fs.Int64Var(&cfg.A2AServer.MaxBodyBytes, "a2a-server-max-body-bytes", cfg.A2AServer.MaxBodyBytes, "Largest /a2a request body in bytes; a larger one is refused with 413 before it is decoded.")
+	fs.DurationVar(&cfg.A2AServer.MinTokenLifetime, "a2a-server-min-token-lifetime", cfg.A2AServer.MinTokenLifetime, "Least lifetime an exchanged token must have left when a request runs with it; the agent keeps it for the whole turn. The identity provider's token lifetime must be longer. At least 1m.")
 	fs.StringVar(&cfg.A2AServer.CAFile, "a2a-server-ca-file", cfg.A2AServer.CAFile, "PEM bundle trusted next to the system roots for the exchange's token endpoint.")
 	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
 	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")

@@ -12,6 +12,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
@@ -272,7 +273,10 @@ func (h *Handler) refusal(ctx context.Context, op string, err error) error {
 		logger = slog.Default()
 	}
 	logger.InfoContext(ctx, "a2a server: request refused", "op", op, "agent", pkga2a.AgentRefFromContext(ctx), "error", err)
+	var connect *pkga2a.ConnectRequiredError
 	switch {
+	case errors.As(err, &connect) && connect.SignIn != nil:
+		return actionRequired(connect.SignIn)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
 	case errors.Is(err, pkga2a.ErrNoIdentity):
@@ -296,4 +300,14 @@ func (h *Handler) refusal(ctx context.Context, op string, err error) error {
 		}
 	}
 	return fmt.Errorf("%w: the request could not be completed", a2a.ErrInternalError)
+}
+
+// actionRequired asks the caller to act at signIn's URL, a sign-in or an
+// approval muster asks for before the agent can start, then to send the same
+// message again: agent-manager starts a Session once per message id. The URL
+// and message travel as metadata of the error's ErrorInfo, named as in an
+// MCP URL elicitation.
+func actionRequired(signIn *muster.SignIn) error {
+	return a2a.NewError(a2a.ErrUnauthorized, "the caller must complete the step at the URL, then send the same message again").
+		WithErrorInfoMeta(map[string]string{"url": signIn.URL, "message": signIn.Message})
 }

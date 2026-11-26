@@ -81,15 +81,61 @@ Dex (`a2aServer.exchange.tokenUrl`).
    userinfo or a fragment; redirects are refused, and each exchange has a ten-second deadline.
    This Dex exchange profile requires an issued ID token with `token_type=Bearer`
    (case-insensitive). Other usage types, including `N_A` and `DPoP`, are unsupported.
-5. The turn runs with the exchanged token only. The application's token is never sent
+5. The exchanged token must have at least `a2aServer.minTokenLifetime` (25 minutes by
+   default) left: the agent runtime keeps it for the whole turn and cannot renew it. Its
+   lifetime is the earlier of the exchange response's `expires_in` (RFC 8693 section 2.2.1)
+   and the token's `exp`. A shorter or unknown lifetime is refused with 502 and logged as
+   an error, since it means the identity provider issues tokens shorter than a turn.
+6. The turn runs with the exchanged token only. The application's token is never sent
    on.
 
 The audience check in step 3 is the gateway's own: Dex does not check the subject
 token's audience in an exchange (dexidp/dex#4397). The exchanged token's expiry is
-Dex's, not the subject token's: the subject token bounds only the request it came with.
+Dex's, not the subject token's.
+
+A later request with the same application token reuses the exchanged token, while the
+application token is still valid and the exchanged token still has
+`a2aServer.minTokenLifetime` left; otherwise the gateway exchanges again. A client that
+polls `GetTask` therefore causes one exchange per token, not one per poll. The gateway
+keeps at most 10,000 exchanged tokens in memory, keyed by the SHA-256 of the application
+token, and never longer than the application token is valid.
 
 The exchange is where the identity provider decides who may use the channel, so its
 configuration below is part of the channel's security, not an option.
+
+## Sign-ins and tool approvals
+
+muster can ask the person behind a token to act before a tool runs: sign in to a
+connector, or approve the call (tool approval, giantswarm/muster#1912). The person is
+whoever the exchanged token names, and only that person can complete the step, on
+muster's page.
+
+- **Before the agent starts.** When muster asks for a step on agent-manager's
+  `start_session`, `SendMessage` and `SendStreamingMessage` answer with the A2A error
+  `UNAUTHORIZED`. Its `google.rpc.ErrorInfo` detail carries the step in `metadata`:
+  `url` (the page to open) and `message` (muster's words, to show as written). After the
+  step, the client sends the same message again, with the same `messageId`: agent-manager
+  starts one Session per message id, and muster's decision applies to that retry.
+- **During a turn.** The agent runtime relays muster's URL elicitation as kagent's HITL
+  extension: the task stops at `TASK_STATE_INPUT_REQUIRED`, and its status message carries
+  a `url_elicitation_request` (`id`, `server`, `message`, `url`, `elicitation_id`) under
+  `https://kagent.dev/extensions/hitl/v1` in its metadata. The text part also carries the
+  URL. The client answers the task with a `url_elicitation_response` (`accept` or
+  `decline`), as described in [kagent-a2a.md](kagent-a2a.md). A2A 1.0 names
+  `TASK_STATE_AUTH_REQUIRED` for this (section 7.6); the runtime uses
+  `TASK_STATE_INPUT_REQUIRED` because a2a-go ends a streamed execution only on that state
+  (kagent-dev/kagent#2326).
+
+Who can complete a step:
+
+- **A person using an application** (a chat bot that sends its user's token from an
+  outside issuer): that person, who must be able to sign in to muster with the same
+  subject the exchange gives them. With Dex, that means signing in through the same
+  connector, so the connector also needs the `authorization_code` grant, next to the token
+  exchange grant of item 4.
+- **An application acting as itself** (a `client_credentials` token): nobody. No person
+  can sign in as an application, so a tool that asks for approval does not run for it.
+  Approvals for application identities are not supported.
 
 ## Agent Card
 
@@ -139,8 +185,9 @@ under [Outside issuers](#outside-issuers).
    list without it, so only the exchange client can exchange application tokens.
 6. **`client_credentials` in `oauth2.grantTypes`.** Dex v2.46 does not enable it by
    default. It is installation-wide: every confidential client can then use it.
-7. **Short-lived tokens.** An exchanged token can itself be exchanged again while it is
-   valid (dexidp/dex#3546). Keep `expiry.idTokens` short.
+7. **Token lifetime.** `expiry.idTokens` must be longer than `a2aServer.minTokenLifetime`,
+   or every request is refused (step 5). Keep it no longer than that needs: an exchanged
+   token can itself be exchanged again while it is valid (dexidp/dex#3546).
 
 When dexidp/dex#5165 is released, also set `validateTokenExchangeAudience: true` with
 `clientID: <audience>` (the Dex entry's) on the self connector. Together with item 1 it refuses any
@@ -161,7 +208,7 @@ oauth2:
     - client_credentials
 
 expiry:
-  idTokens: 10m
+  idTokens: 30m
 
 connectors:
   - id: dex-self
@@ -282,6 +329,9 @@ a2aServer:
     audiences: [kagent, dex-k8s-authenticator]
   # Largest /a2a request body, 2 MiB by default.
   maxBodyBytes: 2097152
+  # Least lifetime an exchanged token must have left; Dex's expiry.idTokens
+  # must be longer.
+  minTokenLifetime: 25m
   # Secret with key ca.crt, when the exchange's token endpoint is not publicly
   # trusted. An issuer entry names it as caFile: /etc/klaus-gateway/a2a-server-ca/ca.crt.
   caSecret: ""
@@ -310,3 +360,4 @@ renders the exchange client's secret.
 | `--a2a-server-exchange-client-id`, `--a2a-server-exchange-client-secret-file`, `--a2a-server-exchange-audiences` | The exchange client and the audiences it asks for. |
 | `--a2a-server-ca-file` | CA bundle for the exchange's token endpoint. |
 | `--a2a-server-max-body-bytes` | Largest `/a2a` request body; 2 MiB by default. |
+| `--a2a-server-min-token-lifetime` | Least lifetime an exchanged token must have left; 25m by default, at least 1m. |
