@@ -195,7 +195,7 @@ const reviewSignInLink = "https://muster.example/oauth/proxy/start?state=abc123"
 // reviewSignIn is what muster answers for a tool whose server holds no grant
 // for the person yet: a URL elicitation of the sign-in link.
 func reviewSignIn() muster.Result {
-	return muster.Result{SignIn: &muster.SignIn{Message: "Sign in to giantswarm-repo-manager to continue.", URL: reviewSignInLink}}
+	return muster.Result{SignIn: &muster.SignIn{Message: "Sign in to example-repo-manager to continue.", URL: reviewSignInLink}}
 }
 
 // statusLine returns the context line under the review's buttons in its
@@ -239,7 +239,7 @@ func archiveReview() channels.TeamReview {
 		Channel: "C1",
 		Text:    "*Archive* `giantswarm/old-thing`, owned by team-bumblebee.",
 		Link:    "https://github.com/giantswarm/github/pull/4711",
-		Approve: channels.ToolInvocation{Tool: "x_giantswarm-repo-manager_approve_change", Arguments: map[string]any{"pr": 4711}},
+		Approve: channels.ToolInvocation{Tool: "x_example-repo-manager_approve_change", Arguments: map[string]any{"pr": 4711}},
 	}
 }
 
@@ -384,7 +384,7 @@ func TestTeamNotice_RendersWithoutButtons(t *testing.T) {
 }
 
 func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
-	tools := &recordingTools{results: []muster.Result{{Text: "review submitted on giantswarm/github#4711"}}}
+	tools := &recordingTools{results: []muster.Result{{Text: "review submitted on example/org#1"}}}
 	a, srv, fake := teamReviewHarness(t, tools)
 	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
 	require.NoError(t, err)
@@ -394,7 +394,7 @@ func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
 	waitFor(t, "the tool is called once", func() bool { return len(tools.recorded()) == 1 })
 	call := tools.recorded()[0]
 	require.Equal(t, "id-token-U1", call.bearer, "the call runs under the clicking member's own token")
-	require.Equal(t, "x_giantswarm-repo-manager_approve_change", call.tool)
+	require.Equal(t, "x_example-repo-manager_approve_change", call.tool)
 	require.Equal(t, map[string]any{"pr": 4711}, call.args)
 
 	waitFor(t, "the message shows the outcome and the decider", func() bool {
@@ -406,8 +406,8 @@ func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
 // a JSON object by its message field, structured data without one not at all.
 func TestTeamReview_OutcomeShowsTheToolsMessageNotItsJSON(t *testing.T) {
 	for name, tc := range map[string]struct{ result, shown, hidden string }{
-		"plain text":           {result: "review submitted on giantswarm/github#4711", shown: "review submitted on giantswarm/github#4711"},
-		"object with message":  {result: `{"pullRequest":4711,"login":"carol","member":true,"message":"Approved as carol and merged: giantswarm/github#4711."}`, shown: "Approved as carol and merged: giantswarm/github#4711.", hidden: `"login"`},
+		"plain text":           {result: "review submitted on example/org#1", shown: "review submitted on example/org#1"},
+		"object with message":  {result: `{"pullRequest":4711,"login":"carol","member":true,"message":"Approved as carol and merged: example/org#1."}`, shown: "Approved as carol and merged: example/org#1.", hidden: `"login"`},
 		"object without one":   {result: `{"pullRequest":4711,"login":"carol","member":true}`, hidden: `"pullRequest"`},
 		"array":                {result: `[{"pullRequest":4711}]`, hidden: "4711"},
 		"empty":                {result: ""},
@@ -534,7 +534,7 @@ func TestTeamReview_ToolOutageKeepsTheReviewOpen(t *testing.T) {
 func TestTeamReview_SignInThenApproves(t *testing.T) {
 	tools := &recordingTools{results: []muster.Result{
 		reviewSignIn(),
-		{Text: "review submitted on giantswarm/github#4711"},
+		{Text: "review submitted on example/org#1"},
 	}}
 	a, srv, fake := teamReviewHarness(t, tools)
 	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
@@ -552,7 +552,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.Len(t, prompts, 1)
 	require.Equal(t, "U1", prompts[0].params["user"])
 	require.Nil(t, prompts[0].params["thread_ts"], "the prompt is a channel-level ephemeral, where the click happened")
-	require.Contains(t, prompts[0].params["text"], "*Sign in to giantswarm-repo-manager to continue.*\nAsked by *muster* before your approval goes through.")
+	require.Contains(t, prompts[0].params["text"], "*Sign in to example-repo-manager to continue.*\nAsked by *muster* before your approval goes through.")
 	require.Contains(t, prompts[0].params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
 	require.Contains(t, prompts[0].params["text"], "Open it, then choose *Done*: your approval is submitted.")
 	require.Equal(t, []string{"connector_connect", "elicitation_done", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
@@ -620,8 +620,7 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 	require.Len(t, tools.recorded(), 2, "the declined prompt's Sign in submits nothing")
 }
 
-// approvalAsk is muster's URL elicitation of a tool approval (tool approval
-// slice 2): its message, its approval page.
+// approvalAsk is muster's URL elicitation of a tool approval (tool approval): its message, its approval page.
 func approvalAsk() muster.Result {
 	return muster.Result{SignIn: &muster.SignIn{Message: "Confirm Approve change in repo-manager.", URL: "https://muster.example/approvals/0f3a9c", ElicitationID: "el-1"}}
 }
@@ -718,7 +717,7 @@ func TestTeamReview_SurvivesRestart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tools := &recordingTools{results: []muster.Result{
 				{IsError: true, Text: "not a member of team-bumblebee"},
-				{Text: "review submitted on giantswarm/github#4711"},
+				{Text: "review submitted on example/org#1"},
 			}}
 			fake := newFakeSlackAPI()
 			apiURL := fake.server(t).URL
@@ -740,7 +739,7 @@ func TestTeamReview_SurvivesRestart(t *testing.T) {
 			calls := tools.recorded()
 			require.Len(t, calls, 2)
 			require.Equal(t, "id-token-U2", calls[1].bearer)
-			require.Equal(t, "x_giantswarm-repo-manager_approve_change", calls[1].tool)
+			require.Equal(t, "x_example-repo-manager_approve_change", calls[1].tool)
 			wantArgs, _ := json.Marshal(map[string]any{"pr": 4711})
 			gotArgs, _ := json.Marshal(calls[1].args)
 			require.JSONEq(t, string(wantArgs), string(gotArgs), "the arguments reach the tool as posted")
@@ -921,7 +920,7 @@ func TestTeamReview_NeedsToolsAndLinking(t *testing.T) {
 func TestTeamReview_MustersReturnSubmitsTheDecision(t *testing.T) {
 	tools := &recordingTools{results: []muster.Result{
 		reviewSignIn(),
-		{Text: "review submitted on giantswarm/github#4711"},
+		{Text: "review submitted on example/org#1"},
 	}}
 	a, srv, fake := teamReviewHarness(t, tools, func(a *slackadapter.Adapter) {
 		a.MusterURL = "https://muster.example"
@@ -941,7 +940,7 @@ func TestTeamReview_MustersReturnSubmitsTheDecision(t *testing.T) {
 	require.Contains(t, link, "&state=abc123", "muster's own query is kept")
 	require.Contains(t, fake.pathCalls("chat.postEphemeral")[0].params["text"], "`"+strings.ReplaceAll(link, "&", "&amp;")+"`", "the link shown is the link opened")
 
-	getReturn(t, a, mustersReturn(t, link, url.Values{"server": {"giantswarm-repo-manager"}}))
+	getReturn(t, a, mustersReturn(t, link, url.Values{"server": {"example-repo-manager"}}))
 	waitFor(t, "the approval is submitted again as the person", func() bool { return len(tools.recorded()) == 2 })
 	require.NotNil(t, tools.recorded()[1].accepted)
 	waitFor(t, "the message shows the outcome", func() bool {

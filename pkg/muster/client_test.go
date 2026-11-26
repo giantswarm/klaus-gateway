@@ -257,7 +257,7 @@ func TestCallTool_SlowDiscoverStillGetsTheSignIn(t *testing.T) {
 }
 
 // approvalElicitation is the URL elicitation muster answers a call that asks
-// with (tool approval, slice 2): its message says what is asked in plain words,
+// with (tool approval): its message says what is asked in plain words,
 // its URL is muster's approval page and its elicitationId is muster's random id.
 const (
 	approvalMessage       = "Alert Review wants to acknowledge an incident in PagerDuty."
@@ -424,7 +424,7 @@ func TestReturnLink(t *testing.T) {
 }
 
 // The retry after Done carries the identity muster binds a pending approval
-// to (muster decision #81: the person and the calling client, here the same
+// to (the person and the calling client, here the same
 // person's token from the same client, not the MCP session): every call is
 // its own connection, and the retry over a new one carries the asking call's
 // bearer (code review M1-KG-N-01). The fake is

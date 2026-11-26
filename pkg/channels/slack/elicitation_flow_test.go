@@ -15,7 +15,7 @@ import (
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
-// The fixture of a tool approval as muster asks for it (tool approval slice 2)
+// The fixture of a tool approval as muster asks for it
 // and kagent relays it: a url_elicitation_request from server muster, its
 // message the plain-words ask, its URL muster's approval page and its
 // elicitation_id muster's random id.

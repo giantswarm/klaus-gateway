@@ -128,7 +128,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
 	gw.openConversation(t, "C1", "140.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "140.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "140.000", ""))
 
 	var buttonURL, stateID string
 	var ok bool
@@ -197,7 +197,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	dispatched.mu.Lock()
 	replayed := dispatched.msgs[1]
 	dispatched.mu.Unlock()
-	require.Equal(t, "how many nodes in gazelle?", replayed.Text, "the held message itself, not a synthetic continuation")
+	require.Equal(t, "how many nodes in example?", replayed.Text, "the held message itself, not a synthetic continuation")
 	require.Equal(t, "u1@example.com", replayed.Subject, "admitted again as the person, not as their e-mail")
 	require.Equal(t, "U1", replayed.SenderID)
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "Sign in to Giant Swarm", "no sign-in prompt: the replay knows the person")
@@ -220,7 +220,7 @@ func TestSessionConnect_RepromptRefreshesTheCard(t *testing.T) {
 	fake, srv, _ := sessionConnectAdapter(t, gw, &fakeAccepter{})
 
 	gw.openConversation(t, "C1", "150.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "150.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "150.000", ""))
 	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok },
 		flowWait, 20*time.Millisecond, "the first prompt is posted")
 	_, firstState, _, ok := connectButtonIn(postsTo(fake, "U1"))
@@ -253,7 +253,7 @@ func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
 
 	gw.openConversation(t, "C1", "170.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "170.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "170.000", ""))
 	var stateID string
 	require.Eventually(t, func() bool {
 		var ok bool
@@ -297,7 +297,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
 	gw.openConversation(t, "D1", "160.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "how many nodes in gazelle?", "160.000"))
+	sendEvent(t, srv, dmEvent("U1", "how many nodes in example?", "160.000"))
 
 	var firstState string
 	var card recordedCall
@@ -391,7 +391,7 @@ func TestSessionConnect_NotNowDeclinesAndDropsTheHeldMessage(t *testing.T) {
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
 	gw.openConversation(t, "C1", "141.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "141.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "141.000", ""))
 
 	var stateID string
 	require.Eventually(t, func() bool {
@@ -432,7 +432,7 @@ func TestSessionConnect_FailedAcceptDoesNotClaimTheSignIn(t *testing.T) {
 	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
 
 	gw.openConversation(t, "C1", "180.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "180.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "180.000", ""))
 	var stateID string
 	require.Eventually(t, func() bool {
 		var ok bool
@@ -462,7 +462,7 @@ func TestSessionConnect_RefusedRetryIsNotDelivered(t *testing.T) {
 	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
 
 	gw.openConversation(t, "C1", "181.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "181.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "181.000", ""))
 	var stateID string
 	require.Eventually(t, func() bool {
 		var ok bool
@@ -496,7 +496,7 @@ func TestSessionConnect_StillAskedAfterDonePromptsAgainWithoutReplay(t *testing.
 	fake, srv, _ := sessionConnectAdapter(t, gw, accepter)
 
 	gw.openConversation(t, "C1", "182.000", "U1", "test-agent")
-	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "182.000", ""))
+	sendEvent(t, srv, mention("U1", "how many nodes in example?", "182.000", ""))
 	var stateID string
 	require.Eventually(t, func() bool {
 		var ok bool
