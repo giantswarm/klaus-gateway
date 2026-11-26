@@ -67,16 +67,18 @@ type Server struct {
 
 type bearerKey struct{}
 
-// New starts a fake muster; Close stops it.
-func New(tools map[string]func(args map[string]any) Answer) *Server {
+// New starts a fake muster; Close stops it. Options configure its MCP
+// transport, for example the protocol versions it serves.
+func New(tools map[string]func(args map[string]any) Answer, options ...server.StreamableHTTPOption) *Server {
 	s := &Server{Tools: tools}
 	mcpServer := server.NewMCPServer("mustertest", "test")
 	mcpServer.AddTool(mcp.NewTool("call_tool"), s.callTool)
-	handler := server.NewStreamableHTTPServer(mcpServer,
+	options = append([]server.StreamableHTTPOption{
 		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 			return context.WithValue(ctx, bearerKey{}, r.Header.Get("Authorization"))
 		}),
-	)
+	}, options...)
+	handler := server.NewStreamableHTTPServer(mcpServer, options...)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
 	s.Server = httptest.NewServer(mux)

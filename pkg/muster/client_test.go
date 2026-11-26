@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
@@ -252,4 +254,23 @@ func TestCallTool_SlowDiscoverStillGetsTheSignIn(t *testing.T) {
 	res, err := muster.NewClient(slow.URL).CallTool(t.Context(), personToken, "x_agent-manager_start_session", nil)
 	require.NoError(t, err)
 	require.NotNil(t, res.SignIn)
+}
+
+func TestCallTool_FallsBackToTheInitializeHandshake(t *testing.T) {
+	for _, versions := range [][]string{
+		{mcp.ProtocolVersion20251125},
+		{mcp.ProtocolVersion20251125, mcp.ProtocolVersion20250618},
+	} {
+		t.Run(strings.Join(versions, ","), func(t *testing.T) {
+			fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+				"x_repo_approve_change": func(map[string]any) mustertest.Answer { return mustertest.Answer{Text: "review submitted"} },
+			}, server.WithStreamableHTTPProtocolVersions(versions...))
+			defer fake.Close()
+
+			res, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_approve_change", nil)
+			require.NoError(t, err)
+			require.Equal(t, muster.Result{Text: "review submitted", Dispatched: true}, res)
+			require.Len(t, fake.Calls(), 1)
+		})
+	}
 }

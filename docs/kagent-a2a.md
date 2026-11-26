@@ -147,6 +147,9 @@ thread to exactly one session:
    The person is signed in, so the channel answers with its Connect prompt, never the sign-in
    prompt; once the person agreed to open the link it accepts the sign-in, which muster runs
    the start for once the sign-in completed, and runs the turn again.
+   A muster that refuses 2026-07-28 and lists 2025-11-25 among its versions is called on
+   2025-11-25 through the `initialize` handshake; there a sign-in is no URL elicitation the
+   client reads.
 
    **An organization's Agent.** agent-manager's `start_session` takes an organization's Agent
    by the organization's name (`organization`) and refuses its namespace given as `namespace`;
