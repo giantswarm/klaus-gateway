@@ -123,10 +123,6 @@ type A2AServerConfig struct {
 	// CAFile optionally names a PEM bundle trusted next to the system roots
 	// for the exchange's identity provider and for the single issuer.
 	CAFile string
-	// ToolCallMetadataKeys are the metadata keys an A2A client may send
-	// values for through the MCP tool-call metadata A2A extension. Empty does not offer
-	// the extension.
-	ToolCallMetadataKeys []string
 	// MaxBodyBytes caps an /a2a request body; a larger one is refused with
 	// 413 before it is decoded.
 	MaxBodyBytes int64
@@ -692,10 +688,6 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2AServer.ExchangeConnectorID, "a2a-server-exchange-connector-id", cfg.A2AServer.ExchangeConnectorID, "Identity provider connector that verifies an A2A client's token in the exchange.")
 	fs.Func("a2a-server-exchange-audiences", "Comma-separated clients the exchanged token is issued for: every audience the platform's components check.", func(v string) error {
 		cfg.A2AServer.ExchangeAudiences = splitCommaList(v)
-		return nil
-	})
-	fs.Func("a2a-server-tool-call-metadata-keys", "Comma-separated metadata keys an A2A client may send values for through kagent's MCP tool-call metadata A2A extension; empty does not offer the extension.", func(v string) error {
-		cfg.A2AServer.ToolCallMetadataKeys = splitCommaList(v)
 		return nil
 	})
 	fs.Int64Var(&cfg.A2AServer.MaxBodyBytes, "a2a-server-max-body-bytes", cfg.A2AServer.MaxBodyBytes, "Largest /a2a request body in bytes; a larger one is refused with 413 before it is decoded.")

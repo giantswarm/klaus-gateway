@@ -85,12 +85,6 @@
                 },
                 "publicUrl": {
                     "type": "string"
-                },
-                "toolCallMetadataKeys": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 }
             }
         },

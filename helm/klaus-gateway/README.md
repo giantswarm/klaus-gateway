@@ -83,7 +83,6 @@ Slack channel gateway for the Agent Platform's kagent agents
 | a2aServer.exchange.existingSecret | string | `""` |  |
 | a2aServer.exchange.audiences | list | `[]` |  |
 | a2aServer.maxBodyBytes | int | `2097152` |  |
-| a2aServer.toolCallMetadataKeys | list | `[]` |  |
 | a2aServer.caSecret | string | `""` |  |
 | a2aServer.caFile | string | `""` |  |
 | slack.enabled | bool | `false` |  |

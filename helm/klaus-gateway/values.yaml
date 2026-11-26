@@ -287,12 +287,6 @@ a2aServer:
   # maxBodyBytes caps an /a2a request body; a larger one is refused with
   # 413 before it is decoded. 2 MiB by default.
   maxBodyBytes: 2097152
-  # toolCallMetadataKeys are the metadata keys an A2A client may send
-  # values for through kagent's MCP tool-call metadata A2A extension
-  # (https://kagent.dev/extensions/mcp-tool-call-metadata/v1), e.g.
-  # com.example/session. The Agent Card lists them; a request naming
-  # another key is refused. Empty does not offer the extension.
-  toolCallMetadataKeys: []  # @schema item: string
   # caSecret names a Secret (key ca.crt) with a CA bundle trusted for the
   # exchange's token endpoint in addition to the system roots, mounted at
   # /etc/klaus-gateway/a2a-server-ca/ca.crt. Empty trusts the system roots only.

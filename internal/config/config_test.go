@@ -598,12 +598,6 @@ func TestValidate_AppIssuers(t *testing.T) {
 	}
 }
 
-func TestLoad_AppForwardedExtensions(t *testing.T) {
-	cfg, err := config.Load([]string{"--a2a-server-tool-call-metadata-keys", "com.example/session, com.example/config"})
-	require.NoError(t, err)
-	require.Equal(t, []string{"com.example/session", "com.example/config"}, cfg.A2AServer.ToolCallMetadataKeys)
-}
-
 func TestAppMaxBodyBytes(t *testing.T) {
 	cfg, err := config.Load(nil)
 	require.NoError(t, err)

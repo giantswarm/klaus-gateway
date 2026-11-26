@@ -16,7 +16,7 @@
 // The only A2A extension passed on to the agent runtime is kagent's MCP
 // tool-call metadata extension (ToolCallMetadataExtensionURI): its request
 // metadata entry, keyed by metadata key, and its activation travel with the
-// turn unchanged, for the runtime to send to each MCP server the values of the
-// keys that server accepts. The gateway refuses a key it does not accept
-// before anything runs; every other request metadata key is dropped.
+// turn unchanged, for the runtime to send to MCP servers that declare support.
+// The payload is an opaque JSON object; every other request metadata entry is
+// dropped.
 package a2aserver

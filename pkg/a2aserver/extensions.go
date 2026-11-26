@@ -3,9 +3,7 @@ package a2aserver
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 
@@ -16,55 +14,31 @@ import (
 
 // ToolCallMetadataExtensionURI is kagent's A2A extension for request-scoped MCP
 // tool-call metadata. Its request metadata entry is an object keyed by
-// metadata key; the agent runtime sends the values a server accepts in that
-// server's tool calls, under kagent's MCP extension dev.kagent/tool-call-metadata.
-// The card's params name the keys the gateway accepts.
+// metadata key; the agent runtime sends the payload in tool calls to servers
+// declaring kagent's MCP extension dev.kagent/tool-call-metadata.
 const ToolCallMetadataExtensionURI = "https://kagent.dev/extensions/mcp-tool-call-metadata/v1"
-
-// toolCallMetadataParamKeys is the params key listing the accepted metadata
-// keys.
-const toolCallMetadataParamKeys = "keys"
 
 var toolCallMetadataExtension = &a2a.AgentExtension{URI: ToolCallMetadataExtensionURI}
 
-// toolCallMetadataCardExtension declares the MCP tool-call metadata extension,
-// accepting keys.
-func toolCallMetadataCardExtension(keys []string) a2a.AgentExtension {
+func toolCallMetadataCardExtension() a2a.AgentExtension {
 	return a2a.AgentExtension{
 		URI:         ToolCallMetadataExtensionURI,
-		Description: "Values for MCP servers, keyed by metadata key. Only the keys in params.keys are accepted.",
-		Params:      map[string]any{toolCallMetadataParamKeys: slices.Clone(keys)},
+		Description: "Request-scoped tool-call metadata for MCP servers that opt in",
 	}
-}
-
-// toolCallMetadataInterceptor activates the MCP tool-call metadata extension on a
-// message whose caller requested it, when the gateway accepts every key the
-// message's entry names. A non-null entry that is not an object, or a key not
-// accepted, refuses the message with invalid params before anything runs.
-// With no accepted key the extension is not offered and never activated.
-func newToolCallMetadataInterceptor(accepted []string) a2asrv.CallInterceptor {
-	return &toolCallMetadataInterceptor{accepted: slices.Clone(accepted)}
 }
 
 type toolCallMetadataInterceptor struct {
 	a2asrv.PassthroughCallInterceptor
-	accepted []string
 }
 
-func (i *toolCallMetadataInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
+func (*toolCallMetadataInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
 	send, ok := req.Payload.(*a2a.SendMessageRequest)
-	if !ok || send == nil || len(i.accepted) == 0 || !callCtx.Extensions().Requested(toolCallMetadataExtension) {
+	if !ok || send == nil || !callCtx.Extensions().Requested(toolCallMetadataExtension) {
 		return ctx, nil, nil
 	}
 	if raw, present := send.Metadata[ToolCallMetadataExtensionURI]; present && raw != nil {
-		entries, ok := raw.(map[string]any)
-		if !ok {
-			return ctx, nil, fmt.Errorf("%w: metadata %s must be an object keyed by metadata key", a2a.ErrInvalidParams, ToolCallMetadataExtensionURI)
-		}
-		for _, key := range slices.Sorted(maps.Keys(entries)) {
-			if !slices.Contains(i.accepted, key) {
-				return ctx, nil, fmt.Errorf("%w: metadata key %q is not accepted", a2a.ErrInvalidParams, key)
-			}
+		if _, ok := raw.(map[string]any); !ok {
+			return ctx, nil, fmt.Errorf("%w: metadata %s must be an object", a2a.ErrInvalidParams, ToolCallMetadataExtensionURI)
 		}
 	}
 	activate(ctx, toolCallMetadataExtension)
@@ -176,12 +150,12 @@ func (w *echoWriter) Unwrap() http.ResponseWriter {
 }
 
 // NewRequestHandler serves h with the A2A server's call interceptors: the MCP
-// tool-call metadata extension, accepting toolCallMetadataKeys, is checked and
-// activated before the propagator reads its activation.
-func NewRequestHandler(h *Handler, toolCallMetadataKeys []string) a2asrv.RequestHandler {
+// tool-call metadata payload is checked and the extension is activated before
+// the propagator reads its activation.
+func NewRequestHandler(h *Handler) a2asrv.RequestHandler {
 	return &a2asrv.InterceptedHandler{
 		Handler:      h,
-		Interceptors: []a2asrv.CallInterceptor{newToolCallMetadataInterceptor(toolCallMetadataKeys), toolCallMetadataPropagator()},
+		Interceptors: []a2asrv.CallInterceptor{&toolCallMetadataInterceptor{}, toolCallMetadataPropagator()},
 		Logger:       h.Logger,
 	}
 }

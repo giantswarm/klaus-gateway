@@ -47,10 +47,9 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 		issuers = append(issuers, issuer)
 	}
 	card := a2aserver.NewCard(a2aserver.CardConfig{
-		URL:                  strings.TrimSuffix(cfg.PublicURL, "/") + a2aServerPath,
-		Issuers:              issuers,
-		Version:              version.Version(),
-		ToolCallMetadataKeys: cfg.ToolCallMetadataKeys,
+		URL:     strings.TrimSuffix(cfg.PublicURL, "/") + a2aServerPath,
+		Issuers: issuers,
+		Version: version.Version(),
 	})
 	auth := &a2aserver.Authenticator{
 		Verifier: a2aserver.NewJWTVerifier(issuers, cfg.ExchangeClientID),
@@ -64,13 +63,13 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 		Realm:  "klaus-gateway",
 		Logger: logger,
 	}
-	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger}, cfg.ToolCallMetadataKeys)
+	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger})
 	r.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	r.Handle(a2aServerPath, a2aserver.LimitBody(cfg.MaxBodyBytes, auth.Middleware(a2aserver.EchoExtensions(a2asrv.NewJSONRPCHandler(handler)))))
 	for _, issuer := range issuers {
 		logger.Info("A2A server trusts issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience, "allowed_clients", issuer.AllowedClients, "connector_id", issuer.ConnectorID)
 	}
-	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeEndpoint(), "exchange_audiences", cfg.ExchangeAudiences, "tool_call_metadata_keys", cfg.ToolCallMetadataKeys, "max_body_bytes", cfg.MaxBodyBytes)
+	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeEndpoint(), "exchange_audiences", cfg.ExchangeAudiences, "max_body_bytes", cfg.MaxBodyBytes)
 	return nil
 }
 
@@ -134,10 +133,9 @@ func issuerHTTPClient(caFile string) (*http.Client, error) {
 }
 
 // propagatedExtensions are the A2A extensions the kagent client passes on from
-// a request the A2A server serves: the MCP tool-call metadata extension when
-// the server accepts a metadata key.
+// a request the A2A server serves: the MCP tool-call metadata extension.
 func propagatedExtensions(cfg config.A2AServerConfig) []string {
-	if !cfg.Enabled || len(cfg.ToolCallMetadataKeys) == 0 {
+	if !cfg.Enabled {
 		return nil
 	}
 	return []string{a2aserver.ToolCallMetadataExtensionURI}

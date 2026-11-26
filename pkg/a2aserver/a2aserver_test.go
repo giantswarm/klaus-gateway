@@ -168,7 +168,7 @@ func (b bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // testBodyLimit is the request body cap of the tests' channel.
 const testBodyLimit = 4 << 10
 
-// sessionKey is the metadata key the tests' card accepts.
+// sessionKey identifies the tests' application session metadata.
 const sessionKey = "com.example/session"
 
 func serve(t *testing.T, agents *fakeAgents, exchanger a2aserver.TokenExchanger) (*httptest.Server, *a2a.AgentCard) {
@@ -176,14 +176,14 @@ func serve(t *testing.T, agents *fakeAgents, exchanger a2aserver.TokenExchanger)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	card := a2aserver.NewCard(a2aserver.CardConfig{URL: srv.URL + "/a2a", Version: "test", ToolCallMetadataKeys: []string{sessionKey}, Issuers: []a2aserver.TrustedIssuer{
+	card := a2aserver.NewCard(a2aserver.CardConfig{URL: srv.URL + "/a2a", Version: "test", Issuers: []a2aserver.TrustedIssuer{
 		{Name: "dex", Issuer: "https://dex.example", Audience: clientAudience, TokenURL: "https://dex.example/token"}, //nolint:gosec // G101: a test URL
 		{Name: "outside", Issuer: "https://idp.example.org", Audience: outsideAudience, OpenIDConnectURL: "https://idp.example.org/.well-known/openid-configuration"},
 		{Name: "rfc8414", Issuer: "https://as.example.net", Audience: outsideAudience, TokenURL: "https://as.example.net/oauth/token", MetadataURL: "https://as.example.net/.well-known/oauth-authorization-server"}, //nolint:gosec // G101: a test URL
 	}})
 	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, Realm: "klaus-gateway"}
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}}, []string{sessionKey})
+	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}})
 	mux.Handle("/a2a", a2aserver.LimitBody(testBodyLimit, auth.Middleware(a2aserver.EchoExtensions(a2asrv.NewJSONRPCHandler(handler)))))
 	return srv, card
 }
@@ -269,8 +269,7 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 	require.Len(t, card.Security, 3, "any one scheme is enough")
 	require.Equal(t, []any{map[string]any{
 		"uri":         a2aserver.ToolCallMetadataExtensionURI,
-		"description": "Values for MCP servers, keyed by metadata key. Only the keys in params.keys are accepted.",
-		"params":      map[string]any{"keys": []any{sessionKey}},
+		"description": "Request-scoped tool-call metadata for MCP servers that opt in",
 	}}, card.Capabilities["extensions"])
 	require.Len(t, card.SupportedInterfaces, 1)
 	require.Equal(t, "1.0", card.SupportedInterfaces[0]["protocolVersion"])
@@ -282,7 +281,7 @@ func TestConversationStartsASessionAndPassesOnTheMCPExtensionValues(t *testing.T
 	_, card := serve(t, agents, staticExchanger{})
 	c := client(t, card, clientToken, a2aserver.ToolCallMetadataExtensionURI)
 	metadata := map[string]any{
-		a2aserver.ToolCallMetadataExtensionURI: map[string]any{sessionKey: map[string]any{"sid": "ref-1"}},
+		a2aserver.ToolCallMetadataExtensionURI: map[string]any{sessionKey: map[string]any{"sid": "ref-1"}, "format": "csv"},
 		"com.example/other":                    "stripped",
 	}
 
@@ -300,7 +299,7 @@ func TestConversationStartsASessionAndPassesOnTheMCPExtensionValues(t *testing.T
 
 	require.Equal(t, []string{first.ID}, agents.started, "only the first message starts a Session, keyed by its message id")
 	require.Equal(t, []string{newSessionID, newSessionID}, agents.streamed)
-	require.Equal(t, map[string]any{a2aserver.ToolCallMetadataExtensionURI: map[string]any{sessionKey: map[string]any{"sid": "ref-1"}}}, agents.metadata[0], "the extension's entry is passed on unchanged, every other key is dropped")
+	require.Equal(t, map[string]any{a2aserver.ToolCallMetadataExtensionURI: metadata[a2aserver.ToolCallMetadataExtensionURI]}, agents.metadata[0], "the extension's complete payload is passed on unchanged, every other entry is dropped")
 	require.Equal(t, []string{a2aserver.ToolCallMetadataExtensionURI}, agents.extensions[0], "the extension's activation is passed on")
 	require.Empty(t, agents.metadata[1], "a request without metadata inherits nothing")
 	require.Equal(t, []string{a2aserver.ToolCallMetadataExtensionURI}, agents.extensions[1], "an activation without values is passed on too")
@@ -356,10 +355,12 @@ func TestActivatedMCPExtensionWithoutValuesIsPassedOn(t *testing.T) {
 	}
 }
 
-func TestMCPExtensionValuesForAKeyNotAcceptedAreRefusedBeforeAnything(t *testing.T) {
+func TestMalformedMCPExtensionPayloadsAreRefusedBeforeAnything(t *testing.T) {
 	for name, metadata := range map[string]any{
-		"unknown key":   map[string]any{sessionKey: "ref-1", "com.example/config": "secret-value"},
-		"not an object": "ref-1",
+		"string": "ref-1",
+		"array":  []any{"ref-1"},
+		"number": 42,
+		"bool":   true,
 	} {
 		t.Run(name, func(t *testing.T) {
 			agents := &fakeAgents{}
@@ -373,10 +374,7 @@ func TestMCPExtensionValuesForAKeyNotAcceptedAreRefusedBeforeAnything(t *testing
 			require.Empty(t, resp.Header.Get("A2A-Extensions"), "a refused extension is not echoed")
 			require.NotNil(t, body.Error)
 			require.Equal(t, -32602, body.Error.Code)
-			require.NotContains(t, body.Error.Message, "secret-value", "the refusal never names a value")
-			if name == "unknown key" {
-				require.Contains(t, body.Error.Message, "com.example/config")
-			}
+			require.NotContains(t, body.Error.Message, "ref-1", "the refusal never names a value")
 			require.Empty(t, agents.started, "no Session starts")
 			require.Empty(t, agents.streamed, "no turn runs")
 			require.Empty(t, agents.refs, "nothing is asked of the platform")

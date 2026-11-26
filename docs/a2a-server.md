@@ -36,17 +36,15 @@ to the agent runtime: every other extension and every other key of the request's
 URI: `https://kagent.dev/extensions/mcp-tool-call-metadata/v1`, kagent's extension (proposed in
 kagent-dev/kagent#3807, contract in kagent's `docs/architecture/mcp-tool-call-metadata-extension.md`).
 It carries values an A2A client has for MCP servers, for example a session reference,
-through the agent to the MCP servers that accept them, and to no
-other.
+through the agent to MCP servers that declare support for the extension.
 
-**Declaration.** With `a2aServer.toolCallMetadataKeys` set, the Agent Card lists the extension
-in `capabilities.extensions`, its `params.keys` naming the metadata keys the gateway accepts:
+**Declaration.** The Agent Card lists the optional extension in `capabilities.extensions`
+whenever the A2A server is enabled:
 
 ```json
 {
   "uri": "https://kagent.dev/extensions/mcp-tool-call-metadata/v1",
-  "description": "Values for MCP servers, keyed by metadata key. Only the keys in params.keys are accepted.",
-  "params": {"keys": ["com.example/session"]}
+  "description": "Request-scoped tool-call metadata for MCP servers that opt in"
 }
 ```
 
@@ -66,18 +64,20 @@ the extension's URI, as an object keyed by metadata key:
 
 | Request | Result |
 |---|---|
-| Extension activated, every key listed in `params.keys` | The extension's activation and its metadata entry are passed on to the agent runtime unchanged (a2a-go's extension propagation), and the response's `A2A-Extensions` header names the extension. |
+| Extension activated, payload is an object | The extension's activation and its complete metadata entry are passed on to the agent runtime unchanged (a2a-go's extension propagation), and the response's `A2A-Extensions` header names the extension. |
 | Extension activated, entry omitted, `null`, or an empty object | Activation is passed on and echoed; the entry contributes no tool-call values. |
-| Extension activated, a key not listed, or a non-null entry not an object | Refused with JSON-RPC `-32602` (invalid params) naming the key, never a value, before anything runs. |
-| Extension not activated, or not offered | Its entry is ignored and not echoed. |
+| Extension activated, non-null payload is not an object | Refused with JSON-RPC `-32602` (invalid params) before anything runs. |
+| Extension not activated | Its entry is ignored and not echoed. |
 | Any other extension or metadata key | Not passed on. |
 
 **Past the gateway.** kagent's runtime reads the values only when the extension is
-active. On a tool call it sends `_meta["dev.kagent/tool-call-metadata"]`, holding only the
-keys the MCP server accepts: the `keys` the server declares under the MCP extension
-`dev.kagent/tool-call-metadata` in its `capabilities.extensions` (in `initialize` on MCP
+active. On a tool call it sends the complete payload in `_meta["dev.kagent/tool-call-metadata"]`
+when the MCP server declares `dev.kagent/tool-call-metadata: {}` in its
+`capabilities.extensions` (in `initialize` on MCP
 2025-11-25, in `server/discover` on 2026-07-28). A server that does not declare it gets
-nothing. The values are added after the model chose the tool, never as tool arguments;
+nothing. Every participating server called during the request can receive the full payload;
+there is no per-key filtering. Values are application data, never credentials. They are
+added after the model chose the tool, never as tool arguments;
 an MCP server that echoes a value in its result can still show it to the model.
 
 **Every request.** The values are not stored. Each request, an approval's answer included,
@@ -314,8 +314,6 @@ a2aServer:
     audiences: [kagent, dex-k8s-authenticator]
   # Largest /a2a request body, 2 MiB by default.
   maxBodyBytes: 2097152
-  # Metadata keys the MCP tool-call metadata extension accepts.
-  toolCallMetadataKeys: [com.example/session]
   # Secret with key ca.crt, when the exchange's token endpoint is not publicly
   # trusted. An issuer entry names it as caFile: /etc/klaus-gateway/a2a-server-ca/ca.crt.
   caSecret: ""
@@ -344,5 +342,4 @@ renders the exchange client's secret.
 | `--a2a-server-exchange-client-id`, `--a2a-server-exchange-client-secret-file`, `--a2a-server-exchange-audiences` | The exchange client and the audiences it asks for. |
 | `--a2a-server-ca-file` | CA bundle for the exchange's token endpoint. |
 | `--a2a-server-max-body-bytes` | Largest `/a2a` request body; 2 MiB by default. |
-| `--a2a-server-tool-call-metadata-keys` | Metadata keys the MCP tool-call metadata extension accepts; empty does not offer it. |
 | `--a2a-server-issuer`, `--a2a-server-jwks-url`, `--a2a-server-audience`, `--a2a-server-allowed-clients`, `--a2a-server-allow-private-ip-jwks-hosts`, `--a2a-server-token-url`, `--a2a-server-exchange-connector-id` | One issuer without a file, sending ID tokens, named `oauth2` in the card (an OAuth 2.0 scheme at `--a2a-server-token-url`). `--a2a-server-jwks-url` and `--a2a-server-token-url` default to `<issuer>/keys` and `<issuer>/token`; the exchange runs at `--a2a-server-token-url` unless `--a2a-server-exchange-token-url` is set, and `--a2a-server-ca-file` also covers the key set. Exclusive with `--a2a-server-issuers-file`. |
