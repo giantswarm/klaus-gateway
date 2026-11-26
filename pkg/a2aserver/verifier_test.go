@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,7 +166,9 @@ func TestVerifierChecksEachTokenAgainstItsOwnIssuer(t *testing.T) {
 
 func TestVerifierReadsTheClientOfAnAccessToken(t *testing.T) {
 	s := newTokenSigner(t, outsideIssuer)
-	v := a2aserver.NewJWTVerifier([]a2aserver.TrustedIssuer{s.trusted("outside", outsideAudience, "outside-idp", outsideBackend)}, exchangeClient)
+	issuer := s.trusted("outside", outsideAudience, "outside-idp", outsideBackend)
+	issuer.AccessTokens = true
+	v := a2aserver.NewJWTVerifier([]a2aserver.TrustedIssuer{issuer}, exchangeClient)
 
 	_, err := v.Verify(t.Context(), s.sign(map[string]any{"aud": []string{outsideAudience, "other-api"}, "client_id": outsideBackend}))
 	require.NoError(t, err, "an RFC 9068 access token names its client in client_id")
@@ -177,5 +180,25 @@ func TestVerifierReadsTheClientOfAnAccessToken(t *testing.T) {
 	require.ErrorContains(t, err, exchangeClient)
 
 	_, err = v.Verify(t.Context(), s.sign(map[string]any{"aud": outsideAudience, "azp": "other-backend", "client_id": outsideBackend}))
-	require.Error(t, err, "azp wins over client_id")
+	require.Error(t, err, "conflicting client identities are ambiguous")
+
+	_, err = v.Verify(t.Context(), s.sign(map[string]any{"aud": outsideAudience, "azp": outsideBackend, "client_id": "denied"}))
+	require.Error(t, err)
+
+	_, err = v.Verify(t.Context(), s.sign(map[string]any{"aud": outsideAudience}))
+	require.Error(t, err, "an access token's resource audience does not identify its client")
+
+	_, err = v.Verify(t.Context(), s.sign(map[string]any{"aud": outsideAudience, "azp": outsideBackend}))
+	require.NoError(t, err, "provider-specific access tokens may use azp alone")
+}
+
+func TestVerifierRequiresExactAudience(t *testing.T) {
+	signer := newTokenSigner(t, testIssuer)
+	verifier := a2aserver.NewJWTVerifier([]a2aserver.TrustedIssuer{signer.trusted("dex", clientAudience, "dex-self")}, exchangeClient)
+	for _, audience := range []any{clientAudience + "/", []string{clientAudience + "/", applicationName}, strings.ToUpper(clientAudience)} {
+		_, err := verifier.Verify(t.Context(), signer.sign(map[string]any{"aud": audience, "azp": applicationName}))
+		require.Error(t, err)
+	}
+	_, err := verifier.Verify(t.Context(), signer.sign(map[string]any{"aud": []string{clientAudience + "/", clientAudience}, "azp": applicationName}))
+	require.NoError(t, err)
 }

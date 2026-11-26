@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	mcpoidc "github.com/giantswarm/mcp-oauth/providers/oidc"
 )
@@ -19,6 +20,7 @@ const (
 	tokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"   //nolint:gosec // G101: an RFC 8693 identifier, not a credential
 	// exchangeResponseLimit bounds the token endpoint's answer.
 	exchangeResponseLimit = 64 << 10
+	exchangeTimeout       = 10 * time.Second
 )
 
 // Exchanger exchanges an A2A client's token at the identity provider's token
@@ -37,6 +39,12 @@ type Exchanger struct {
 // through issuer's connector (Dex's connector_id) and with its subject token
 // type.
 func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer TrustedIssuer) (string, error) {
+	endpoint, err := url.Parse(e.TokenURL)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
+		return "", fmt.Errorf("token exchange endpoint must be an absolute HTTPS URL without userinfo or fragment")
+	}
+	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
+	defer cancel()
 	scopes := []string{ScopeOpenID, "email", "profile", "groups"}
 	for _, audience := range e.Audiences {
 		scopes = append(scopes, "audience:server:client_id:"+audience)
@@ -65,7 +73,9 @@ func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer Tr
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req) //nolint:gosec // G704: the token endpoint is operator configuration (a chart value)
+	clientCopy := *client
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := clientCopy.Do(req) //nolint:gosec // G704: the token endpoint is operator configuration (a chart value)
 	if err != nil {
 		return "", fmt.Errorf("token exchange: %w", err)
 	}
@@ -88,12 +98,16 @@ func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer Tr
 	var issued struct {
 		AccessToken     string `json:"access_token"`
 		IssuedTokenType string `json:"issued_token_type"`
+		TokenType       string `json:"token_type"`
 	}
 	if err := json.Unmarshal(body, &issued); err != nil {
 		return "", fmt.Errorf("token exchange response: %w", err)
 	}
 	if issued.AccessToken == "" || issued.IssuedTokenType != tokenTypeIDToken {
 		return "", fmt.Errorf("token exchange: no ID token issued (issued_token_type %q)", issued.IssuedTokenType)
+	}
+	if !strings.EqualFold(issued.TokenType, "Bearer") {
+		return "", fmt.Errorf("token exchange: unsupported token_type %q", issued.TokenType)
 	}
 	return issued.AccessToken, nil
 }
@@ -125,7 +139,8 @@ type TrustedIssuer struct {
 	MetadataURL string
 	// OpenIDConnectURL is the discovery document the OpenID Connect scheme
 	// names when TokenURL is empty.
-	OpenIDConnectURL string // AccessTokens marks an issuer whose tokens are access tokens: the
+	OpenIDConnectURL string
+	// AccessTokens marks an issuer whose tokens are access tokens: the
 	// exchange names them as such. Otherwise they are ID tokens.
 	AccessTokens bool
 }
@@ -174,7 +189,14 @@ func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (TrustedIssue
 	if err != nil {
 		return TrustedIssuer{}, err
 	}
-	if err := v.checkClient(issuer, requestingClient(claims.AuthorizedParty, claims.ClientID, []string(claims.Audience))); err != nil {
+	if !slices.Contains([]string(claims.Audience), issuer.Audience) {
+		return TrustedIssuer{}, fmt.Errorf("token audience does not match %q exactly", issuer.Audience)
+	}
+	client, err := requestingClient(issuer, claims.AuthorizedParty, claims.ClientID, []string(claims.Audience))
+	if err != nil {
+		return TrustedIssuer{}, err
+	}
+	if err := v.checkClient(issuer, client); err != nil {
 		return TrustedIssuer{}, err
 	}
 	return issuer, nil
@@ -190,19 +212,26 @@ func (v *JWTVerifier) checkClient(issuer TrustedIssuer, client string) error {
 	return nil
 }
 
-// requestingClient is the client a token was issued to: its azp (an ID
-// token, OIDC Core section 2), else its client_id (an access token, RFC 9068
-// section 2.2), else its only audience. It is empty when none names a single
-// client.
-func requestingClient(azp, clientID string, audience []string) string {
-	if azp != "" {
-		return azp
+// requestingClient uses client_id for access tokens and azp for ID tokens.
+// Provider-specific access tokens may identify the client with azp alone.
+func requestingClient(issuer TrustedIssuer, azp, clientID string, audience []string) (string, error) {
+	if issuer.AccessTokens {
+		if clientID != "" && azp != "" && clientID != azp {
+			return "", fmt.Errorf("access token has conflicting client_id and azp claims")
+		}
+		if clientID != "" {
+			return clientID, nil
+		}
+		if azp == "" {
+			return "", fmt.Errorf("access token does not identify its requesting client")
+		}
+		return azp, nil
 	}
-	if clientID != "" {
-		return clientID
+	if azp != "" {
+		return azp, nil
 	}
 	if len(audience) == 1 {
-		return audience[0]
+		return audience[0], nil
 	}
-	return ""
+	return "", fmt.Errorf("ID token with multiple audiences must identify its authorized party")
 }

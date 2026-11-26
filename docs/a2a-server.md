@@ -27,6 +27,13 @@ organization are offered; an unknown or unoffered tenant is refused with the sam
 A message without a context id starts a platform Session, and the Session id is the
 context id of every later message.
 
+Non-streaming sends use the controller's native A2A `SendMessage`: it owns background
+task execution and honors `configuration.returnImmediately`. Sends and streaming task
+snapshots honor `configuration.historyLength`; `GetTask` honors `historyLength`.
+Zero omits history, a positive limit returns at most that many recent messages, and
+an omitted limit leaves history unrestricted. Negative limits are refused. Recognized
+downstream A2A errors retain their protocol codes with safe descriptions.
+
 Only the [MCP request metadata extension](#mcp-request-metadata-extension) is passed on
 to the agent runtime: every other extension and every other key of the request's
 `metadata` stays at the gateway. A later request without values inherits nothing.
@@ -102,10 +109,13 @@ Dex (`a2aServer.exchange.tokenUrl`).
    `invalid_token`).
 3. With that entry alone, the gateway checks the token's signature (against the entry's
    `jwksUrl`, with a pinned asymmetric algorithm), issuer, `aud` (must contain the entry's
-   `audience`), expiry, not-before and issued-at, with mcp-oauth's OIDC token validation,
-   then the
-   client that requested it: its `azp`, else its `client_id` (RFC 9068 access tokens),
-   else its only `aud` entry. A token requested by `a2aServer.exchange.clientId` is a platform
+   `audience` exactly), expiry, not-before and issued-at, with mcp-oauth's OIDC token validation.
+   For ID tokens, the requesting client is `azp`, or the sole `aud` entry when `azp` is absent.
+   For access tokens, it is `client_id` (RFC 9068), with `azp` supported for providers that
+   supply that claim alone. Conflicting `client_id` and `azp` values are refused for access tokens,
+   and the resource audience is never used as their client identity. Access-token support uses
+   these JWT conventions; it does not enforce the complete RFC 9068 profile's `typ`, `jti`
+   and other required claims. A token requested by `a2aServer.exchange.clientId` is a platform
    token and is refused, whichever issuer signed it. When the entry's `allowedClients` is set, only tokens of
    those clients are accepted. It does not check groups.
 4. The gateway exchanges the token at `a2aServer.exchange.tokenUrl` (RFC 8693), authenticated
@@ -113,7 +123,10 @@ Dex (`a2aServer.exchange.tokenUrl`).
    `a2aServer.exchange.audiences`. The subject token type is the entry's `subjectTokenType`
    (`urn:ietf:params:oauth:token-type:id_token` by default, or
    `urn:ietf:params:oauth:token-type:access_token`); the requested token type is always
-   `urn:ietf:params:oauth:token-type:id_token`.
+   `urn:ietf:params:oauth:token-type:id_token`. The exchange endpoint must use HTTPS without
+   userinfo or a fragment; redirects are refused, and each exchange has a ten-second deadline.
+   This Dex exchange profile requires an issued ID token with `token_type=Bearer`
+   (case-insensitive). Other usage types, including `N_A` and `DPoP`, are unsupported.
 5. The turn runs with the exchanged token only. The application's token is never sent
    on.
 

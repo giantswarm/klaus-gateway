@@ -58,6 +58,8 @@ type fakeKagent struct {
 	// a2a-extensions values of the last SendStreamingMessage.
 	requestMetadata   map[string]any
 	requestExtensions []string
+	sendRequest       *a2apb.SendMessageRequest
+	taskRequest       *a2apb.GetTaskRequest
 	busy              bool // refuse a new task: one is active
 	// shareRefusal, when set, is the controller's refusal to share any
 	// session, answered to its creator as FailedPrecondition.
@@ -262,10 +264,42 @@ func (f *fakeKagent) routedSession(ctx context.Context, tenant, contextID, taskI
 
 // --- lf.a2a.v1.A2AService ---
 
+func (f *fakeKagent) SendMessage(ctx context.Context, request *a2apb.SendMessageRequest) (*a2apb.SendMessageResponse, error) {
+	f.record(ctx, "SendMessage")
+	message, err := pbconv.FromProtoMessage(request.GetMessage())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	session, err := f.routedSession(ctx, request.GetTenant(), message.ContextID, string(message.TaskID))
+	if err != nil {
+		return nil, err
+	}
+	if session.GetState() != apiv1alpha1.RuntimeState_RUNTIME_STATE_READY {
+		return nil, unsupportedOperation("Session cannot accept work during a lifecycle operation")
+	}
+	f.mu.Lock()
+	f.sendRequest = request
+	f.requestMetadata = request.GetMetadata().AsMap()
+	metadataValues, _ := metadata.FromIncomingContext(ctx)
+	f.requestExtensions = metadataValues.Get("a2a-extensions")
+	f.sent = append(f.sent, message)
+	refusal := f.refuse
+	f.mu.Unlock()
+	if refusal != nil {
+		return nil, refusal
+	}
+	task, err := pbconv.ToProtoTask(&a2apkg.Task{ID: "native-task", ContextID: session.GetId(), Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}})
+	if err != nil {
+		return nil, err
+	}
+	return &a2apb.SendMessageResponse{Payload: &a2apb.SendMessageResponse_Task{Task: task}}, nil
+}
+
 func (f *fakeKagent) SendStreamingMessage(req *a2apb.SendMessageRequest, stream grpc.ServerStreamingServer[a2apb.StreamResponse]) error {
 	ctx := stream.Context()
 	f.record(ctx, "SendStreamingMessage")
 	f.mu.Lock()
+	f.sendRequest = req
 	f.requestMetadata = req.GetMetadata().AsMap()
 	md, _ := metadata.FromIncomingContext(ctx)
 	f.requestExtensions = md.Get("a2a-extensions")
@@ -333,6 +367,7 @@ func (f *fakeKagent) GetTask(ctx context.Context, req *a2apb.GetTaskRequest) (*a
 		return nil, err
 	}
 	f.mu.Lock()
+	f.taskRequest = req
 	task := f.tasks[req.GetId()]
 	f.mu.Unlock()
 	return pbconv.ToProtoTask(task)

@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"slices"
@@ -210,7 +211,7 @@ func (c A2AServerConfig) TrustedIssuers() []TrustedIssuer {
 	issuer := strings.TrimSuffix(c.Issuer, "/")
 	single := TrustedIssuer{
 		Name:                    "oauth2",
-		Issuer:                  issuer,
+		Issuer:                  c.Issuer,
 		JWKSURL:                 c.JWKSURL,
 		TokenURL:                c.TokenURL,
 		Audience:                c.Audience,
@@ -257,6 +258,10 @@ func (c A2AServerConfig) validate() error {
 		return fmt.Errorf("--a2a-server-issuers-file requires --a2a-server-exchange-token-url")
 	case c.ExchangeClientID == "", c.ExchangeClientSecretFile == "", len(c.ExchangeAudiences) == 0:
 		return fmt.Errorf("--a2a-server-enabled requires --a2a-server-exchange-client-id, --a2a-server-exchange-client-secret-file and --a2a-server-exchange-audiences")
+	}
+	endpoint, err := url.Parse(c.ExchangeEndpoint())
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
+		return fmt.Errorf("the A2A token exchange endpoint must be an absolute HTTPS URL without userinfo or fragment")
 	}
 	names := map[string]bool{}
 	issuers := map[string]bool{}

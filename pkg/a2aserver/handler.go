@@ -20,9 +20,10 @@ import (
 type Agents interface {
 	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 	StartSession(ctx context.Context, agentRef, requestID, name string, grant workspaces.Grant) (pkga2a.Session, error)
-	Stream(ctx context.Context, sessionID string, msg *a2a.Message) iter.Seq2[a2a.Event, error]
+	SendMessage(ctx context.Context, sessionID string, message *a2a.Message, configuration *a2a.SendMessageConfig) (a2a.SendMessageResult, error)
+	StreamWithConfig(ctx context.Context, sessionID string, message *a2a.Message, configuration *a2a.SendMessageConfig) iter.Seq2[a2a.Event, error]
 	Subscribe(ctx context.Context, taskID a2a.TaskID) iter.Seq2[a2a.Event, error]
-	GetTask(ctx context.Context, taskID a2a.TaskID) (*a2a.Task, error)
+	GetTaskWithHistory(ctx context.Context, taskID a2a.TaskID, historyLength *int) (*a2a.Task, error)
 	CancelTask(ctx context.Context, taskID a2a.TaskID) (*a2a.Task, error)
 }
 
@@ -84,28 +85,18 @@ func (h *Handler) agentContext(ctx context.Context, tenant string) (context.Cont
 // and streams the turn's events.
 func (h *Handler) SendStreamingMessage(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
-		if req.Message == nil {
-			yield(nil, fmt.Errorf("%w: message is required", a2a.ErrInvalidParams))
-			return
-		}
-		ctx, ref, err := h.agentContext(ctx, req.Tenant)
+		ctx, sessionID, err := h.sendContext(ctx, req)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		sessionID := req.Message.ContextID
-		if sessionID == "" {
-			session, err := h.Agents.StartSession(ctx, ref, req.Message.ID, "", workspaces.Grant{})
-			if err != nil {
-				yield(nil, h.refusal(ctx, "start session", err))
-				return
-			}
-			sessionID = session.ID
-		}
-		for event, err := range h.Agents.Stream(ctx, sessionID, req.Message) {
+		for event, err := range h.Agents.StreamWithConfig(ctx, sessionID, req.Message, req.Config) {
 			if err != nil {
 				yield(nil, h.refusal(ctx, "stream", err))
 				return
+			}
+			if task, ok := event.(*a2a.Task); ok {
+				event = limitHistory(task, sendHistoryLength(req))
 			}
 			if !yield(event, nil) {
 				return
@@ -114,43 +105,74 @@ func (h *Handler) SendStreamingMessage(ctx context.Context, req *a2a.SendMessage
 	}
 }
 
-// SendMessage runs the turn to its end and answers the task, or the message
-// the agent answered without one.
+// SendMessage preserves the caller's blocking and response configuration.
 func (h *Handler) SendMessage(ctx context.Context, req *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
-	var taskID a2a.TaskID
-	var last a2a.Event
-	for event, err := range h.SendStreamingMessage(ctx, req) {
-		if err != nil {
-			return nil, err
-		}
-		last = event
-		if id := event.TaskInfo().TaskID; id != "" {
-			taskID = id
-		}
+	ctx, sessionID, err := h.sendContext(ctx, req)
+	if err != nil {
+		return nil, err
 	}
-	switch result := last.(type) {
-	case *a2a.Message:
-		return result, nil
-	case *a2a.Task:
-		return result, nil
+	result, err := h.Agents.SendMessage(ctx, sessionID, req.Message, req.Config)
+	if err != nil {
+		return nil, h.refusal(ctx, "send message", err)
 	}
-	if taskID == "" {
-		return nil, fmt.Errorf("%w: the turn ended without a task", a2a.ErrInvalidAgentResponse)
+	if task, ok := result.(*a2a.Task); ok {
+		return limitHistory(task, sendHistoryLength(req)), nil
 	}
-	return h.GetTask(ctx, &a2a.GetTaskRequest{Tenant: req.Tenant, ID: taskID})
+	return result, nil
+}
+
+func (h *Handler) sendContext(ctx context.Context, request *a2a.SendMessageRequest) (context.Context, string, error) {
+	if request.Message == nil {
+		return nil, "", fmt.Errorf("%w: message is required", a2a.ErrInvalidParams)
+	}
+	if historyLength := sendHistoryLength(request); historyLength != nil && *historyLength < 0 {
+		return nil, "", fmt.Errorf("%w: historyLength must be nonnegative", a2a.ErrInvalidParams)
+	}
+	ctx, ref, err := h.agentContext(ctx, request.Tenant)
+	if err != nil {
+		return nil, "", err
+	}
+	if request.Message.ContextID != "" || request.Message.TaskID != "" {
+		return ctx, request.Message.ContextID, nil
+	}
+	session, err := h.Agents.StartSession(ctx, ref, request.Message.ID, "", workspaces.Grant{})
+	if err != nil {
+		return nil, "", h.refusal(ctx, "start session", err)
+	}
+	return ctx, session.ID, nil
+}
+
+func sendHistoryLength(request *a2a.SendMessageRequest) *int {
+	if request.Config == nil {
+		return nil
+	}
+	return request.Config.HistoryLength
+}
+
+// limitHistory never mutates a downstream task or its backing history slice.
+func limitHistory(task *a2a.Task, historyLength *int) *a2a.Task {
+	if task == nil || historyLength == nil || len(task.History) <= *historyLength {
+		return task
+	}
+	limited := *task
+	limited.History = task.History[len(task.History)-*historyLength:]
+	return &limited
 }
 
 // GetTask answers a task of the agent.
 func (h *Handler) GetTask(ctx context.Context, req *a2a.GetTaskRequest) (*a2a.Task, error) {
+	if req.HistoryLength != nil && *req.HistoryLength < 0 {
+		return nil, fmt.Errorf("%w: historyLength must be nonnegative", a2a.ErrInvalidParams)
+	}
 	ctx, _, err := h.agentContext(ctx, req.Tenant)
 	if err != nil {
 		return nil, err
 	}
-	task, err := h.Agents.GetTask(ctx, req.ID)
+	task, err := h.Agents.GetTaskWithHistory(ctx, req.ID, req.HistoryLength)
 	if err != nil {
 		return nil, h.refusal(ctx, "get task", err)
 	}
-	return task, nil
+	return limitHistory(task, req.HistoryLength), nil
 }
 
 // CancelTask cancels a task of the agent.
@@ -261,8 +283,17 @@ func (h *Handler) refusal(ctx context.Context, op string, err error) error {
 		return a2a.ErrTaskNotFound
 	case errors.Is(err, pkga2a.ErrSessionBusy):
 		return fmt.Errorf("%w: the conversation already has a running task", a2a.ErrUnsupportedOperation)
-	case errors.Is(err, a2a.ErrInvalidParams):
-		return err
+	}
+	for _, protocolError := range []error{
+		a2a.ErrParseError, a2a.ErrInvalidRequest, a2a.ErrMethodNotFound, a2a.ErrInvalidParams,
+		a2a.ErrInternalError, a2a.ErrServerError, a2a.ErrTaskNotCancelable,
+		a2a.ErrPushNotificationNotSupported, a2a.ErrUnsupportedOperation, a2a.ErrUnsupportedContentType,
+		a2a.ErrInvalidAgentResponse, a2a.ErrExtendedCardNotConfigured, a2a.ErrExtensionSupportRequired,
+		a2a.ErrVersionNotSupported, a2a.ErrUnauthenticated, a2a.ErrUnauthorized,
+	} {
+		if errors.Is(err, protocolError) {
+			return protocolError
+		}
 	}
 	return fmt.Errorf("%w: the request could not be completed", a2a.ErrInternalError)
 }

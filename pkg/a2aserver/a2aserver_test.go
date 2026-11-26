@@ -67,9 +67,10 @@ type fakeAgents struct {
 	refs     []string
 	// metadata and extensions are what each turn passes on to the agent
 	// runtime: the propagated request metadata and A2A-Extensions values.
-	metadata   []map[string]any
-	extensions [][]string
-	streamErr  error
+	metadata      []map[string]any
+	extensions    [][]string
+	streamErr     error
+	configuration *a2a.SendMessageConfig
 }
 
 // propagatedExtensions are the A2A-Extensions values ctx passes on.
@@ -100,9 +101,10 @@ func (f *fakeAgents) StartSession(ctx context.Context, agentRef, requestID, _ st
 	return pkga2a.Session{ID: newSessionID, State: "READY"}, nil
 }
 
-func (f *fakeAgents) Stream(ctx context.Context, sessionID string, msg *a2a.Message) iter.Seq2[a2a.Event, error] {
+func (f *fakeAgents) StreamWithConfig(ctx context.Context, sessionID string, msg *a2a.Message, configuration *a2a.SendMessageConfig) iter.Seq2[a2a.Event, error] {
 	f.record(ctx)
 	f.mu.Lock()
+	f.configuration = configuration
 	f.streamed = append(f.streamed, sessionID)
 	f.metadata = append(f.metadata, a2aext.GetMetadata(ctx))
 	f.extensions = append(f.extensions, propagatedExtensions(ctx))
@@ -121,11 +123,20 @@ func (f *fakeAgents) Stream(ctx context.Context, sessionID string, msg *a2a.Mess
 	}
 }
 
+func (f *fakeAgents) SendMessage(ctx context.Context, sessionID string, message *a2a.Message, configuration *a2a.SendMessageConfig) (a2a.SendMessageResult, error) {
+	for _, err := range f.StreamWithConfig(ctx, sessionID, message, configuration) {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return f.GetTaskWithHistory(ctx, "task-1", nil)
+}
+
 func (f *fakeAgents) Subscribe(context.Context, a2a.TaskID) iter.Seq2[a2a.Event, error] {
 	return func(func(a2a.Event, error) bool) {}
 }
 
-func (f *fakeAgents) GetTask(ctx context.Context, id a2a.TaskID) (*a2a.Task, error) {
+func (f *fakeAgents) GetTaskWithHistory(ctx context.Context, id a2a.TaskID, _ *int) (*a2a.Task, error) {
 	f.record(ctx)
 	return &a2a.Task{ID: id, ContextID: newSessionID, Status: a2a.TaskStatus{State: a2a.TaskStateCompleted}}, nil
 }
@@ -171,7 +182,7 @@ const testBodyLimit = 4 << 10
 // sessionKey identifies the tests' application session metadata.
 const sessionKey = "com.example/session"
 
-func serve(t *testing.T, agents *fakeAgents, exchanger a2aserver.TokenExchanger) (*httptest.Server, *a2a.AgentCard) {
+func serve(t *testing.T, agents a2aserver.Agents, exchanger a2aserver.TokenExchanger) (*httptest.Server, *a2a.AgentCard) {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -495,7 +506,7 @@ func TestExtendedCardListsTheCallersAgents(t *testing.T) {
 func TestExchangerSendsAnRFC8693Request(t *testing.T) {
 	var form url.Values
 	var user, pass string
-	dex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	dex := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		form = r.PostForm
 		user, pass, _ = r.BasicAuth()
@@ -508,7 +519,7 @@ func TestExchangerSendsAnRFC8693Request(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"` + exchangedToken + `","issued_token_type":"urn:ietf:params:oauth:token-type:id_token","token_type":"bearer"}`))
 	}))
 	t.Cleanup(dex.Close)
-	e := &a2aserver.Exchanger{TokenURL: dex.URL, ClientID: "klaus-gateway-app", ClientSecret: "s3cr3t:/", Audiences: []string{"kagent", "dex-k8s-authenticator"}}
+	e := &a2aserver.Exchanger{TokenURL: dex.URL, ClientID: "klaus-gateway-app", ClientSecret: "s3cr3t:/", Audiences: []string{"kagent", "dex-k8s-authenticator"}, HTTPClient: dex.Client()}
 
 	token, err := e.Exchange(t.Context(), clientToken, a2aserver.TrustedIssuer{ConnectorID: "dex-self"})
 	require.NoError(t, err)
