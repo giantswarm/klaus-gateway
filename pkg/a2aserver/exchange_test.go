@@ -74,6 +74,7 @@ func TestExchangeRequiresBearerUsageForDexProfile(t *testing.T) {
 func TestExchangeHasIndependentDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		started := time.Now()
+		//nolint:gosec // G101: the token endpoint is a test URL, not a credential.
 		exchanger := &a2aserver.Exchanger{TokenURL: "https://dex.example.com/token", HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			<-request.Context().Done()
 			return nil, request.Context().Err()
