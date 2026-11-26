@@ -338,6 +338,34 @@ func updatedWith(fake *fakeSlackAPI, ts string, texts ...string) bool {
 	return false
 }
 
+// detailsReply is the latest reply in the thread of the review message at ts:
+// where a decided review's ask, pull requests, link and the tool's answer go.
+func detailsReply(fake *fakeSlackAPI, ts string) (recordedCall, bool) {
+	posts := fake.pathCalls("chat.postMessage")
+	for i := len(posts) - 1; i >= 0; i-- {
+		if posts[i].params["thread_ts"] == ts {
+			return posts[i], true
+		}
+	}
+	return recordedCall{}, false
+}
+
+// detailedWith reports whether the thread of the review message at ts got a
+// reply containing every given text.
+func detailedWith(fake *fakeSlackAPI, ts string, texts ...string) bool {
+	reply, ok := detailsReply(fake, ts)
+	if !ok {
+		return false
+	}
+	got, _ := reply.params["text"].(string)
+	for _, want := range texts {
+		if !strings.Contains(got, want) {
+			return false
+		}
+	}
+	return true
+}
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	require.Eventually(t, cond, flowWait, 20*time.Millisecond, what)
@@ -398,7 +426,64 @@ func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
 	require.Equal(t, map[string]any{"pr": 4711}, call.args)
 
 	waitFor(t, "the message shows the outcome and the decider", func() bool {
-		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>") && detailedWith(fake, receipt.TS, "review submitted")
+	})
+}
+
+// A decided review is one line in the channel; the ask, the pull requests,
+// the link and the tool's answer move into its thread.
+func TestTeamReview_DecidedReviewIsShortenedAndItsDetailsGoToTheThread(t *testing.T) {
+	for name, tc := range map[string]struct{ summary, line string }{
+		"with a summary":    {summary: "Archive `giantswarm/old-thing`", line: "*Approved* by <@U1> for team-bumblebee: Archive `giantswarm/old-thing`"},
+		"without a summary": {line: "*Approved* by <@U1> for team-bumblebee: *Archive* `giantswarm/old-thing`, owned by team-bumblebee."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tools := &recordingTools{results: []muster.Result{{Text: "review submitted"}}}
+			a, srv, fake := teamReviewHarness(t, tools)
+			review := archiveReview()
+			review.Text += "\n*Why:* nobody uses it."
+			review.Summary = tc.summary
+			review.PullRequests = []string{"https://github.com/giantswarm/github/pull/4711"}
+			receipt, err := a.PostTeamReview(context.Background(), review)
+			require.NoError(t, err)
+
+			clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the details go into the thread", func() bool {
+				return detailedWith(fake, receipt.TS, "nobody uses it", "review submitted")
+			})
+			waitFor(t, "the message is shortened", func() bool { return updatedWith(fake, receipt.TS, "Approved") })
+
+			updates := fake.pathCalls("chat.update")
+			parent := blocksOf(updates[len(updates)-1])
+			require.Len(t, parent, 1, "one section, no pull requests, no link")
+			require.Equal(t, tc.line, sectionTexts(parent)[0])
+
+			reply, _ := detailsReply(fake, receipt.TS)
+			details := blocksOf(reply)
+			require.Contains(t, sectionTexts(details)[1], "giantswarm/github#4711", "the pull requests are listed in the thread")
+			require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", details[len(details)-1]["elements"].([]any)[0].(map[string]any)["text"], "the link is small print in the thread")
+		})
+	}
+}
+
+// A thread Slack refuses keeps the details in the message itself.
+func TestTeamReview_DetailsReplyRefusedKeepsTheWholeOutcome(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{{Text: "review submitted"}}}
+	a, srv, fake := teamReviewHarness(t, tools)
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+	fake.mu.Lock()
+	fake.failIf = func(path string, params map[string]any) string {
+		if path == "chat.postMessage" && params["thread_ts"] == receipt.TS {
+			return "msg_too_long"
+		}
+		return ""
+	}
+	fake.mu.Unlock()
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	waitFor(t, "the message carries the whole outcome", func() bool {
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "old-thing", "review submitted")
 	})
 }
 
@@ -420,12 +505,9 @@ func TestTeamReview_OutcomeShowsTheToolsMessageNotItsJSON(t *testing.T) {
 			require.NoError(t, err)
 			clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
 			waitFor(t, "the approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
-			var text string
-			for _, u := range fake.pathCalls("chat.update") {
-				if u.params["ts"] == receipt.TS {
-					text, _ = u.params["text"].(string)
-				}
-			}
+			reply, ok := detailsReply(fake, receipt.TS)
+			require.True(t, ok, "the details are in the thread")
+			text, _ := reply.params["text"].(string)
 			if tc.shown != "" {
 				require.Contains(t, text, tc.shown)
 			}
@@ -509,7 +591,9 @@ func TestTeamReview_ToolRefusalReopensTheReview(t *testing.T) {
 	require.Equal(t, "id-token-U1", calls[0].bearer)
 	require.Equal(t, "id-token-U2", calls[1].bearer)
 	require.Empty(t, latestButtons(fake, receipt.TS), "the approved message carries no buttons")
-	require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", statusLine(fake, receipt.TS), "the pull request stays one click away")
+	reply, _ := detailsReply(fake, receipt.TS)
+	details := blocksOf(reply)
+	require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", details[len(details)-1]["elements"].([]any)[0].(map[string]any)["text"], "the pull request stays one click away, in the thread")
 }
 
 func TestTeamReview_ToolOutageKeepsTheReviewOpen(t *testing.T) {
@@ -574,7 +658,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.NotNil(t, calls[1].accepted)
 	require.Equal(t, reviewSignInLink, calls[1].accepted.URL)
 	waitFor(t, "the message shows the outcome and the decider", func() bool {
-		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>") && detailedWith(fake, receipt.TS, "review submitted")
 	})
 	require.Empty(t, latestButtons(fake, receipt.TS))
 	waitFor(t, "the prompt says what the click started", func() bool { return strings.Contains(capturedBody(), "Opened the sign-in link.") })
@@ -702,7 +786,7 @@ func TestTeamReview_SurvivesRestart(t *testing.T) {
 			_, srv2 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
 			clickApprove(t, srv2, "U2", receipt.ID, receipt.TS)
 			waitFor(t, "the approval lands on the process that never posted the review", func() bool {
-				return updatedWith(fake, receipt.TS, "Approved", "<@U2>", "review submitted")
+				return updatedWith(fake, receipt.TS, "Approved", "<@U2>") && detailedWith(fake, receipt.TS, "review submitted")
 			})
 			calls := tools.recorded()
 			require.Len(t, calls, 2)
@@ -713,7 +797,9 @@ func TestTeamReview_SurvivesRestart(t *testing.T) {
 			require.JSONEq(t, string(wantArgs), string(gotArgs), "the arguments reach the tool as posted")
 			require.False(t, updatedWith(fake, receipt.TS, "expired"), "the restart did not expire the review")
 			require.Empty(t, latestButtons(fake, receipt.TS))
-			require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", statusLine(fake, receipt.TS), "the link survived with the ask")
+			reply, _ := detailsReply(fake, receipt.TS)
+			details := blocksOf(reply)
+			require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", details[len(details)-1]["elements"].([]any)[0].(map[string]any)["text"], "the link survived with the ask")
 
 			clickApprove(t, srv2, "U1", receipt.ID, receipt.TS)
 			waitFor(t, "a late clicker is told who decided", func() bool { return ephemeralTo(fake, "U1", "already approved by <@U2>") })

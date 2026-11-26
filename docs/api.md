@@ -53,6 +53,7 @@ volumes:
   "team": "team-bumblebee",
   "channel": "C0123ABCDE",
   "text": "*Enable* `agent-platform` on two installations for <@U…>: …",
+  "summary": "*alex* asks to enable *agent-platform* on *a*, *b*",
   "actor": "alex@example.com",
   "pullRequests": [
     "https://github.com/giantswarm/a-configs/pull/12",
@@ -76,6 +77,10 @@ volumes:
   the decision and `chat.update` needs the ID. Required.
 - `text` — the change spelled out, Slack mrkdwn, at most 3000 characters. The caller is a trusted
   service, so the text is rendered as written. Required.
+- `summary` — the ask in one line, Slack mrkdwn, at most 300 characters and no line break. Once the
+  review is decided, the message in the channel is shortened to the outcome, the decider and this
+  line, and `text`, the pull requests, the link and what the tool said move into a reply in its
+  thread. Without it, the first line of `text` stands in. Optional.
 - `actor` — the person whose action the review decides, as the gateway knows linked people: the
   **email** of the identity their Slack account was linked to (the gateway verifies the Slack
   profile's email against it at link time; it holds no GitHub login). Their own *Approve* is
@@ -130,7 +135,7 @@ taken over by the next click instead of holding the review for the rest of its s
 *Deny* click holds nothing: the modal it opens claims the review on submission.
 
 The tool's answer decides what the click did. A success closes the review; what the tool said is
-shown to the team under the outcome — a plain text as written, a JSON object by its `message`
+shown to the team in the thread reply that carries the ask — a plain text as written, a JSON object by its `message`
 field (a tool that answers agents with structured data puts the sentence for the channel there),
 nothing of structured data without one; a denial also shows the typed reason. An error result is
 a refusal (the manager finding the person outside the team, or the author of the change) and is

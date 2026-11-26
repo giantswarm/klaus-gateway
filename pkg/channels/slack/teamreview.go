@@ -246,6 +246,7 @@ func newTeamReviewRecord(review channels.TeamReview, id string) store.Review {
 		Channel:      review.Channel,
 		Team:         review.Team,
 		Text:         review.Text,
+		Summary:      review.Summary,
 		Link:         review.Link,
 		Actor:        strings.TrimSpace(review.Actor),
 		PullRequests: review.PullRequests,
@@ -640,9 +641,79 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 	a.finishTeamReview(ctx, rv.ID, decision.deny)
 	a.Logger.Info("slack: team review decided", "record", decision.record(),
 		"review", rv.ID, "team", rv.Team, "tool", tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", accepted != nil)
-	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, teamReviewOutcome(rv, clicker, decision, res.Text), teamReviewOutcomeBlocks(rv, clicker, decision, res.Text)); err != nil {
+	a.showTeamReviewDecided(ctx, rv, clicker, decision, res.Text)
+}
+
+// showTeamReviewDecided shortens the decided review to one line in the
+// channel and moves the ask, the pull requests, the link and what the tool
+// said into the message's thread, ahead of the results the manager posts
+// there. The details are posted first: when Slack refuses them, the message
+// is rewritten to the whole outcome instead, so nothing of the ask is lost.
+func (a *Adapter) showTeamReviewDecided(ctx context.Context, rv store.Review, decider string, decision teamReviewDecision, result string) {
+	details := teamReviewDetails(rv, decision, result)
+	_, err := a.apiClient().postJSON(ctx, methodChatPostMessage, map[string]any{
+		paramChannel:  rv.Channel,
+		paramThreadTS: rv.TS,
+		paramText:     teamMessageFallback(rv.Team, details),
+		paramBlocks:   teamReviewDetailsBlocks(rv, details),
+	})
+	text, blocks := teamReviewDecided(rv, decider, decision), []any(nil)
+	if err != nil {
+		a.Logger.Warn("slack: team review details reply failed; the message keeps them", "review", rv.ID, "error", err)
+		text, blocks = teamReviewOutcome(rv, decider, decision, result), teamReviewOutcomeBlocks(rv, decider, decision, result)
+	} else {
+		blocks = []any{map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}}}
+	}
+	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, text, blocks); err != nil {
 		a.Logger.Warn("slack: team review outcome rewrite failed", "review", rv.ID, "error", err)
 	}
+}
+
+// teamReviewDecided is the one line a decided review is shortened to: the
+// outcome, the decider, the team and the summary.
+func teamReviewDecided(rv store.Review, decider string, decision teamReviewDecision) string {
+	outcome := "Approved"
+	if decision.deny {
+		outcome = "Denied"
+	}
+	return truncateRunes(fmt.Sprintf("*%s* by <@%s> for %s: %s", outcome, decider, escapeMrkdwn(rv.Team), reviewSummary(rv)), slackSectionTextMax)
+}
+
+// reviewSummary is the review's summary, or the first line of its text when
+// the manager gave none.
+func reviewSummary(rv store.Review) string {
+	if s := strings.TrimSpace(rv.Summary); s != "" {
+		return s
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(rv.Text), "\n")
+	return truncateRunes(first, channels.TeamSummaryMax)
+}
+
+// teamReviewDetails is the decided review's thread reply: the ask, the
+// reason of a denial, and what the tool said.
+func teamReviewDetails(rv store.Review, decision teamReviewDecision, result string) string {
+	var b strings.Builder
+	b.WriteString(rv.Text)
+	if decision.deny {
+		fmt.Fprintf(&b, "\n> %s", escapeMrkdwn(decision.reason))
+	}
+	if said := toolMessage(result); said != "" {
+		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(said), teamReviewReasonMax))
+	}
+	return truncateRunes(b.String(), slackSectionTextMax)
+}
+
+// teamReviewDetailsBlocks renders the details reply: the text, the pull
+// requests and the link as small print.
+func teamReviewDetailsBlocks(rv store.Review, details string) []any {
+	blocks := []any{
+		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: details}},
+	}
+	blocks = appendPullRequests(blocks, rv.PullRequests)
+	if rv.Link != "" {
+		blocks = append(blocks, contextBlock(openLink(rv.Link)))
+	}
+	return blocks
 }
 
 // record names the log record of a decision that went through.
@@ -758,8 +829,8 @@ func (a *Adapter) callOrAccept(ctx context.Context, token, tool string, args map
 }
 
 // teamReviewOutcome is the text the review message is rewritten to once it is
-// decided: who decided and how, for which team, the ask, the reason of a
-// denial, and what the tool said.
+// decided and its details could not go into the thread: who decided and how,
+// for which team, the ask, the reason of a denial, and what the tool said.
 func teamReviewOutcome(rv store.Review, decider string, decision teamReviewDecision, result string) string {
 	var b strings.Builder
 	if decision.deny {
