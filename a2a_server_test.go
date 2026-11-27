@@ -8,15 +8,15 @@ import (
 	"github.com/giantswarm/klaus-gateway/internal/config"
 )
 
-func TestTrustedIssuerRefusesAPrivateKeySetByDefault(t *testing.T) {
+func TestPlatformVerifierRefusesAPrivateKeySetByDefault(t *testing.T) {
 	for name, url := range map[string]string{
 		"loopback": "https://127.0.0.1:1/keys",
 		"private":  "https://10.0.0.1/keys",
 		"plain":    "http://idp.example.org/keys",
 	} {
-		issuer, err := trustedIssuer(config.TrustedIssuer{Name: "x", Issuer: "https://idp.example.org", JWKSURL: url, Audience: "a"})
+		verifier, err := platformVerifier(config.PlatformToken{Issuer: "https://dex.example.com", JWKSURL: url, Audience: "a", AllowedClients: []string{"c"}}, "")
 		require.NoError(t, err)
-		_, err = issuer.JWKS.FetchJWKS(t.Context(), issuer.JWKSURL)
+		_, err = verifier.JWKS.FetchJWKS(t.Context(), verifier.JWKSURL)
 		require.Error(t, err, name)
 	}
 }

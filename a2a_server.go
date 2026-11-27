@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
 
@@ -26,25 +24,17 @@ import (
 const a2aServerPath = "/a2a"
 
 // mountA2AServer serves the A2A server and its Agent Card.
-func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2aserver.Agents, organizations pkga2a.OrganizationNames, r chi.Router, logger *slog.Logger) error {
+func mountA2AServer(_ context.Context, cfg config.A2AServerConfig, agents a2aserver.Agents, organizations pkga2a.OrganizationNames, r chi.Router, logger *slog.Logger) error {
 	if organizations == nil {
 		return fmt.Errorf("A2A clients address agents by organization: the gateway needs its Kubernetes client to read the organization namespaces")
 	}
-	secret, err := os.ReadFile(cfg.ExchangeClientSecretFile)
-	if err != nil {
-		return fmt.Errorf("read the exchange client secret: %w", err)
-	}
-	exchangeClient, err := issuerHTTPClient(cfg.CAFile)
+	verifier, err := platformVerifier(cfg.Token, cfg.CAFile)
 	if err != nil {
 		return err
 	}
-	issuers := make([]a2aserver.TrustedIssuer, 0, len(cfg.Issuers))
+	issuers := make([]a2aserver.CardIssuer, 0, len(cfg.Issuers))
 	for _, entry := range cfg.Issuers {
-		issuer, err := trustedIssuer(entry)
-		if err != nil {
-			return fmt.Errorf("issuer %q: %w", entry.Name, err)
-		}
-		issuers = append(issuers, issuer)
+		issuers = append(issuers, cardIssuer(entry))
 	}
 	card := a2aserver.NewCard(a2aserver.CardConfig{
 		URL:     strings.TrimSuffix(cfg.PublicURL, "/") + a2aServerPath,
@@ -52,14 +42,7 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 		Version: version.Version(),
 	})
 	auth := &a2aserver.Authenticator{
-		Verifier: a2aserver.NewJWTVerifier(issuers, cfg.ExchangeClientID),
-		Exchanger: &a2aserver.Exchanger{
-			TokenURL:     cfg.ExchangeTokenURL,
-			ClientID:     cfg.ExchangeClientID,
-			ClientSecret: strings.TrimSpace(string(secret)),
-			Audiences:    cfg.ExchangeAudiences,
-			HTTPClient:   exchangeClient,
-		},
+		Verifier:         verifier,
 		MaxBodyBytes:     cfg.MaxBodyBytes,
 		MinTokenLifetime: cfg.MinTokenLifetime,
 		Realm:            "klaus-gateway",
@@ -69,39 +52,46 @@ func mountA2AServer(ctx context.Context, cfg config.A2AServerConfig, agents a2as
 	r.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	r.Handle(a2aServerPath, auth.Middleware(a2asrv.NewJSONRPCHandler(handler)))
 	for _, issuer := range issuers {
-		logger.Info("A2A server trusts issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience, "allowed_clients", issuer.AllowedClients, "connector_id", issuer.ConnectorID)
+		logger.Info("A2A server card declares issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience)
 	}
-	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "exchange_token_url", cfg.ExchangeTokenURL, "exchange_audiences", cfg.ExchangeAudiences, "max_body_bytes", cfg.MaxBodyBytes, "min_token_lifetime", cfg.MinTokenLifetime)
+	logger.Info("A2A server enabled", "endpoint", a2aServerPath, "token_issuer", cfg.Token.Issuer, "token_audience", cfg.Token.Audience, "token_allowed_clients", cfg.Token.AllowedClients, "max_body_bytes", cfg.MaxBodyBytes, "min_token_lifetime", cfg.MinTokenLifetime)
 	return nil
 }
 
-// trustedIssuer is entry with its signing keys read from its key set URL,
-// trusting its CA bundle next to the system roots.
-func trustedIssuer(entry config.TrustedIssuer) (a2aserver.TrustedIssuer, error) {
-	pool, err := issuerCertPool(entry.CAFile)
+// platformVerifier verifies the platform token with token's key set, trusting
+// the CA bundle at caFile next to the system roots.
+func platformVerifier(token config.PlatformToken, caFile string) (*a2aserver.PlatformVerifier, error) {
+	pool, err := issuerCertPool(caFile)
 	if err != nil {
-		return a2aserver.TrustedIssuer{}, err
+		return nil, err
 	}
+	return &a2aserver.PlatformVerifier{
+		Issuer:  token.Issuer,
+		JWKSURL: token.JWKSURL,
+		JWKS: mcpoidc.NewJWKSClientWithOptions(mcpoidc.JWKSClientOptions{
+			AllowPrivateIPHosts: token.AllowPrivateIPJWKSHosts,
+			RootCAs:             pool,
+		}),
+		Audience:       token.Audience,
+		AllowedClients: token.AllowedClients,
+	}, nil
+}
+
+// cardIssuer is entry as the Agent Card declares it. An issuer without a token
+// endpoint or discovery document names its default discovery document.
+func cardIssuer(entry config.CardIssuer) a2aserver.CardIssuer {
 	discovery := entry.OpenIDConnectURL
 	if discovery == "" && entry.TokenURL == "" {
 		discovery = strings.TrimSuffix(entry.Issuer, "/") + "/.well-known/openid-configuration"
 	}
-	return a2aserver.TrustedIssuer{
-		Name:    entry.Name,
-		Issuer:  entry.Issuer,
-		JWKSURL: entry.JWKSURL,
-		JWKS: mcpoidc.NewJWKSClientWithOptions(mcpoidc.JWKSClientOptions{
-			AllowPrivateIPHosts: entry.AllowPrivateIPJWKSHosts,
-			RootCAs:             pool,
-		}),
+	return a2aserver.CardIssuer{
+		Name:             entry.Name,
+		Issuer:           entry.Issuer,
 		Audience:         entry.Audience,
-		AllowedClients:   entry.AllowedClients,
-		ConnectorID:      entry.ConnectorID,
 		TokenURL:         entry.TokenURL,
 		MetadataURL:      entry.MetadataURL,
 		OpenIDConnectURL: discovery,
-		AccessTokens:     entry.SubjectTokenType == config.SubjectTokenAccessToken,
-	}, nil
+	}
 }
 
 // issuerCertPool is the system roots with the PEM bundle at caFile, or nil
@@ -122,14 +112,4 @@ func issuerCertPool(caFile string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("issuer CA bundle %s holds no certificate", caFile)
 	}
 	return pool, nil
-}
-
-func issuerHTTPClient(caFile string) (*http.Client, error) {
-	pool, err := issuerCertPool(caFile)
-	if err != nil || pool == nil {
-		return http.DefaultClient, err
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	return &http.Client{Transport: transport}, nil
 }

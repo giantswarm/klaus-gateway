@@ -77,19 +77,17 @@ func TestOrganizationNamesFallsBackWithoutClient(t *testing.T) {
 	}
 }
 
-func TestTrustedIssuerCardDefaults(t *testing.T) {
+func TestCardIssuerDefaults(t *testing.T) {
 	for name, test := range map[string]struct {
-		entry     config.TrustedIssuer
+		entry     config.CardIssuer
 		discovery string
 	}{
-		"neither":         {config.TrustedIssuer{Issuer: "https://dex.example.com/"}, "https://dex.example.com/.well-known/openid-configuration"},
-		"discovery named": {config.TrustedIssuer{Issuer: "https://idp.example.org", OpenIDConnectURL: "https://idp.example.org/oidc"}, "https://idp.example.org/oidc"},
-		"token endpoint":  {config.TrustedIssuer{Issuer: "https://dex.example.com", TokenURL: "https://dex.example.com/token"}, ""}, //nolint:gosec // G101: a test URL
+		"neither":         {config.CardIssuer{Issuer: "https://dex.example.com/"}, "https://dex.example.com/.well-known/openid-configuration"},
+		"discovery named": {config.CardIssuer{Issuer: "https://idp.example.org", OpenIDConnectURL: "https://idp.example.org/oidc"}, "https://idp.example.org/oidc"},
+		"token endpoint":  {config.CardIssuer{Issuer: "https://dex.example.com", TokenURL: "https://dex.example.com/token"}, ""}, //nolint:gosec // G101: a test URL
 	} {
 		t.Run(name, func(t *testing.T) {
-			issuer, err := trustedIssuer(test.entry)
-			require.NoError(t, err)
-			require.Equal(t, test.discovery, issuer.OpenIDConnectURL)
+			require.Equal(t, test.discovery, cardIssuer(test.entry).OpenIDConnectURL)
 		})
 	}
 }

@@ -2,13 +2,9 @@ package a2aserver_test
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -27,18 +23,7 @@ func (v clockVerifier) Verify(_ context.Context, raw string) (a2aserver.Verified
 	if !ok {
 		return a2aserver.VerifiedToken{}, errors.New("bad token")
 	}
-	return a2aserver.VerifiedToken{Issuer: a2aserver.TrustedIssuer{Name: "dex"}, Expiry: expiry}, nil
-}
-
-// lifetimeExchanger issues numbered tokens living lifetime.
-type lifetimeExchanger struct {
-	calls    atomic.Int32
-	lifetime time.Duration
-}
-
-func (e *lifetimeExchanger) Exchange(context.Context, string, a2aserver.TrustedIssuer) (a2aserver.ExchangedToken, error) {
-	n := e.calls.Add(1)
-	return a2aserver.ExchangedToken{Token: fmt.Sprintf("exchanged-%d", n), Expiry: time.Now().Add(e.lifetime)}, nil
+	return a2aserver.VerifiedToken{Expiry: expiry}, nil
 }
 
 // forward sends one request with token through auth and returns the status
@@ -56,67 +41,36 @@ func forward(t *testing.T, auth *a2aserver.Authenticator, token string) (int, st
 	return recorder.Code, forwarded
 }
 
-func TestShortLivedExchangedTokenIsRefused(t *testing.T) {
+func TestShortLivedPlatformTokenIsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		verifier := clockVerifier{tokens: map[string]time.Time{clientToken: time.Now().Add(time.Hour)}}
-		short := &a2aserver.Authenticator{Verifier: verifier, Exchanger: &lifetimeExchanger{lifetime: 5 * time.Minute}, MinTokenLifetime: 25 * time.Minute}
-		status, forwarded := forward(t, short, clientToken)
-		require.Equal(t, http.StatusBadGateway, status)
-		require.Empty(t, forwarded, "no request runs with a token that would expire mid-turn")
+		auth := &a2aserver.Authenticator{
+			Verifier: clockVerifier{tokens: map[string]time.Time{
+				"short":     time.Now().Add(5 * time.Minute),
+				"long":      time.Now().Add(30 * time.Minute),
+				"no-expiry": {},
+			}},
+			MinTokenLifetime: 25 * time.Minute,
+		}
+		for _, token := range []string{"short", "no-expiry"} {
+			status, forwarded := forward(t, auth, token)
+			require.Equal(t, http.StatusBadGateway, status, token)
+			require.Empty(t, forwarded, "no request runs with a token that may expire mid-turn")
+		}
 
-		long := &a2aserver.Authenticator{Verifier: verifier, Exchanger: &lifetimeExchanger{lifetime: 30 * time.Minute}, MinTokenLifetime: 25 * time.Minute}
-		status, forwarded = forward(t, long, clientToken)
+		status, forwarded := forward(t, auth, "long")
 		require.Equal(t, http.StatusOK, status)
-		require.Equal(t, "exchanged-1", forwarded)
+		require.Equal(t, "long", forwarded)
+
+		time.Sleep(6 * time.Minute)
+		status, _ = forward(t, auth, "long")
+		require.Equal(t, http.StatusBadGateway, status, "24 minutes left is less than a turn")
 	})
 }
 
-// unsignedJWT is a JWT-shaped token carrying claims, for code that reads
-// claims without a signature check.
-func unsignedJWT(t *testing.T, claims map[string]any) string {
-	t.Helper()
-	payload, err := json.Marshal(claims)
-	require.NoError(t, err)
-	encode := base64.RawURLEncoding.EncodeToString
-	return encode([]byte(`{"alg":"RS256"}`)) + "." + encode(payload) + ".c2lnbmF0dXJl"
-}
-
-func TestExchangedTokenExpiryIsTheEarlierDeadline(t *testing.T) {
-	for name, test := range map[string]struct {
-		expiresIn int64
-		exp       time.Duration
-		want      time.Duration
-	}{
-		"exp earlier":        {expiresIn: 1800, exp: 10 * time.Minute, want: 10 * time.Minute},
-		"expires_in earlier": {expiresIn: 600, exp: time.Hour, want: 10 * time.Minute},
-		"exp only":           {exp: 20 * time.Minute, want: 20 * time.Minute},
-		"neither":            {},
-	} {
-		t.Run(name, func(t *testing.T) {
-			now := time.Now()
-			claims := map[string]any{"sub": "app"}
-			if test.exp > 0 {
-				claims["exp"] = now.Add(test.exp).Unix()
-			}
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				//nolint:gosec // G101: an RFC 8693 identifier and a test token, not a credential
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"access_token": unsignedJWT(t, claims), "issued_token_type": "urn:ietf:params:oauth:token-type:id_token",
-					"token_type": "bearer", "expires_in": test.expiresIn,
-				})
-			}))
-			t.Cleanup(server.Close)
-			exchanger := &a2aserver.Exchanger{TokenURL: server.URL, HTTPClient: server.Client()}
-			issued, err := exchanger.Exchange(t.Context(), clientToken, a2aserver.TrustedIssuer{})
-			require.NoError(t, err)
-			if test.want == 0 {
-				require.True(t, issued.Expiry.IsZero())
-				status, _ := forward(t, &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, MinTokenLifetime: time.Minute}, clientToken)
-				require.Equal(t, http.StatusBadGateway, status, "a token without a known expiry cannot be checked against a turn")
-				return
-			}
-			require.WithinDuration(t, now.Add(test.want), issued.Expiry, 2*time.Second)
-		})
-	}
+func TestPlatformTokenIsForwardedUnchanged(t *testing.T) {
+	const raw = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"
+	auth := &a2aserver.Authenticator{Verifier: clockVerifier{tokens: map[string]time.Time{raw: time.Now().Add(time.Hour)}}, MinTokenLifetime: time.Minute}
+	status, forwarded := forward(t, auth, raw)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, raw, forwarded, "the gateway acts with the platform token byte for byte")
 }

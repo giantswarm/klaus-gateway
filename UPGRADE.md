@@ -24,6 +24,22 @@ already uses this list format.
 turn timeout or renewal mechanism. Set Dex's `expiry.idTokens` above that floor.
 A turn that outlasts its token can still fail; the runtime does not refresh it.
 
+## Next - agentgateway checks and exchanges A2A client tokens
+
+- The A2A server accepts only the platform token agentgateway's exchange issues. Before enabling
+  `a2aServer`, render agentgateway's JWT authentication, authorization rule and
+  `oauthTokenExchange` backend auth on the `/a2a` route (agent-platform does this), as
+  described in `docs/a2a-server.md`.
+- New: `a2aServer.token.{issuer, jwksUrl, audience, allowedClients, allowPrivateIpJwksHosts}`
+  (flags `--a2a-server-token-*`). `allowedClients` lists agentgateway's exchange client.
+- Removed, shipped only in 4.20.0 release candidates: `a2aServer.exchange.*` and its Secret,
+  and the `a2aServer.issuers[]` fields `jwksUrl`, `allowedClients`, `connectorId`,
+  `subjectTokenType`, `caFile` and `allowPrivateIpJwksHosts` (they move to agentgateway's
+  policy). The flags `--a2a-server-exchange-token-url`, `--a2a-server-exchange-client-id`,
+  `--a2a-server-exchange-client-secret-file` and `--a2a-server-exchange-audiences` are gone.
+  An issuer entry with a removed field fails the values schema and the gateway's start.
+- `a2aServer.caSecret` and `caFile` now trust a CA for `a2aServer.token.jwksUrl`.
+
 ## 4.16.32 — sign-in links open unchanged
 
 - The gateway's muster client declares URL mode elicitation on MCP protocol 2026-07-28 and no

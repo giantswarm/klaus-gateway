@@ -78,10 +78,11 @@ Slack channel gateway for the Agent Platform's kagent agents
 | a2aServer.enabled | bool | `false` |  |
 | a2aServer.publicUrl | string | `""` |  |
 | a2aServer.issuers | list | `[]` |  |
-| a2aServer.exchange.tokenUrl | string | `""` |  |
-| a2aServer.exchange.clientId | string | `""` |  |
-| a2aServer.exchange.existingSecret | string | `""` |  |
-| a2aServer.exchange.audiences | list | `[]` |  |
+| a2aServer.token.issuer | string | `""` |  |
+| a2aServer.token.jwksUrl | string | `""` |  |
+| a2aServer.token.audience | string | `""` |  |
+| a2aServer.token.allowedClients | list | `[]` |  |
+| a2aServer.token.allowPrivateIpJwksHosts | list | `[]` |  |
 | a2aServer.maxBodyBytes | int | `2097152` |  |
 | a2aServer.minTokenLifetime | string | `"25m"` |  |
 | a2aServer.caSecret | string | `""` |  |
