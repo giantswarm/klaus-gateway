@@ -122,7 +122,8 @@ every call with its re-login error, and `SendMessage` and `SendStreamingMessage`
 with the A2A error `UNAUTHENTICATED`. Its `google.rpc.ErrorInfo` detail carries muster's
 words in `metadata.reason`. muster identifies this refusal with its MCP tool
 result's `structuredContent.status: unauthenticated`; the gateway does not parse
-the text. A new application token does not help: the exchange's audiences must be fixed.
+the text. This requires muster 5.67.0-rc.18 or later. A new application token does
+not help: the exchange's audiences must be fixed.
 
 ## Sign-ins and tool approvals
 
@@ -352,8 +353,9 @@ a2aServer:
   # Least lifetime the platform token must have left; Dex's expiry.idTokens
   # must be longer.
   minTokenLifetime: 25m
-  # Secret with key ca.crt, when token.jwksUrl is not publicly trusted.
+  # Secret with the CA bundle, when token.jwksUrl is not publicly trusted.
   caSecret: ""
+  caSecretKey: ca.crt
 ```
 
 The gateway fetches `a2aServer.token.jwksUrl` with mcp-oauth's SSRF-safe client: the URL

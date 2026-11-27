@@ -39,6 +39,11 @@ A turn that outlasts its token can still fail; the runtime does not refresh it.
   `--a2a-server-exchange-client-secret-file` and `--a2a-server-exchange-audiences` are gone.
   An issuer entry with a removed field fails the values schema and the gateway's start.
 - `a2aServer.caSecret` and `caFile` now trust a CA for `a2aServer.token.jwksUrl`.
+  `a2aServer.caSecretKey` selects the CA bundle's key in that Secret and defaults
+  to `ca.crt`.
+- Run muster 5.67.0-rc.18 or later to identify caller-token refusals through
+  `structuredContent.status: unauthenticated`. Older versions do not supply that
+  status, so the gateway cannot classify their refusal text as `UNAUTHENTICATED`.
 
 ## 4.16.32 — sign-in links open unchanged
 
