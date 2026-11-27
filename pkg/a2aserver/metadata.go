@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -26,7 +25,7 @@ type mcpRequestMetadataInterceptor struct {
 
 // Before validates the metadata of every request that carries it: the server
 // propagator forwards it, whichever method the request is for.
-func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallContext, request *a2asrv.Request) (context.Context, any, error) {
+func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, _ *a2asrv.CallContext, request *a2asrv.Request) (context.Context, any, error) {
 	var metadata map[string]any
 	switch payload := request.Payload.(type) {
 	case *a2a.SendMessageRequest:
@@ -38,21 +37,11 @@ func (*mcpRequestMetadataInterceptor) Before(ctx context.Context, callCtx *a2asr
 			metadata = payload.Metadata
 		}
 	}
-	var requested []string
-	if callCtx != nil {
-		requested = callCtx.Extensions().RequestedURIs()
-	}
-	return ctx, nil, validateMCPRequestMetadata(metadata, requested)
+	return ctx, nil, validateMCPRequestMetadata(metadata)
 }
 
-// validateMCPRequestMetadata checks the keys bound for MCP _meta. A key
-// naming an extension the caller requested holds that extension's data
-// (A2A, "Extensions") and belongs to the agent's extension, not to MCP.
-func validateMCPRequestMetadata(values map[string]any, requestedExtensions []string) error {
+func validateMCPRequestMetadata(values map[string]any) error {
 	for key := range values {
-		if slices.Contains(requestedExtensions, key) {
-			continue
-		}
 		switch {
 		case key == "" || !mcpMetadataKey.MatchString(key):
 			return fmt.Errorf("%w: invalid MCP metadata key %q", a2a.ErrInvalidParams, key)

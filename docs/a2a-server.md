@@ -52,11 +52,18 @@ See the [metadata contract](a2a-metadata-contract.md) for top-level key validati
 ## Extensions
 
 The extensions an A2A client requests with the `A2A-Extensions` header are requested on the
-agent's call too, next to kagent's HITL extension, which the gateway always requests. The gateway
-neither activates nor interprets them: the agent runtime does. Request metadata keyed by the
-URI of a requested extension is that extension's data (A2A, Extensions) and is forwarded
-without the MCP key check; the same key without the extension requested is refused as an
-invalid MCP `_meta` key. The public Agent Card declares no extensions.
+agent's call too, next to kagent's HITL extension, which the gateway always requests. The
+agent runtime decides which extensions it activates. Request metadata stays bound for
+MCP `_meta` and always gets its key validation, including when an extension with the
+same name is requested. An extension's URI-keyed data can travel in message or part
+metadata; the gateway does not forward that metadata to MCP.
+
+This forwards extension requests only. The pinned A2A SDK does not expose successful
+gRPC response headers to its client interceptors or write activation acknowledgements
+from its JSON-RPC server. The gateway therefore returns no `A2A-Extensions` response
+header and does not offer complete extension negotiation
+([a2aproject/a2a-go#643](https://github.com/a2aproject/a2a-go/issues/643)). The public
+Agent Card declares no extensions.
 
 ## How a request is authenticated
 
