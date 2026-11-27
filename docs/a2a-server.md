@@ -85,7 +85,8 @@ Dex (`a2aServer.exchange.tokenUrl`).
    default) left: the agent runtime keeps it for the whole turn and cannot renew it. Its
    lifetime is the earlier of the exchange response's `expires_in` (RFC 8693 section 2.2.1)
    and the token's `exp`. A shorter or unknown lifetime is refused with 502 and logged as
-   an error, since it means the identity provider issues tokens shorter than a turn.
+   an error. This is an admission floor, not a turn timeout or token renewal: a turn
+   that outlasts the remaining token lifetime can still fail.
 6. The turn runs with the exchanged token only. The application's token is never sent
    on.
 
