@@ -190,6 +190,23 @@ func (e *ConnectRequiredError) Error() string {
 	return "a2a: muster waits for the caller's sign-in"
 }
 
+// TokenRefusedError is muster refusing to run a call as the caller's token
+// itself: the token lacks an audience muster needs, or the Kubernetes API
+// rejects it. Only a new token helps. Reason is muster's own explanation. It
+// is ErrNoIdentity.
+type TokenRefusedError struct {
+	Reason string
+}
+
+func (e *TokenRefusedError) Error() string {
+	return "a2a: muster refused the caller's token: " + e.Reason
+}
+
+// Is makes a refused token ErrNoIdentity for every caller that checks for it.
+func (e *TokenRefusedError) Is(target error) bool {
+	return target == ErrNoIdentity
+}
+
 // Config configures a Client.
 type Config struct {
 	// Target is the controller's gRPC endpoint, reached through agentgateway:

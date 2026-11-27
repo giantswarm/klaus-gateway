@@ -304,6 +304,33 @@ func TestStartSession_MusterRefusingTheTokenIsNoIdentity(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 }
 
+// muster answers a call it cannot run as the caller's token (it lacks an
+// audience muster needs, or the Kubernetes API rejects it) with its re-login
+// error instead of dispatching the tool: a refused token, with muster's reason.
+func TestStartSession_MusterReloginIsTokenRefused(t *testing.T) {
+	const reason = `Tool execution failed: tool not found: ` + tool + `: Your session token does not carry the "kubernetes" audience the Kubernetes API needs to tell which MCP servers you may see. A re-login is required: sign in again to get a fresh session token, then retry.`
+	starter, _ := starterAnswering(t, mustertest.Answer{Undispatched: true, IsError: true, Text: reason})
+	_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
+	var refused *pkga2a.TokenRefusedError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, reason, refused.Reason)
+	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
+
+	// The lookup of the caller's organizations meets the same refusal, and
+	// nothing is started after it.
+	starter, srv := starterWith(t, map[string]func(map[string]any) mustertest.Answer{
+		prefix + "list_organizations": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Undispatched: true, IsError: true, Text: reason}
+		},
+		tool: func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: `{"session":{"id":"` + sessionID + `"}}`}
+		},
+	})
+	_, err = start(starter, "agents-acme", "billing", "", workspaces.Grant{})
+	require.ErrorAs(t, err, &refused)
+	require.Len(t, srv.Calls(), 1)
+}
+
 // The sign-in muster asks for (the person is signed in but has not connected
 // a server the start goes through) is a URL elicitation: the channel's
 // Connect prompt, not the sign-in prompt.

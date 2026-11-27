@@ -539,6 +539,23 @@ func TestMetadataPrefixesOutsideMCPsReservationPass(t *testing.T) {
 	}
 }
 
+func TestSessionStartTokenRefusalReachesTheCaller(t *testing.T) {
+	const reason = `Your session token does not carry the "kubernetes" audience the Kubernetes API needs. A re-login is required: sign in again to get a fresh session token, then retry.`
+	agents := &fakeAgents{startErrs: []error{&pkga2a.TokenRefusedError{Reason: reason}}}
+	_, card := serve(t, agents)
+	caller := client(t, card, clientToken)
+
+	_, err := caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
+	require.ErrorIs(t, err, a2a.ErrUnauthenticated)
+	require.NotErrorIs(t, err, a2a.ErrInternalError)
+	var refusal *a2a.Error
+	require.ErrorAs(t, err, &refusal)
+	metadata, ok := refusal.ErrorInfo().Value["metadata"].(map[string]string)
+	require.True(t, ok, "the reason travels in the ErrorInfo detail: %#v", refusal.ErrorInfo().Value)
+	require.Equal(t, reason, metadata["reason"])
+	require.Empty(t, agents.streamed)
+}
+
 func TestSessionStartSignInReachesTheCaller(t *testing.T) {
 	const approval = "https://muster.example/approvals/1"
 	agents := &fakeAgents{startErrs: []error{&pkga2a.ConnectRequiredError{SignIn: &muster.SignIn{Message: "Confirm Start session in agent-manager.", URL: approval}}}}

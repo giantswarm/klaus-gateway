@@ -136,6 +136,9 @@ func (s *Starter) StartSession(ctx context.Context, bearer string, target pkga2a
 	if res.SignIn != nil {
 		return pkga2a.Session{}, &pkga2a.ConnectRequiredError{SignIn: res.SignIn}
 	}
+	if reloginRequired(res) {
+		return pkga2a.Session{}, &pkga2a.TokenRefusedError{Reason: res.Text}
+	}
 	if !res.Dispatched {
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: muster did not run %s: %s", ref, s.tool, res.Text)
 	}
@@ -216,6 +219,8 @@ func (s *Starter) organizationOf(ctx context.Context, bearer, namespace string) 
 		return "", nil
 	case res.SignIn != nil:
 		return "", &pkga2a.ConnectRequiredError{SignIn: res.SignIn}
+	case reloginRequired(res):
+		return "", &pkga2a.TokenRefusedError{Reason: res.Text}
 	case !res.Dispatched || res.IsError:
 		s.logger.Warn("agentmanager: organizations unavailable, starting by namespace", "namespace", namespace, "answer", res.Text)
 		return "", nil
@@ -240,6 +245,17 @@ func (s *Starter) organizationOf(ctx context.Context, bearer, namespace string) 
 		return name, nil
 	}
 	return "", nil
+}
+
+// musterReloginMarker ends muster's answer to a call it does not run because
+// the caller's token cannot authenticate at the Kubernetes API
+// (callerwrite.ReloginError in giantswarm/muster).
+const musterReloginMarker = "A re-login is required"
+
+// reloginRequired reports whether muster answered a call with its re-login
+// error instead of running it.
+func reloginRequired(res muster.Result) bool {
+	return !res.Dispatched && res.IsError && strings.Contains(res.Text, musterReloginMarker)
 }
 
 // tokenRefused reports whether muster refused the caller's token.

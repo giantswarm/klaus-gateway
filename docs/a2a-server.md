@@ -99,6 +99,14 @@ its own: a client that polls `GetTask` causes one exchange per poll.
 The exchange is where the identity provider decides who may use the channel, so its
 configuration below is part of the channel's security, not an option.
 
+muster runs a call only as a token the Kubernetes API accepts: it must carry the
+audience the API server checks (`kubernetes` on Giant Swarm installations). The exchange
+must request that audience next to `a2aServer.token.audience`. Without it, muster answers
+every call with its re-login error, and `SendMessage` and `SendStreamingMessage` answer
+with the A2A error `UNAUTHENTICATED`. Its `google.rpc.ErrorInfo` detail carries muster's
+words in `metadata.reason`. A new application token does not help: the exchange's
+audiences must be fixed.
+
 ## Sign-ins and tool approvals
 
 muster can ask the person behind a token to act before a tool runs: sign in to a
