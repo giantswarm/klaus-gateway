@@ -1,6 +1,9 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -448,4 +451,163 @@ func TestLoad_WorkspaceToolsPrefix(t *testing.T) {
 	cfg, err = config.Load([]string{"--workspace-tools-prefix", "x_workspace-manager_"})
 	require.NoError(t, err)
 	require.Equal(t, "x_workspace-manager_", cfg.Workspaces.ToolsPrefix, "the flag wins over the env")
+}
+
+func appBase() config.Config {
+	base := config.Defaults()
+	base.A2A.Enabled = true
+	base.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080"
+	base.OBO.MusterURL = "https://muster.example.com"
+	base.A2AServer = config.A2AServerConfig{ //nolint:gosec // G101: a file path, not a credential
+		Enabled:                  true,
+		PublicURL:                "https://gateway.example.com",
+		Issuer:                   "https://dex.example.com",
+		Audience:                 "klaus-gateway-app",
+		ExchangeClientID:         "klaus-gateway-exchange",
+		ExchangeClientSecretFile: "/etc/klaus-gateway/a2a-server/client-secret",
+		ExchangeAudiences:        []string{"kagent"},
+		MaxBodyBytes:             base.A2AServer.MaxBodyBytes,
+	}
+	return base
+}
+
+func TestValidate_AppAllowedClients(t *testing.T) {
+	base := appBase()
+	require.NoError(t, base.Validate())
+
+	cfg := base
+	cfg.A2AServer.AllowedClients = []string{"example-app"}
+	require.NoError(t, cfg.Validate())
+
+	cfg.A2AServer.AllowedClients = []string{"example-app", "klaus-gateway-exchange"}
+	require.ErrorContains(t, cfg.Validate(), "exchange client")
+}
+
+func TestLoad_AppAllowedClients(t *testing.T) {
+	cfg, err := config.Load([]string{"--a2a-server-allowed-clients", "example-app, other-app"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"example-app", "other-app"}, cfg.A2AServer.AllowedClients)
+}
+
+func TestAppConfig_SingleIssuerIsAOneEntryList(t *testing.T) {
+	cfg := appBase().A2AServer
+	cfg.AllowedClients = []string{"example-app"}
+	cfg.ExchangeConnectorID = "dex-self"
+	cfg.CAFile = "/etc/ca.crt"
+	require.Equal(t, []config.TrustedIssuer{{ //nolint:gosec // G101: test URLs, not credentials
+		Name:           "oauth2",
+		Issuer:         "https://dex.example.com",
+		JWKSURL:        "https://dex.example.com/keys",
+		TokenURL:       "https://dex.example.com/token",
+		Audience:       "klaus-gateway-app",
+		AllowedClients: []string{"example-app"},
+		ConnectorID:    "dex-self",
+		CAFile:         "/etc/ca.crt",
+	}}, cfg.TrustedIssuers())
+	require.Equal(t, "https://dex.example.com/token", cfg.ExchangeEndpoint())
+
+	cfg.TokenURL = "https://dex.example.com/oauth/token"
+	require.Equal(t, "https://dex.example.com/oauth/token", cfg.ExchangeEndpoint())
+	cfg.ExchangeTokenURL = "https://dex.internal/token"
+	require.Equal(t, "https://dex.internal/token", cfg.ExchangeEndpoint())
+	require.Equal(t, "https://dex.example.com/oauth/token", cfg.TrustedIssuers()[0].TokenURL, "the card names the issuer's endpoint")
+}
+
+const issuersFile = `- name: dex
+  issuer: https://dex.example.com
+  jwksUrl: https://dex.example.com/keys
+  tokenUrl: https://dex.example.com/token
+  audience: klaus-gateway-app
+  allowedClients: [example-app]
+  connectorId: dex-self
+- name: outside
+  issuer: https://idp.example.org
+  jwksUrl: https://idp.example.org/keys
+  audience: klaus-gateway-outside
+  allowedClients: [outside-backend, outside-backend-2]
+  connectorId: outside-idp
+  subjectTokenType: urn:ietf:params:oauth:token-type:access_token
+  caFile: /etc/klaus-gateway/a2a-server-ca/ca.crt
+`
+
+func writeIssuers(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "issuers.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestLoad_AppIssuersFile(t *testing.T) {
+	path := writeIssuers(t, issuersFile)
+	cfg, err := config.Load([]string{"--a2a-server-issuers-file", path, "--a2a-server-exchange-token-url", "https://dex.example.com/token"})
+	require.NoError(t, err)
+	require.Equal(t, []config.TrustedIssuer{
+		{Name: "dex", Issuer: "https://dex.example.com", JWKSURL: "https://dex.example.com/keys", TokenURL: "https://dex.example.com/token", //nolint:gosec // G101: test URLs, not credentials
+			Audience: "klaus-gateway-app", AllowedClients: []string{"example-app"}, ConnectorID: "dex-self"},
+		{Name: "outside", Issuer: "https://idp.example.org", JWKSURL: "https://idp.example.org/keys", Audience: "klaus-gateway-outside",
+			AllowedClients: []string{"outside-backend", "outside-backend-2"}, ConnectorID: "outside-idp", SubjectTokenType: config.SubjectTokenAccessToken, CAFile: "/etc/klaus-gateway/a2a-server-ca/ca.crt"},
+	}, cfg.A2AServer.TrustedIssuers())
+	require.Equal(t, "https://dex.example.com/token", cfg.A2AServer.ExchangeEndpoint())
+
+	_, err = config.Load([]string{"--a2a-server-issuers-file", writeIssuers(t, "- name: dex\n  jwks: https://dex.example.com/keys\n")})
+	require.ErrorContains(t, err, "jwks", "an unknown field is refused")
+
+	_, err = config.Load([]string{"--a2a-server-issuers-file", filepath.Join(t.TempDir(), "missing.yaml")})
+	require.Error(t, err)
+}
+
+func TestValidate_AppIssuers(t *testing.T) {
+	path := writeIssuers(t, issuersFile)
+	loaded, err := config.Load([]string{"--a2a-server-issuers-file", path})
+	require.NoError(t, err)
+	base := appBase()
+	base.A2AServer.Issuer, base.A2AServer.Audience = "", ""
+	base.A2AServer.Issuers = loaded.A2AServer.Issuers
+	base.A2AServer.ExchangeTokenURL = "https://dex.example.com/token"
+	require.NoError(t, base.Validate())
+
+	for name, test := range map[string]struct {
+		change func(*config.A2AServerConfig)
+		want   string
+	}{
+		"both forms":           {func(c *config.A2AServerConfig) { c.Issuer = "https://dex.example.com" }, "exclusive"},
+		"connector flag too":   {func(c *config.A2AServerConfig) { c.ExchangeConnectorID = "dex-self" }, "exclusive"},
+		"no exchange endpoint": {func(c *config.A2AServerConfig) { c.ExchangeTokenURL = "" }, "--a2a-server-exchange-token-url"},
+		"no issuer at all":     {func(c *config.A2AServerConfig) { c.Issuers = nil }, "--a2a-server-issuers-file"},
+		"duplicate name":       {func(c *config.A2AServerConfig) { c.Issuers[1].Name = "dex" }, "name \"dex\" is not unique"},
+		"duplicate issuer":     {func(c *config.A2AServerConfig) { c.Issuers[1].Issuer = "https://dex.example.com" }, "is not unique"},
+		"no key set":           {func(c *config.A2AServerConfig) { c.Issuers[1].JWKSURL = "" }, "jwksUrl"},
+		"no audience":          {func(c *config.A2AServerConfig) { c.Issuers[0].Audience = "" }, "audience"},
+		"metadata without token endpoint": {func(c *config.A2AServerConfig) {
+			c.Issuers[1].MetadataURL = "https://idp.example.org/.well-known/oauth-authorization-server"
+		}, "metadataUrl needs tokenUrl"},
+		"discovery with token endpoint": {func(c *config.A2AServerConfig) {
+			c.Issuers[0].OpenIDConnectURL = "https://dex.example.com/.well-known/openid-configuration"
+		}, "exclusive"},
+		"unknown token type": {func(c *config.A2AServerConfig) { c.Issuers[0].SubjectTokenType = "jwt" }, "subjectTokenType"},
+		"exchange client allowed": {func(c *config.A2AServerConfig) {
+			c.Issuers[1].AllowedClients = append(c.Issuers[1].AllowedClients, "klaus-gateway-exchange")
+		}, "exchange client"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			cfg.A2AServer.Issuers = slices.Clone(base.A2AServer.Issuers)
+			test.change(&cfg.A2AServer)
+			require.ErrorContains(t, cfg.Validate(), test.want)
+		})
+	}
+}
+
+func TestAppMaxBodyBytes(t *testing.T) {
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(2<<20), cfg.A2AServer.MaxBodyBytes, "2 MiB by default")
+
+	cfg, err = config.Load([]string{"--a2a-server-max-body-bytes", "1024"})
+	require.NoError(t, err)
+	require.Equal(t, int64(1024), cfg.A2AServer.MaxBodyBytes)
+
+	invalid := appBase()
+	invalid.A2AServer.MaxBodyBytes = 0
+	require.ErrorContains(t, invalid.Validate(), "--a2a-server-max-body-bytes")
 }

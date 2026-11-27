@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
@@ -246,6 +247,7 @@ func newTeamReviewRecord(review channels.TeamReview, id string) store.Review {
 		Channel:      review.Channel,
 		Team:         review.Team,
 		Text:         review.Text,
+		Summary:      review.Summary,
 		Link:         review.Link,
 		Actor:        strings.TrimSpace(review.Actor),
 		PullRequests: review.PullRequests,
@@ -634,9 +636,129 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 	a.finishTeamReview(ctx, rv.ID, decision.deny)
 	a.Logger.Info("slack: team review decided", "record", decision.record(),
 		"review", rv.ID, "team", rv.Team, "tool", tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", accepted != nil)
-	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, teamReviewOutcome(rv, clicker, decision, res.Text), teamReviewOutcomeBlocks(rv, clicker, decision, res.Text)); err != nil {
+	a.showTeamReviewDecided(ctx, rv, clicker, decision, res.Text)
+}
+
+// showTeamReviewDecided shortens the decided review to one line in the
+// channel and moves the ask, the pull requests, the link and what the tool
+// said into a reply in the message's thread. The reply is posted first: when
+// Slack refuses it, the message is rewritten to the whole outcome instead, so
+// nothing of the ask is lost. A failure Slack gave no verdict on may have
+// posted the reply, so the message is shortened then all the same.
+func (a *Adapter) showTeamReviewDecided(ctx context.Context, rv store.Review, decider string, decision teamReviewDecision, result string) {
+	text, blocks := teamReviewDecided(rv, decider, decision), []any(nil)
+	if err := a.postTeamReviewDetails(ctx, rv, decision, result); err != nil && slackErrorClass(methodChatPostMessage, err) == classPermanent {
+		a.Logger.Warn("slack: team review details reply refused; the message keeps them", "review", rv.ID, "error", err)
+		text, blocks = teamReviewOutcome(rv, decider, decision, result), teamReviewOutcomeBlocks(rv, decider, decision, result)
+	} else {
+		if err != nil {
+			a.Logger.Warn("slack: team review details reply failed; it may be posted", "review", rv.ID, "error", err)
+		}
+		blocks = []any{sectionBlock(text)}
+	}
+	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, text, blocks); err != nil {
 		a.Logger.Warn("slack: team review outcome rewrite failed", "review", rv.ID, "error", err)
 	}
+}
+
+// postTeamReviewDetails posts the decided review's details into its thread.
+// The review notified the people its ask mentions already, and a mention
+// notifies only when the message is posted, so the reply is posted with its
+// mentions as plain text and then rewritten to the details as written.
+func (a *Adapter) postTeamReviewDetails(ctx context.Context, rv store.Review, decision teamReviewDecision, result string) error {
+	note := teamReviewDecisionNote(decision, result)
+	fallback := teamMessageFallback(rv.Team, rv.Text)
+	quietText, quietAsk := quietMentions(fallback), quietMentions(rv.Text)
+	ts, err := a.apiClient().postJSON(ctx, methodChatPostMessage, map[string]any{
+		paramChannel:  rv.Channel,
+		paramThreadTS: rv.TS,
+		paramText:     quietText,
+		paramBlocks:   teamReviewDetailsBlocks(rv, quietAsk, note),
+	})
+	if err != nil || (quietText == fallback && quietAsk == rv.Text) {
+		return err
+	}
+	if err := a.apiClient().chatUpdate(ctx, rv.Channel, ts, fallback, teamReviewDetailsBlocks(rv, rv.Text, note)); err != nil {
+		a.Logger.Warn("slack: team review details mentions rewrite failed", "review", rv.ID, "error", err)
+	}
+	return nil
+}
+
+// notifyingMentionRe matches what notifies when posted: a user, a user
+// group, and @here, @channel and @everyone, each with or without a label.
+var notifyingMentionRe = regexp.MustCompile(`<(@[UWB][A-Z0-9]+|!subteam\^[A-Z0-9]+|!here|!channel|!everyone)(?:\|([^>]*))?>`)
+
+// quietMentions writes every mention in s as plain text: its label, or what
+// it names.
+func quietMentions(s string) string {
+	return notifyingMentionRe.ReplaceAllStringFunc(s, func(m string) string {
+		groups := notifyingMentionRe.FindStringSubmatch(m)
+		if groups[2] != "" {
+			return groups[2]
+		}
+		return "@" + strings.TrimLeft(strings.TrimPrefix(groups[1], "!subteam^"), "@!")
+	})
+}
+
+// teamReviewDecided is the one line a decided review is shortened to: the
+// outcome, the decider, the team and the summary.
+func teamReviewDecided(rv store.Review, decider string, decision teamReviewDecision) string {
+	line := fmt.Sprintf("*%s* by <@%s> for %s", decision.outcome(), decider, escapeMrkdwn(rv.Team))
+	if summary := reviewSummary(rv); summary != "" {
+		return line + ": " + summary
+	}
+	return line + "."
+}
+
+// reviewSummary is the review's summary, or the first line of its text when
+// the manager gave none. A first line too long for the summary is left out
+// rather than cut: a cut can fall inside a link or a mention and leave its
+// markup bare.
+func reviewSummary(rv store.Review) string {
+	if s := strings.TrimSpace(rv.Summary); s != "" {
+		return s
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(rv.Text), "\n")
+	if utf8.RuneCountInString(first) > channels.TeamSummaryMax {
+		return ""
+	}
+	return first
+}
+
+// teamReviewDecisionNote is what a decision adds to the ask: the reason of a
+// denial, and what the tool said.
+func teamReviewDecisionNote(decision teamReviewDecision, result string) string {
+	var lines []string
+	if decision.deny {
+		lines = append(lines, "> "+escapeMrkdwn(decision.reason))
+	}
+	if said := toolMessage(result); said != "" {
+		lines = append(lines, "_"+truncateRunes(escapeMrkdwn(said), teamReviewReasonMax)+"_")
+	}
+	return truncateRunes(strings.Join(lines, "\n"), slackSectionTextMax)
+}
+
+// teamReviewDetailsBlocks renders the details reply: the ask, the decision's
+// note in a section of its own so a long ask cannot cut it off, the pull
+// requests and the link as small print.
+func teamReviewDetailsBlocks(rv store.Review, ask, note string) []any {
+	blocks := []any{sectionBlock(truncateRunes(ask, slackSectionTextMax))}
+	if note != "" {
+		blocks = append(blocks, sectionBlock(note))
+	}
+	blocks = appendPullRequests(blocks, rv.PullRequests)
+	if rv.Link != "" {
+		blocks = append(blocks, contextBlock(openLink(rv.Link)))
+	}
+	return blocks
+}
+
+// outcome names a decision that went through, as the message shows it.
+func (d teamReviewDecision) outcome() string {
+	if d.deny {
+		return "Denied"
+	}
+	return "Approved"
 }
 
 // record names the log record of a decision that went through.
@@ -757,19 +879,19 @@ func (a *Adapter) callOrAccept(ctx context.Context, token, tool string, args map
 }
 
 // teamReviewOutcome is the text the review message is rewritten to once it is
-// decided: who decided and how, for which team, the ask, the reason of a
-// denial, and what the tool said.
+// decided and its details could not go into the thread: who decided and how,
+// for which team, the ask, the reason of a denial, and what the tool said.
 func teamReviewOutcome(rv store.Review, decider string, decision teamReviewDecision, result string) string {
-	var b strings.Builder
-	if decision.deny {
-		fmt.Fprintf(&b, "*Denied* by <@%s> for %s.\n%s\n> %s", decider, escapeMrkdwn(rv.Team), rv.Text, escapeMrkdwn(decision.reason))
-	} else {
-		fmt.Fprintf(&b, "*Approved* by <@%s> for %s.\n%s", decider, escapeMrkdwn(rv.Team), rv.Text)
+	text := teamReviewOutcomeHead(rv, decider, decision)
+	if note := teamReviewDecisionNote(decision, result); note != "" {
+		text += "\n" + note
 	}
-	if said := toolMessage(result); said != "" {
-		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(said), teamReviewReasonMax))
-	}
-	return truncateRunes(b.String(), slackSectionTextMax)
+	return truncateRunes(text, slackSectionTextMax)
+}
+
+// teamReviewOutcomeHead is the outcome, the decider, the team and the ask.
+func teamReviewOutcomeHead(rv store.Review, decider string, decision teamReviewDecision) string {
+	return truncateRunes(fmt.Sprintf("*%s* by <@%s> for %s.\n%s", decision.outcome(), decider, escapeMrkdwn(rv.Team), rv.Text), slackSectionTextMax)
 }
 
 // toolMessage is what of a tool's answer is shown to people: a plain text as
@@ -796,8 +918,9 @@ func toolMessage(result string) string {
 // requests, and the link kept as small print so the change stays one click
 // away.
 func teamReviewOutcomeBlocks(rv store.Review, decider string, decision teamReviewDecision, result string) []any {
-	blocks := []any{
-		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: teamReviewOutcome(rv, decider, decision, result)}},
+	blocks := []any{sectionBlock(teamReviewOutcomeHead(rv, decider, decision))}
+	if note := teamReviewDecisionNote(decision, result); note != "" {
+		blocks = append(blocks, sectionBlock(note))
 	}
 	blocks = appendPullRequests(blocks, rv.PullRequests)
 	if rv.Link != "" {

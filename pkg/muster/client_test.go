@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
@@ -461,4 +463,23 @@ func TestAccept_RetryCarriesTheAskingCallsClientIdentity(t *testing.T) {
 	require.Equal(t, calls[0].Bearer, calls[1].Bearer, "the same person's token")
 	require.Equal(t, calls[0].Args, calls[1].Args, "the same call")
 	require.NotEqual(t, calls[0].SessionID, calls[1].SessionID, "over a new MCP session, which muster #81 no longer binds to")
+}
+
+func TestCallTool_FallsBackToTheInitializeHandshake(t *testing.T) {
+	for _, versions := range [][]string{
+		{mcp.ProtocolVersion20251125},
+		{mcp.ProtocolVersion20251125, mcp.ProtocolVersion20250618},
+	} {
+		t.Run(strings.Join(versions, ","), func(t *testing.T) {
+			fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+				"x_repo_approve_change": func(map[string]any) mustertest.Answer { return mustertest.Answer{Text: "review submitted"} },
+			}, server.WithStreamableHTTPProtocolVersions(versions...))
+			defer fake.Close()
+
+			res, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_approve_change", nil)
+			require.NoError(t, err)
+			require.Equal(t, muster.Result{Text: "review submitted", Dispatched: true}, res)
+			require.Len(t, fake.Calls(), 1)
+		})
+	}
 }

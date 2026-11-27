@@ -75,6 +75,16 @@ Slack channel gateway for the Agent Platform's kagent agents
 | a2a.caFile | string | `""` |  |
 | a2a.fallbackIconUrlTemplate | string | `""` |  |
 | a2a.agentManagerToolsPrefix | string | `""` |  |
+| a2aServer.enabled | bool | `false` |  |
+| a2aServer.publicUrl | string | `""` |  |
+| a2aServer.issuers | list | `[]` |  |
+| a2aServer.exchange.tokenUrl | string | `""` |  |
+| a2aServer.exchange.clientId | string | `""` |  |
+| a2aServer.exchange.existingSecret | string | `""` |  |
+| a2aServer.exchange.audiences | list | `[]` |  |
+| a2aServer.maxBodyBytes | int | `2097152` |  |
+| a2aServer.caSecret | string | `""` |  |
+| a2aServer.caFile | string | `""` |  |
 | slack.enabled | bool | `false` |  |
 | slack.mode | string | `"events"` |  |
 | slack.secretName | string | `""` |  |

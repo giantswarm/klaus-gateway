@@ -24,6 +24,9 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: klaus-gateway
+        {{- if .Values.a2aServer.enabled }}
+        checksum/a2a-server-issuers: {{ include (print $.Template.BasePath "/a2a-server-issuers.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -119,6 +122,35 @@ spec:
         {{- end }}
         {{- if .Values.a2a.agentManagerToolsPrefix }}
         - --a2a-agent-manager-tools-prefix={{ .Values.a2a.agentManagerToolsPrefix }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.a2aServer.enabled }}
+        {{- if not .Values.a2a.enabled }}
+        {{- fail "a2aServer.enabled requires a2a.enabled: the channel runs turns through the kagent client" }}
+        {{- end }}
+        {{- if not .Values.a2aServer.exchange.audiences }}
+        {{- fail "a2aServer.exchange.audiences is required with a2aServer.enabled" }}
+        {{- end }}
+        {{- if not .Values.a2aServer.issuers }}
+        {{- fail "a2aServer.issuers needs at least one issuer with a2aServer.enabled" }}
+        {{- end }}
+        {{- with .Values.a2aServer }}
+        - --a2a-server-enabled
+        - --a2a-server-public-url={{ required "a2aServer.publicUrl is required with a2aServer.enabled" .publicUrl }}
+        - --a2a-server-issuers-file=/etc/klaus-gateway/a2a-server-issuers/issuers.yaml
+        - --a2a-server-exchange-token-url={{ required "a2aServer.exchange.tokenUrl is required with a2aServer.enabled" .exchange.tokenUrl }}
+        - --a2a-server-exchange-client-id={{ required "a2aServer.exchange.clientId is required with a2aServer.enabled" .exchange.clientId }}
+        - --a2a-server-exchange-client-secret-file=/etc/klaus-gateway/a2a-server/client-secret
+        - --a2a-server-exchange-audiences={{ join "," .exchange.audiences }}
+        - --a2a-server-max-body-bytes={{ int64 .maxBodyBytes }}
+        {{- if .caSecret }}
+        - --a2a-server-ca-file=/etc/klaus-gateway/a2a-server-ca/ca.crt
+        {{- else if .caFile }}
+        - --a2a-server-ca-file={{ .caFile }}
+        {{- end }}
+        {{- end }}
+        {{- if not .Values.obo.enabled }}
+        - --obo-muster-url={{ required "obo.musterUrl is required with a2aServer.enabled" .Values.obo.musterUrl }}
         {{- end }}
         {{- end }}
         ports:
@@ -292,12 +324,25 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
-        {{- if or .Values.a2a.caSecret .Values.obo.enabled (include "refusals.on" .) }}
+        {{- if or .Values.a2a.caSecret .Values.obo.enabled (include "refusals.on" .) .Values.a2aServer.enabled }}
         volumeMounts:
         {{- if .Values.a2a.caSecret }}
         - name: kagent-ca
           mountPath: /etc/klaus-gateway/a2a
           readOnly: true
+        {{- end }}
+        {{- if .Values.a2aServer.enabled }}
+        - name: a2a-server-exchange-client
+          mountPath: /etc/klaus-gateway/a2a-server
+          readOnly: true
+        - name: a2a-server-issuers
+          mountPath: /etc/klaus-gateway/a2a-server-issuers
+          readOnly: true
+        {{- if .Values.a2aServer.caSecret }}
+        - name: a2a-server-ca
+          mountPath: /etc/klaus-gateway/a2a-server-ca
+          readOnly: true
+        {{- end }}
         {{- end }}
         {{- if .Values.obo.enabled }}
         - name: obo-keys
@@ -318,7 +363,7 @@ spec:
           readOnly: true
         {{- end }}
         {{- end }}
-      {{- if or .Values.a2a.caSecret .Values.obo.enabled (include "refusals.on" .) }}
+      {{- if or .Values.a2a.caSecret .Values.obo.enabled (include "refusals.on" .) .Values.a2aServer.enabled }}
       volumes:
       {{- if .Values.a2a.caSecret }}
       - name: kagent-ca
@@ -327,6 +372,25 @@ spec:
           items:
           - key: ca.crt
             path: ca.crt
+      {{- end }}
+      {{- if .Values.a2aServer.enabled }}
+      - name: a2a-server-exchange-client
+        secret:
+          secretName: {{ required "a2aServer.exchange.existingSecret is required with a2aServer.enabled" .Values.a2aServer.exchange.existingSecret }}
+          items:
+          - key: client-secret
+            path: client-secret
+      - name: a2a-server-issuers
+        configMap:
+          name: {{ include "resource.default.name" . }}-a2a-server-issuers
+      {{- if .Values.a2aServer.caSecret }}
+      - name: a2a-server-ca
+        secret:
+          secretName: {{ .Values.a2aServer.caSecret }}
+          items:
+          - key: ca.crt
+            path: ca.crt
+      {{- end }}
       {{- end }}
       {{- if .Values.obo.enabled }}
       - name: obo-keys

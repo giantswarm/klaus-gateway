@@ -81,20 +81,22 @@ type (
 	sessionKey struct{}
 )
 
-// New starts a fake muster; Close stops it.
-func New(tools map[string]func(args map[string]any) Answer) *Server {
+// New starts a fake muster; Close stops it. Options configure its MCP
+// transport, for example the protocol versions it serves.
+func New(tools map[string]func(args map[string]any) Answer, options ...server.StreamableHTTPOption) *Server {
 	s := &Server{Tools: tools}
 	mcpServer := server.NewMCPServer("mustertest", "test")
 	mcpServer.AddTool(mcp.NewTool("call_tool"), s.callTool)
 	// muster is stateful: every client connection gets its own MCP session
 	// (Mcp-Session-Id), which a pending approval is bound to.
-	handler := server.NewStreamableHTTPServer(mcpServer,
+	options = append([]server.StreamableHTTPOption{
 		server.WithStateful(true),
 		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 			ctx = context.WithValue(ctx, sessionKey{}, r.Header.Get(server.HeaderKeySessionID))
 			return context.WithValue(ctx, bearerKey{}, r.Header.Get("Authorization"))
 		}),
-	)
+	}, options...)
+	handler := server.NewStreamableHTTPServer(mcpServer, options...)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.Legacy && legacyRefusesDiscover(w, r) {

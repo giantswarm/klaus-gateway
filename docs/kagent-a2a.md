@@ -149,6 +149,8 @@ thread to exactly one session:
    setting) comes the same way. The person is signed in, so the channel answers with its
    Connect prompt, never the sign-in prompt; *Done* (or muster's return) accepts the
    elicitation and the turn runs again.
+   A muster that refuses 2026-07-28 and lists 2025-11-25 among its versions is called on
+   2025-11-25 through the `initialize` handshake.
 
    **An organization's Agent.** agent-manager's `start_session` takes an organization's Agent
    by the organization's name (`organization`) and refuses its namespace given as `namespace`;

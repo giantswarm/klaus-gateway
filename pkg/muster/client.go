@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -326,11 +327,25 @@ func (c *Client) connect(ctx context.Context, bearer string) (*mcpclient.Client,
 	}
 	initialize := mcp.InitializeRequest{}
 	initialize.Params.ClientInfo = mcp.Implementation{Name: clientName}
-	if _, err := session.Initialize(ctx, initialize); err != nil {
+	_, err = session.Initialize(ctx, initialize)
+	if legacyOnly(err) {
+		initialize.Params.ProtocolVersion = mcp.LATEST_LEGACY_PROTOCOL_VERSION
+		_, err = session.Initialize(ctx, initialize)
+	}
+	if err != nil {
 		_ = session.Close()
 		return nil, fmt.Errorf("muster: initialize: %w", err)
 	}
 	return session, nil
+}
+
+// legacyOnly reports a server/discover refusal whose supported versions end
+// at the newest revision the initialize handshake negotiates. mcp-go stops
+// there instead of falling back to initialize, so the caller pins that
+// revision and initializes again.
+func legacyOnly(err error) bool {
+	var unsupported mcp.UnsupportedProtocolVersionError
+	return errors.As(err, &unsupported) && slices.Contains(unsupported.Supported, mcp.LATEST_LEGACY_PROTOCOL_VERSION)
 }
 
 // signInOf reads the one URL mode elicitation an input_required answer
