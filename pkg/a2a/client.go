@@ -353,7 +353,7 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	transport := a2agrpc.NewGRPCTransportFromClient(a2apb.NewA2AServiceClient(conn))
+	transport := a2agrpc.NewGRPCTransportFromClient(skillFillingClient{a2apb.NewA2AServiceClient(conn)})
 	// NewFromEndpoints does no I/O: the factory below hands back the transport
 	// on the shared connection, so the only error source is a configuration
 	// mismatch between the endpoint and the registered transport.

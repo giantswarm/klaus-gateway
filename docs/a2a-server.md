@@ -181,7 +181,9 @@ its `name`, `description`, `version`, `skills`, default input and output modes a
 agent's JSON-RPC endpoint on the gateway, `<publicUrl>/a2a/<organization>/<agent>`, and
 the security schemes with the gateway's (below), and drops the controller's signatures,
 provider and icon: the card names nothing behind the gateway. A card is reused for one
-minute; whether the caller may use the agent is checked on every read.
+minute; whether the caller may use the agent is checked on every read. An agent without
+A2A skills gets one skill with its name and description, tagged `agent`, since a card
+needs at least one.
 
 agentgateway's A2A backend rewrites a card's interface URLs from the public path the card
 was read at. The agent's endpoint is the card's own path without
