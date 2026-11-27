@@ -47,7 +47,23 @@ No custom A2A or MCP extension, URI, activation header, capability declaration o
 
 Each follow-up or approval request supplies its own values. A request without metadata inherits nothing. Values are added after the model chooses a tool, outside prompts and tool arguments; a server can still expose them to the model by echoing them in results.
 
-See the [metadata contract](a2a-metadata-contract.md) for top-level key validation, transport-owned fields and collision rules. Forwarding data does not implement an extension's behavior or replace capability negotiation for extensions that require it.
+See the [metadata contract](a2a-metadata-contract.md) for top-level key validation, transport-owned fields and collision rules.
+
+## Extensions
+
+The extensions an A2A client requests with the `A2A-Extensions` header are requested on the
+agent's call too, next to kagent's HITL extension, which the gateway always requests. The
+agent runtime decides which extensions it activates. Request metadata stays bound for
+MCP `_meta` and always gets its key validation, including when an extension with the
+same name is requested. An extension's URI-keyed data can travel in message or part
+metadata; the gateway does not forward that metadata to MCP.
+
+This forwards extension requests only. The pinned A2A SDK does not expose successful
+gRPC response headers to its client interceptors or write activation acknowledgements
+from its JSON-RPC server. The gateway therefore returns no `A2A-Extensions` response
+header and does not offer complete extension negotiation
+([a2aproject/a2a-go#643](https://github.com/a2aproject/a2a-go/issues/643)). The public
+Agent Card declares no extensions.
 
 ## How a request is authenticated
 
@@ -106,7 +122,8 @@ every call with its re-login error, and `SendMessage` and `SendStreamingMessage`
 with the A2A error `UNAUTHENTICATED`. Its `google.rpc.ErrorInfo` detail carries muster's
 words in `metadata.reason`. muster identifies this refusal with its MCP tool
 result's `structuredContent.status: unauthenticated`; the gateway does not parse
-the text. A new application token does not help: the exchange's audiences must be fixed.
+the text. This requires muster 5.67.0-rc.18 or later. A new application token does
+not help: the exchange's audiences must be fixed.
 
 ## Sign-ins and tool approvals
 
@@ -336,8 +353,9 @@ a2aServer:
   # Least lifetime the platform token must have left; Dex's expiry.idTokens
   # must be longer.
   minTokenLifetime: 25m
-  # Secret with key ca.crt, when token.jwksUrl is not publicly trusted.
+  # Secret with the CA bundle, when token.jwksUrl is not publicly trusted.
   caSecret: ""
+  caSecretKey: ca.crt
 ```
 
 The gateway fetches `a2aServer.token.jwksUrl` with mcp-oauth's SSRF-safe client: the URL

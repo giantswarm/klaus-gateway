@@ -63,13 +63,14 @@ func reservedMCPPrefix(key string) bool {
 	return len(labels) > 1 && (strings.EqualFold(labels[1], "modelcontextprotocol") || strings.EqualFold(labels[1], "mcp"))
 }
 
-// NewRequestHandler validates and propagates ordinary request metadata.
+// NewRequestHandler validates request metadata and propagates it with the
+// extensions the caller requests (A2A-Extensions) to the agent.
 func NewRequestHandler(handler *Handler) a2asrv.RequestHandler {
 	return &a2asrv.InterceptedHandler{
 		Handler: handler,
 		Interceptors: []a2asrv.CallInterceptor{&mcpRequestMetadataInterceptor{}, a2aext.NewServerPropagator(&a2aext.ServerPropagatorConfig{
 			MetadataPredicate: func(context.Context, string) bool { return true },
-			HeaderPredicate:   func(context.Context, string) bool { return false },
+			HeaderPredicate:   func(_ context.Context, key string) bool { return strings.EqualFold(key, a2a.SvcParamExtensions) },
 		})},
 		Logger: handler.Logger,
 	}

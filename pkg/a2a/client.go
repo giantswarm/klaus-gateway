@@ -722,10 +722,14 @@ func isMessageSizeLimit(err error) bool {
 	return errors.Is(err, a2apkg.ErrInternalError) && strings.Contains(err.Error(), "larger than max")
 }
 
-// metadataPropagator forwards the metadata recorded by the server propagator.
+// metadataPropagator forwards the request metadata and the requested
+// extensions (A2A-Extensions) the server propagator recorded, next to the
+// HITL extension every call requests.
 func metadataPropagator() a2aclient.CallInterceptor {
 	return a2aext.NewClientPropagator(&a2aext.ClientPropagatorConfig{
 		MetadataPredicate: func(context.Context, *a2apkg.AgentCard, string) bool { return true },
-		HeaderPredicate:   func(context.Context, *a2apkg.AgentCard, string, string) bool { return false },
+		HeaderPredicate: func(_ context.Context, _ *a2apkg.AgentCard, key, _ string) bool {
+			return strings.EqualFold(key, a2apkg.SvcParamExtensions)
+		},
 	})
 }

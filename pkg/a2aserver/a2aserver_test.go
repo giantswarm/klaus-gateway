@@ -339,7 +339,7 @@ func TestMalformedRequestMetadataIsRefusedBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestStreamingMetadataNeedsNoExtensionHeader(t *testing.T) {
+func TestRequestedExtensionsReachTheAgent(t *testing.T) {
 	agents := &fakeAgents{}
 	server, _ := serve(t, agents)
 	values := map[string]any{sessionKey: "ref-1"}
@@ -360,7 +360,59 @@ func TestStreamingMetadataNeedsNoExtensionHeader(t *testing.T) {
 	require.Empty(t, response.Header.Get("A2A-Extensions"))
 	require.Contains(t, string(events), "TASK_STATE_COMPLETED")
 	require.Equal(t, values, agents.metadata[0])
-	require.Empty(t, agents.extensions[0])
+	require.Equal(t, []string{"https://example.com/extensions/other/v1"}, agents.extensions[0])
+}
+
+func TestRequestedExtensionsCannotBypassMCPMetadataValidation(t *testing.T) {
+	for _, method := range []string{"SendMessage", "SendStreamingMessage", "CancelTask"} {
+		for _, key := range []string{"https://example.com/extensions/geolocation/v1", "progressToken", "traceparent", "tracestate", "baggage", "io.modelcontextprotocol/related-task", "IO.MCP/x"} {
+			t.Run(method+"/"+key, func(t *testing.T) {
+				for _, requested := range []string{"", key} {
+					agents := &fakeAgents{}
+					server, _ := serve(t, agents)
+					params := map[string]any{"tenant": tenant, "metadata": map[string]any{key: map[string]any{"private": "value"}}}
+					if method == "CancelTask" {
+						params["id"] = "task-1"
+					} else {
+						params["message"] = map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}
+					}
+					_, body := postJSONRPCRequest(t, server.URL, requested, method, params)
+					require.NotNil(t, body.Error)
+					require.Equal(t, -32602, body.Error.Code)
+					require.NotContains(t, body.Error.Message, "private")
+					require.Empty(t, agents.started)
+					require.Empty(t, agents.streamed)
+					require.Empty(t, agents.refs)
+				}
+			})
+		}
+	}
+}
+
+type messageMetadataAgents struct {
+	fakeAgents
+	messages chan *a2a.Message
+}
+
+func (agents *messageMetadataAgents) SendMessage(ctx context.Context, sessionID string, message *a2a.Message, configuration *a2a.SendMessageConfig) (a2a.SendMessageResult, error) {
+	agents.messages <- message
+	return agents.fakeAgents.SendMessage(ctx, sessionID, message, configuration)
+}
+
+func TestExtensionMessageAndPartMetadataRemainUnchanged(t *testing.T) {
+	const extension = "https://example.com/extensions/geolocation/v1"
+	agents := &messageMetadataAgents{messages: make(chan *a2a.Message, 1)}
+	_, card := serve(t, agents)
+	part := a2a.NewTextPart("hi")
+	part.Metadata = map[string]any{extension: map[string]any{"latitude": 37.7749}}
+	message := a2a.NewMessage(a2a.MessageRoleUser, part)
+	message.Metadata = map[string]any{extension: "message data"}
+	_, err := client(t, card, clientToken).SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: message})
+	require.NoError(t, err)
+	forwarded := <-agents.messages
+	require.Equal(t, message.Metadata, forwarded.Metadata)
+	require.Equal(t, part.Metadata, forwarded.Parts[0].Metadata)
+	require.Empty(t, agents.metadata[0])
 }
 
 type jsonrpcResponse struct {
@@ -388,6 +440,7 @@ func postJSONRPCRequest(t *testing.T, base, extensions, method string, params ma
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+clientToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("A2A-Version", "1.0")
 	if extensions != "" {
 		req.Header.Set("A2A-Extensions", extensions)

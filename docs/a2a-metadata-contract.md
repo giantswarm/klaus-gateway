@@ -34,7 +34,8 @@ A key MCP reserves is refused before execution: any key whose prefix has
 `modelcontextprotocol` or `mcp` as its second label (`io.modelcontextprotocol/`,
 `dev.mcp/`, `org.modelcontextprotocol.api/`, but not `com.example.mcp/`), and the
 transport-owned `progressToken`, `traceparent`, `tracestate` and `baggage`. The same
-check covers `CancelTask` metadata. Existing outgoing metadata wins other collisions,
+check covers `CancelTask` metadata, including when `A2A-Extensions` requests an
+extension with the same name as a key. Existing outgoing metadata wins other collisions,
 without merging nested objects.
 
 Message and part metadata keep their existing meaning and are not forwarded as

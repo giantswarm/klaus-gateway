@@ -14,6 +14,7 @@
 // is the context id of every later message.
 //
 // Request-level application metadata is forwarded directly to MCP tool calls.
-// It requires no custom extension, wrapper or activation header.
+// It requires no custom extension, wrapper or activation header. Extensions
+// the caller requests (A2A-Extensions) are requested on the agent's call too.
 
 package a2aserver
