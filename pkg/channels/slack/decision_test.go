@@ -291,3 +291,37 @@ func TestDecision_UnlinkedClickerIsAskedToSignIn(t *testing.T) {
 	})
 	require.Empty(t, tools.recorded())
 }
+
+// muster still asks after Done: the person gets the prompt again, the
+// decision stays open, and the new prompt's Done submits the answer (code
+// review M1-KG-C-01).
+func TestDecision_StillAskedAfterDoneIsPromptedAgain(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{approvalAsk(), approvalAsk(), {Text: `{"state":"answered"}`}}}
+	a, srv, fake := teamReviewHarness(t, tools)
+	receipt, err := a.PostDecision(context.Background(), rollDecision())
+	require.NoError(t, err)
+
+	clickDecision(t, srv, "U1", "decision_choose", "2", receipt)
+	var stateID string
+	waitFor(t, "a prompt is posted", func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	})
+	sendClick(t, srv, "elicitation_done", stateID, "", true)
+
+	waitFor(t, "the prompt is posted again", func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 2 })
+	require.Contains(t, fake.pathCalls("chat.postEphemeral")[1].params["text"], "Not done yet: *muster* still asks before your answer goes through.")
+	waitFor(t, "the status line says the person is not done yet", func() bool {
+		return strings.Contains(latestUpdateText(fake, receipt.TS), "<@U1> is not done at muster's link yet")
+	})
+	require.NotContains(t, latestUpdateText(fake, receipt.TS), "signing in")
+
+	_, againState, ok := lastConnectButton(fake)
+	require.True(t, ok)
+	sendClick(t, srv, "elicitation_done", againState, "", true)
+	waitFor(t, "the new prompt's Done submits the answer", func() bool {
+		return strings.Contains(latestUpdateText(fake, receipt.TS), "Answered by <@U1>")
+	})
+	require.Len(t, tools.recorded(), 3)
+}

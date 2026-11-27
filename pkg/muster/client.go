@@ -4,13 +4,17 @@
 // under the person's own grants.
 //
 // The client declares URL mode elicitation. A call muster cannot run until
-// the person signs in somewhere is answered with that sign-in as a URL
-// elicitation (SignIn) instead of a tool result; the caller shows the link,
-// and once the person agreed to open it retries the call with Accept.
+// the person does something at a link (sign in somewhere, approve the call)
+// is answered with that URL elicitation (SignIn) instead of a tool result;
+// the caller shows the link, and once the person is done there retries the
+// call with Accept. muster asks on protocol 2026-07-28 with an input_required
+// result, on 2025-11-25 with the JSON-RPC error -32042; both are read.
 package muster
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +24,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -55,19 +60,31 @@ type Result struct {
 	SignIn     *SignIn
 }
 
-// SignIn is a URL mode elicitation muster answered a call with. The person
-// opens URL, exactly as given, after they agreed to; Accept then retries the
-// call that asked for it.
+// SignIn is a URL mode elicitation muster answered a call with: a sign-in, a
+// tool approval or any later one, which the client does not tell apart. The
+// person opens URL, exactly as given, after they agreed to; Accept then
+// retries the call that asked for it.
 type SignIn struct {
-	// Message is muster's own words on why, to show attributed to muster.
+	// Message is muster's own words on what is asked, to show attributed to
+	// muster.
 	Message string
-	// URL is the page the person signs in on.
+	// URL is the page the person acts on, as muster gave it; the caller adds
+	// its return (ReturnLink).
 	URL string
+	// ElicitationID is muster's id of the elicitation, which muster appends
+	// to the return after an approval; empty when muster gave none.
+	ElicitationID string
 
 	tool         string
 	args         map[string]any
 	inputKey     string
 	requestState string
+	// required is set for an elicitation muster asked with -32042: its retry
+	// carries no answer, and a decline sends nothing.
+	required bool
+	// idempotent is set for an elicitation CallIdempotent got: the answer of
+	// its accepted retry is handed to the next identical CallIdempotent.
+	idempotent bool
 }
 
 // ErrUnusableSignIn is a sign-in muster asked for that the gateway will not
@@ -81,6 +98,9 @@ type Client struct {
 	BaseURL string
 	// HTTP carries the requests; each call bounds itself with its context.
 	HTTP *http.Client
+
+	handoverMu sync.Mutex
+	handovers  map[string]handover
 }
 
 // NewClient returns a Client for the muster at baseURL.
@@ -96,6 +116,81 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	return c.call(ctx, bearer, tool, args, mcp.MultiRoundTripParams{})
+}
+
+// HandoverFor is how long the answer of an accepted retry of a CallIdempotent
+// waits for the identical call it is handed to.
+const HandoverFor = 2 * time.Minute
+
+// handover is the answer of an accepted retry, waiting for the identical
+// CallIdempotent.
+type handover struct {
+	res     Result
+	expires time.Time
+}
+
+// CallIdempotent is CallTool for a tool whose call repeated with the same
+// arguments answers the same (agent-manager's start_session, idempotent per
+// request id), and that its caller makes again after an accepted retry ran
+// it (a held message replayed after Done). The answer of that retry is handed,
+// once and within HandoverFor, to the next CallIdempotent with the same bearer,
+// tool and arguments, which does not call muster again: muster used the
+// approval up when the retry ran, so the same call would ask a second time.
+func (c *Client) CallIdempotent(ctx context.Context, bearer, tool string, args map[string]any) (Result, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	if res, ok := c.takeHandover(bearer, tool, args); ok {
+		return res, nil
+	}
+	res, err := c.CallTool(ctx, bearer, tool, args)
+	if res.SignIn != nil {
+		res.SignIn.idempotent = true
+	}
+	return res, err
+}
+
+func handoverKey(bearer, tool string, args map[string]any) (string, bool) {
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(bearer + "\x00" + tool + "\x00" + string(encoded)))
+	return hex.EncodeToString(sum[:]), true
+}
+
+func (c *Client) putHandover(bearer, tool string, args map[string]any, res Result) {
+	key, ok := handoverKey(bearer, tool, args)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	c.handoverMu.Lock()
+	defer c.handoverMu.Unlock()
+	if c.handovers == nil {
+		c.handovers = map[string]handover{}
+	}
+	for k, h := range c.handovers {
+		if now.After(h.expires) {
+			delete(c.handovers, k)
+		}
+	}
+	c.handovers[key] = handover{res: res, expires: now.Add(HandoverFor)}
+}
+
+func (c *Client) takeHandover(bearer, tool string, args map[string]any) (Result, bool) {
+	key, ok := handoverKey(bearer, tool, args)
+	if !ok {
+		return Result{}, false
+	}
+	c.handoverMu.Lock()
+	defer c.handoverMu.Unlock()
+	h, found := c.handovers[key]
+	delete(c.handovers, key)
+	if !found || time.Now().After(h.expires) {
+		return Result{}, false
+	}
+	return h.res, true
 }
 
 // Accept retries the call signIn was asked for with the person's accept: they
@@ -121,6 +216,28 @@ func (c *Client) Decline(ctx context.Context, bearer string, signIn *SignIn) err
 func (c *Client) answer(ctx context.Context, bearer string, signIn *SignIn, action mcp.ElicitationResponseAction) (Result, error) {
 	if signIn == nil || signIn.tool == "" {
 		return Result{}, errors.New("muster: no sign-in to answer")
+	}
+	res, err := c.retry(ctx, bearer, signIn, action)
+	if err == nil && action == mcp.ElicitationResponseActionAccept && signIn.idempotent {
+		switch {
+		case res.SignIn != nil:
+			res.SignIn.idempotent = true
+		case res.Dispatched && !res.IsError:
+			c.putHandover(bearer, signIn.tool, signIn.args, res)
+		}
+	}
+	return res, err
+}
+
+// retry calls the call signIn was asked for again with the person's action.
+func (c *Client) retry(ctx context.Context, bearer string, signIn *SignIn, action mcp.ElicitationResponseAction) (Result, error) {
+	if signIn.required {
+		// -32042 has no answer to send: the retry is the call again, which
+		// muster matches server-side, and a decline is not calling again.
+		if action != mcp.ElicitationResponseActionAccept {
+			return Result{}, nil
+		}
+		return c.call(ctx, bearer, signIn.tool, signIn.args, mcp.MultiRoundTripParams{})
 	}
 	answer := mcp.NewElicitationInputResponse(mcp.ElicitationResult{
 		ElicitationResponse: mcp.ElicitationResponse{Action: action},
@@ -150,6 +267,13 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 	request.Params.Arguments = map[string]any{nameKey: tool, argumentsKey: args}
 	request.Params.MultiRoundTripParams = roundTrip
 	res, err := session.CallTool(ctx, request)
+	if required, ok := asURLElicitationRequired(err); ok {
+		signIn, err := signInOfRequired(required, tool, args)
+		if err != nil {
+			return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
+		}
+		return Result{SignIn: signIn}, nil
+	}
 	if err != nil {
 		return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
 	}
@@ -239,15 +363,107 @@ func signInOf(res *mcp.CallToolResult, tool string, args map[string]any) (*SignI
 			return nil, err
 		}
 		return &SignIn{
-			Message:      e.Message,
-			URL:          e.URL,
-			tool:         tool,
-			args:         args,
-			inputKey:     key,
-			requestState: res.RequestState,
+			Message:       e.Message,
+			URL:           e.URL,
+			ElicitationID: e.ElicitationID,
+			tool:          tool,
+			args:          args,
+			inputKey:      key,
+			requestState:  res.RequestState,
 		}, nil
 	}
 	return nil, ErrUnusableSignIn
+}
+
+// asURLElicitationRequired finds the -32042 error muster answers a 2025-11-25
+// session with.
+func asURLElicitationRequired(err error) (mcp.URLElicitationRequiredError, bool) {
+	var required mcp.URLElicitationRequiredError
+	if err != nil && errors.As(err, &required) {
+		return required, true
+	}
+	return required, false
+}
+
+// signInOfRequired reads the one URL mode elicitation a -32042 error carries.
+func signInOfRequired(required mcp.URLElicitationRequiredError, tool string, args map[string]any) (*SignIn, error) {
+	if len(required.Elicitations) != 1 {
+		return nil, fmt.Errorf("%w: %d elicitations", ErrUnusableSignIn, len(required.Elicitations))
+	}
+	e := required.Elicitations[0]
+	if e.Mode != mcp.ElicitationModeURL {
+		return nil, fmt.Errorf("%w: not a URL elicitation", ErrUnusableSignIn)
+	}
+	if err := ValidateSignInURL(e.URL); err != nil {
+		return nil, err
+	}
+	return &SignIn{
+		Message:       e.Message,
+		URL:           e.URL,
+		ElicitationID: e.ElicitationID,
+		tool:          tool,
+		args:          args,
+		required:      true,
+	}, nil
+}
+
+// ReturnLinkParam is the query parameter of muster's link that names where
+// muster sends the browser after the person acted there, checked against
+// muster's oauth.mcpClient.postLoginRedirectAllowlist (a prefix match that
+// leaves the query free). muster keeps the redirect's query and appends to it
+// the elicitation's elicitationId after an approval, the server's name after
+// a sign-in; never what was decided.
+const ReturnLinkParam = "redirect"
+
+// ReturnLink sets returnURL as the redirect of link when link is on the
+// origin of musterURL (scheme, host and port, a default port written or
+// not). A redirect a link on muster's origin already names is never kept,
+// since it was not the caller's: it is replaced, or dropped when returnURL is
+// empty. Any other link is returned as given.
+func ReturnLink(link, musterURL, returnURL string) string {
+	if musterURL == "" {
+		return link
+	}
+	m, err := url.Parse(musterURL)
+	if err != nil || m.Host == "" {
+		return link
+	}
+	u, err := url.Parse(link)
+	if err != nil || !sameOrigin(u, m) {
+		return link
+	}
+	q := u.Query()
+	if !q.Has(ReturnLinkParam) && returnURL == "" {
+		return link
+	}
+	q.Del(ReturnLinkParam)
+	if returnURL != "" {
+		q.Set(ReturnLinkParam, returnURL)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// sameOrigin reports whether a and b share scheme, host and port, a scheme's
+// default port written or left out alike.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		originPort(a) == originPort(b)
+}
+
+// originPort is u's port, its scheme's default when none is written.
+func originPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // SignInURLMaxBytes bounds a sign-in link as a client writes it in markup,

@@ -49,6 +49,7 @@ type interactionPayload struct {
 	} `json:"channel"`
 	Container struct {
 		MessageTS   string `json:"message_ts"`
+		ThreadTS    string `json:"thread_ts"`
 		IsEphemeral bool   `json:"is_ephemeral"`
 	} `json:"container"`
 	// Message carries the source message of a block_actions click or a
@@ -290,22 +291,14 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		}
 		return
 	case connectorConnect:
-		// URL button: the browser opens the link itself, and the click is the
-		// person's consent to it. Only an ephemeral prompt is rewritten through
-		// the click's response_url; a card, a real message, is rewritten in
-		// place by its own flow.
-		responseURL := payload.ResponseURL
-		if !payload.Container.IsEphemeral {
-			responseURL = ""
-		}
-		a.handleConnectorConnect(payload.User.ID, action.Value, responseURL)
+		// URL button: the browser opens the link itself. Opening it decides
+		// nothing; the prompt continues on Done or muster's return.
+		return
+	case elicitationDone:
+		a.handleElicitationDone(ctx, promptClickOf(payload, action.Value))
 		return
 	case connectorDecline:
-		responseURL := payload.ResponseURL
-		if !payload.Container.IsEphemeral {
-			responseURL = ""
-		}
-		a.handleConnectorDecline(payload.User.ID, action.Value, responseURL)
+		a.handleConnectorDecline(ctx, promptClickOf(payload, action.Value))
 		return
 	case teamReviewOpen, refusalOpenAgent:
 		// URL button: the browser opens the link itself.
@@ -841,4 +834,22 @@ func formResumeText(answers [][]string) string {
 		parts[qi] = strings.Join(a, ", ")
 	}
 	return strings.Join(parts, "; ")
+}
+
+// promptClickOf is a block_actions click on a URL elicitation prompt's Done
+// or Not now carrying stateID. Only an ephemeral prompt is rewritten through
+// the click's response_url; a card, a real message, is rewritten in place by
+// its own flow.
+func promptClickOf(payload interactionPayload, stateID string) promptClick {
+	threadTS := payload.Container.ThreadTS
+	if threadTS == "" {
+		threadTS = payload.Message.ThreadTS
+	}
+	return promptClick{
+		slackUser:   payload.User.ID,
+		stateID:     stateID,
+		responseURL: payload.ResponseURL,
+		ephemeral:   payload.Container.IsEphemeral,
+		threadTS:    threadTS,
+	}
 }

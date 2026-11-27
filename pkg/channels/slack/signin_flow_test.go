@@ -89,11 +89,11 @@ func pauseOnSignIn(t *testing.T, ts string) (*fakeSlackAPI, *dispatches, func(ac
 	return fake, sent, click
 }
 
-// A task paused on a sign-in link posts the Connect prompt to the person whose
-// turn asked: the server's message attributed to it, the whole link as given
-// with its domain in bold, and a thread note naming them. The link button
-// opens the link unchanged; its first click is the consent, which resumes the
-// paused task with accept, once.
+// A task paused on a sign-in link posts the generic URL elicitation prompt to
+// the person whose turn asked: the server's message as the heading,
+// attributed to it, the whole link as given with its domain in bold, and a
+// thread note naming them. The link button opens the link unchanged; Done
+// resumes the paused task with accept, once.
 func TestMCPSignIn_ConsentResumesThePausedTask(t *testing.T) {
 	fake, sent, click := pauseOnSignIn(t, "140.000")
 	responseSrv, capturedBody := newResponseURLCapture(t)
@@ -103,20 +103,20 @@ func TestMCPSignIn_ConsentResumesThePausedTask(t *testing.T) {
 	require.Equal(t, "https://gateway.example/oauth/proxy/start?s=1", buttonURL, "the server's link, unchanged")
 	blob := ephemeralJSON(fake)
 	require.Contains(t, blob, `"user":"U1"`)
-	require.Contains(t, blob, "*muster* asks you to sign in so the agent can continue.\\n\\u003eSign in to github to continue.\\nOpens *gateway.example*\\n`https://gateway.example/oauth/proxy/start?s=1`", "the server's message, attributed to it, and the whole link")
-	require.True(t, strings.Contains(fake.threadText(), "Waiting for <@U1> to sign in (asked by *muster*)."), "the thread says whom the turn waits on")
+	require.Contains(t, blob, "*Sign in to github to continue.*\\nAsked by *muster*.\\nOpens *gateway.example*\\n`https://gateway.example/oauth/proxy/start?s=1`", "the server's message as the heading, attributed to it, and the whole link")
+	require.True(t, strings.Contains(fake.threadText(), "Waiting for <@U1> (asked by *muster*)."), "the thread says whom the turn waits on")
 	require.Empty(t, sent.resumes(), "nothing resumes before the consent")
 
 	for range 2 {
-		click("connector_connect", stateID, responseSrv.URL)
+		click("elicitation_done", stateID, responseSrv.URL)
 	}
 	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond, "the consent resumes the paused task")
 	resume := sent.resumes()[0]
 	require.Equal(t, channels.DecisionApprove, resume.Decision.Type, "the consent accepts")
 	require.Equal(t, "sign-in-1", resume.Decision.RequestID, "the answer names the request it answers")
 	require.Equal(t, "U1", resume.Subject)
-	require.Equal(t, "I've signed in, continue", resume.Text)
-	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Opened the sign-in link.") },
+	require.Equal(t, "Done, continue", resume.Text)
+	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Done. The agent continues.") },
 		flowWait, 20*time.Millisecond, "the prompt says the agent continues once signed in")
 	time.Sleep(200 * time.Millisecond)
 	require.Len(t, sent.resumes(), 1, "a second click resumes nothing more")
@@ -133,10 +133,10 @@ func TestMCPSignIn_NotNowDeclines(t *testing.T) {
 	click("sign_in_decline", value, responseSrv.URL)
 	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond, "Not now resumes the paused task")
 	require.Equal(t, channels.DecisionReject, sent.resumes()[0].Decision.Type)
-	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Not signed in. The agent continues without it.") },
+	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Not now. The agent continues without it.") },
 		flowWait, 20*time.Millisecond, "the prompt says it was declined")
 
-	click("connector_connect", stateID, "")
+	click("elicitation_done", stateID, "")
 	time.Sleep(200 * time.Millisecond)
 	require.Len(t, sent.resumes(), 1, "a consent for a task no longer paused on the sign-in resumes nothing")
 }
@@ -158,7 +158,7 @@ func TestMCPSignIn_UnusableLinkIsNotOffered(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "the prompt is posted")
 	_, _, ok := connectButton(fake)
 	require.False(t, ok, "no link button")
-	require.Contains(t, ephemeralJSON(fake), "Its sign-in link is not one the app opens")
+	require.Contains(t, ephemeralJSON(fake), "Its link is not one the app opens")
 }
 
 // A sign-in answered elsewhere first (Backstage, on the same task) leaves the
@@ -181,7 +181,7 @@ func TestMCPSignIn_AnsweredElsewhereIsANoOp(t *testing.T) {
 	gw.mu.Lock()
 	gw.dispatchErr = fmt.Errorf("%w: task task-1 is TASK_STATE_WORKING", channels.ErrNoPendingPrompt)
 	gw.mu.Unlock()
-	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, "")
+	sendConnectorInteractionURL(t, srv, "elicitation_done", stateID, "")
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.threadText(), "This was already answered elsewhere, so this answer was not sent to the agent.")

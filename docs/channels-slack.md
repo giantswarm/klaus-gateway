@@ -129,27 +129,11 @@ creates one, which a turn that switches agents does mid-thread.
   called through muster as the person behind the turn, with the agent, the
   thread's request id and the conversation's name; agent-manager creates it at
   the controller as that person, and the session id it answers is what the
-  thread binds. A start muster asks a sign-in for (the server is pinned to a GitHub App and
-  waits for the person's one-time consent) gets the Connect prompt, to the person alone, with
-  muster's message, the whole link and the message held behind it. The person's click on the
-  link button is their consent: the gateway accepts the sign-in (it retries the start with
-  muster's `requestState` and the `accept`, and muster waits for the sign-in before it runs the
-  start), then runs the held message as the thread's first turn. The hold is the process's own;
-  after a restart the click continues nothing. Where the prompt goes follows the sign-in
-  prompt: in a DM the card is a message of the conversation, and a later message of the
-  person's gets a card of its own while the earlier one loses its button; in a channel thread
-  the card is ephemeral, so it also goes to the person's DM with the app, led by a line that
-  links the thread, and a line everyone in the thread sees says whom it waits for and where
-  the button is ("Waiting for @Jose to sign in (the Sign in button is in a direct message from
-  the app)"). A later message of the person's before they sign in posts the ephemeral again
-  and refreshes the DM card in place; the line stays. Once the person has signed in, the line
-  reads "@Jose signed in." and the card is a confirmation: the click's continuation does it and
-  runs the held message ("Signed in. Your message is on its way to the agent."), and so does
-  the person's next turn in the thread that starts its Session, however they signed in, when
-  the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
-  Every surface's button carries the completion state; the ephemeral is replaced at the click
-  through its `response_url` ("Opened the sign-in link. ..."), the cards are rewritten in place. A
-  collaborator whose turn would start the
+  thread binds. A start muster answers with a URL elicitation for (a sign-in, or an approval of
+  the start) gets the generic prompt (`docs/slack-hitl-surface.md` section 7), to the person
+  alone, with the message held behind it; *Done*, or muster's return, retries the start and the
+  held message then runs as the first turn. A retry muster refuses drops the held message. The
+  hold is the process's own. A collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
   is idempotent per person and
@@ -498,7 +482,7 @@ opens from:
 - `/<command> connect` (or `authorize`), anywhere;
 - *Authorize all* beside every muster server's Connect prompt's button (a workspace
   provider's Connect prompt offers the provider's sign-in alone). A grant given from the modal
-  continues nothing the prompt held: the prompt's own *Sign in* does, and muster finds the
+  continues nothing the prompt held: the prompt's own *Done* does, and muster finds the
   grant there.
 
 The modal opens on the click's `trigger_id` with a loading view and is filled by

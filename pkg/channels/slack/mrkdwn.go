@@ -2,6 +2,7 @@ package slack
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -147,6 +148,41 @@ func escapeMrkdwn(s string) string {
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
 }
+
+// plainMrkdwn makes text a relayed elicitation chose (its message, its
+// server's name) show as written inside mrkdwn and nothing more. Control and
+// format characters go (bidirectional overrides and zero-width characters
+// reorder or hide what is shown; a newline stays for the caller to keep or
+// collapse), and the characters Slack formats with become full-width
+// look-alikes: every *, ~ and backtick, and an _ that is not inside a word,
+// so the text can neither end a bold it is shown in nor format itself. The
+// result still needs escapeMrkdwn.
+func plainMrkdwn(s string) string {
+	runes := []rune(s)
+	var b strings.Builder
+	for i, r := range runes {
+		switch {
+		case r == '\n':
+			b.WriteRune(r)
+		case r == '\t':
+			b.WriteRune(' ')
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError:
+		case r == '*':
+			b.WriteRune('\uFF0A')
+		case r == '~':
+			b.WriteRune('\uFF5E')
+		case r == '`':
+			b.WriteRune('\uFF40')
+		case r == '_' && (i == 0 || i == len(runes)-1 || !isWordRune(runes[i-1]) || !isWordRune(runes[i+1])):
+			b.WriteRune('\uFF3F')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // escapeMrkdwnCapped escapes s like escapeMrkdwn and keeps the result within
 // max runes, cutting before an escape rather than through it and ending a cut

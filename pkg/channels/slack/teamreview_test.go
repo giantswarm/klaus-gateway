@@ -195,7 +195,7 @@ const reviewSignInLink = "https://muster.example/oauth/proxy/start?state=abc123"
 // reviewSignIn is what muster answers for a tool whose server holds no grant
 // for the person yet: a URL elicitation of the sign-in link.
 func reviewSignIn() muster.Result {
-	return muster.Result{SignIn: &muster.SignIn{Message: "Sign in to giantswarm-repo-manager to continue.", URL: reviewSignInLink}}
+	return muster.Result{SignIn: &muster.SignIn{Message: "Sign in to example-repo-manager to continue.", URL: reviewSignInLink}}
 }
 
 // statusLine returns the context line under the review's buttons in its
@@ -239,7 +239,7 @@ func archiveReview() channels.TeamReview {
 		Channel: "C1",
 		Text:    "*Archive* `giantswarm/old-thing`, owned by team-bumblebee.",
 		Link:    "https://github.com/giantswarm/github/pull/4711",
-		Approve: channels.ToolInvocation{Tool: "x_giantswarm-repo-manager_approve_change", Arguments: map[string]any{"pr": 4711}},
+		Approve: channels.ToolInvocation{Tool: "x_example-repo-manager_approve_change", Arguments: map[string]any{"pr": 4711}},
 	}
 }
 
@@ -435,7 +435,7 @@ func TestTeamNotice_RendersWithoutButtons(t *testing.T) {
 }
 
 func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
-	tools := &recordingTools{results: []muster.Result{{Text: "review submitted on giantswarm/github#4711"}}}
+	tools := &recordingTools{results: []muster.Result{{Text: "review submitted on example/org#1"}}}
 	a, srv, fake := teamReviewHarness(t, tools)
 	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
 	require.NoError(t, err)
@@ -445,7 +445,7 @@ func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
 	waitFor(t, "the tool is called once", func() bool { return len(tools.recorded()) == 1 })
 	call := tools.recorded()[0]
 	require.Equal(t, "id-token-U1", call.bearer, "the call runs under the clicking member's own token")
-	require.Equal(t, "x_giantswarm-repo-manager_approve_change", call.tool)
+	require.Equal(t, "x_example-repo-manager_approve_change", call.tool)
 	require.Equal(t, map[string]any{"pr": 4711}, call.args)
 
 	waitFor(t, "the message shows the outcome and the decider", func() bool {
@@ -596,8 +596,8 @@ func TestTeamReview_LongAskKeepsTheToolsAnswer(t *testing.T) {
 // a JSON object by its message field, structured data without one not at all.
 func TestTeamReview_OutcomeShowsTheToolsMessageNotItsJSON(t *testing.T) {
 	for name, tc := range map[string]struct{ result, shown, hidden string }{
-		"plain text":           {result: "review submitted on giantswarm/github#4711", shown: "review submitted on giantswarm/github#4711"},
-		"object with message":  {result: `{"pullRequest":4711,"login":"carol","member":true,"message":"Approved as carol and merged: giantswarm/github#4711."}`, shown: "Approved as carol and merged: giantswarm/github#4711.", hidden: `"login"`},
+		"plain text":           {result: "review submitted on example/org#1", shown: "review submitted on example/org#1"},
+		"object with message":  {result: `{"pullRequest":4711,"login":"carol","member":true,"message":"Approved as carol and merged: example/org#1."}`, shown: "Approved as carol and merged: example/org#1.", hidden: `"login"`},
 		"object without one":   {result: `{"pullRequest":4711,"login":"carol","member":true}`, hidden: `"pullRequest"`},
 		"array":                {result: `[{"pullRequest":4711}]`, hidden: "4711"},
 		"empty":                {result: ""},
@@ -724,7 +724,7 @@ func TestTeamReview_ToolOutageKeepsTheReviewOpen(t *testing.T) {
 func TestTeamReview_SignInThenApproves(t *testing.T) {
 	tools := &recordingTools{results: []muster.Result{
 		reviewSignIn(),
-		{Text: "review submitted on giantswarm/github#4711"},
+		{Text: "review submitted on example/org#1"},
 	}}
 	a, srv, fake := teamReviewHarness(t, tools)
 	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
@@ -742,21 +742,21 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.Len(t, prompts, 1)
 	require.Equal(t, "U1", prompts[0].params["user"])
 	require.Nil(t, prompts[0].params["thread_ts"], "the prompt is a channel-level ephemeral, where the click happened")
-	require.Contains(t, prompts[0].params["text"], "To approve as yourself, *muster* asks you to sign in once:\n>Sign in to giantswarm-repo-manager to continue.")
+	require.Contains(t, prompts[0].params["text"], "*Sign in to example-repo-manager to continue.*\nAsked by *muster* before your approval goes through.")
 	require.Contains(t, prompts[0].params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
-	require.Contains(t, prompts[0].params["text"], "your approval is submitted once you're signed in")
-	require.Equal(t, []string{"connector_connect", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
+	require.Contains(t, prompts[0].params["text"], "Open it, then choose *Done*: your approval is submitted.")
+	require.Equal(t, []string{"connector_connect", "elicitation_done", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
 	require.Equal(t, reviewSignInLink, buttonURL, "muster's link, unchanged")
 	require.NotContains(t, statusLine(fake, receipt.TS), "not accepted", "a sign-in is not a refusal")
 
 	waitFor(t, "the team sees who is signing in", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in to approve as themselves.")
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is finishing a step at muster to approve as themselves.")
 	})
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open for the team")
 	require.Len(t, tools.recorded(), 1)
 
 	responseSrv, capturedBody := newResponseURLCapture(t)
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 
 	waitFor(t, "the approval is submitted again as the person, accepting the sign-in", func() bool { return len(tools.recorded()) == 2 })
 	calls := tools.recorded()
@@ -767,10 +767,10 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 		return updatedWith(fake, receipt.TS, "Approved", "<@U1>") && detailedWith(fake, receipt.TS, "review submitted")
 	})
 	require.Empty(t, latestButtons(fake, receipt.TS))
-	waitFor(t, "the prompt says what the click started", func() bool { return strings.Contains(capturedBody(), "Opened the sign-in link.") })
+	waitFor(t, "the prompt says what the click started", func() bool { return strings.Contains(capturedBody(), "Done. What waited for it goes ahead.") })
 
 	// A second click only opens the link again.
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 2)
 }
@@ -791,7 +791,7 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 		return ok
 	})
 	waitFor(t, "the team sees who is signing in", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in")
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is finishing a step at muster")
 	})
 
 	responseSrv, capturedBody := newResponseURLCapture(t)
@@ -801,41 +801,73 @@ func TestTeamReview_NotNowDeclines(t *testing.T) {
 	require.Equal(t, "id-token-U1", calls[1].bearer)
 	require.NotNil(t, calls[1].declined)
 	require.Nil(t, calls[1].accepted)
-	waitFor(t, "the prompt says nothing was sent", func() bool { return strings.Contains(capturedBody(), "Not signed in.") })
-	waitFor(t, "the status line is gone", func() bool { return !strings.Contains(statusLine(fake, receipt.TS), "signing in") })
+	waitFor(t, "the prompt says nothing was sent", func() bool { return strings.Contains(capturedBody(), "Not now.") })
+	waitFor(t, "the status line is gone", func() bool { return !strings.Contains(statusLine(fake, receipt.TS), "finishing a step") })
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
 
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 2, "the declined prompt's Sign in submits nothing")
 }
 
-// A sign-in that did not complete in time is asked again by muster after the
-// accept: the person is told, once, and the review stays open.
-func TestTeamReview_SignInNotCompletedIsNotLooped(t *testing.T) {
-	tools := &recordingTools{results: []muster.Result{reviewSignIn()}}
+// approvalAsk is muster's URL elicitation of a tool approval (tool approval): its message, its approval page.
+func approvalAsk() muster.Result {
+	return muster.Result{SignIn: &muster.SignIn{Message: "Confirm Approve change in repo-manager.", URL: "https://muster.example/approvals/0f3a9c", ElicitationID: "el-1"}}
+}
+
+// lastConnectButton returns the link and value of the latest ephemeral
+// prompt's link button.
+func lastConnectButton(fake *fakeSlackAPI) (buttonURL, buttonValue string, ok bool) {
+	calls := fake.pathCalls("chat.postEphemeral")
+	for i := len(calls) - 1; i >= 0; i-- {
+		if u, v, _, found := connectButtonIn(calls[i : i+1]); found {
+			return u, v, true
+		}
+	}
+	return "", "", false
+}
+
+// muster still asks after Done (an approval not decided yet; muster does not
+// wait for one): the person gets the prompt again, saying it is not done
+// yet, the review stays open, and the new prompt's Done submits the decision
+// (code review M1-KG-C-01).
+func TestTeamReview_StillAskedAfterDoneIsPromptedAgain(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{approvalAsk(), approvalAsk(), {Text: "review submitted"}}}
 	a, srv, fake := teamReviewHarness(t, tools)
 	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
 	require.NoError(t, err)
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
 	var stateID string
-	waitFor(t, "a Connect prompt is posted", func() bool {
+	waitFor(t, "a prompt is posted", func() bool {
 		var ok bool
 		_, stateID, ok = connectButton(fake)
 		return ok
 	})
 	responseSrv, capturedBody := newResponseURLCapture(t)
-	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	sendClick(t, srv, "elicitation_done", stateID, responseSrv.URL, true)
 
-	waitFor(t, "the status line says the sign-in did not finish", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> did not finish signing in in time")
+	waitFor(t, "the prompt is posted again", func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 2 })
+	again := fake.pathCalls("chat.postEphemeral")[1]
+	require.Contains(t, again.params["text"], "*Confirm Approve change in repo-manager.*\nNot done yet: *muster* still asks before your approval goes through.")
+	require.NotContains(t, again.params["text"], "sign")
+	waitFor(t, "the status line says the person is not done yet", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is not done at muster's link yet")
 	})
-	require.Contains(t, capturedBody(), "Opened the sign-in link.")
-	require.NotContains(t, capturedBody(), "Signed in.", "the prompt never claims a sign-in that did not finish")
-	require.Len(t, tools.recorded(), 2, "one call per attempt, no loop")
-	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "the one Connect prompt; no second one, no private repeat")
+	require.NotContains(t, statusLine(fake, receipt.TS), "signing in")
+	require.Contains(t, capturedBody(), "Done. What waited for it goes ahead.")
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
+	require.Len(t, tools.recorded(), 2, "one call per Done, no loop")
+
+	_, againState, ok := lastConnectButton(fake)
+	require.True(t, ok)
+	require.NotEqual(t, stateID, againState)
+	sendClick(t, srv, "elicitation_done", againState, responseSrv.URL, true)
+	waitFor(t, "the new prompt's Done submits the decision", func() bool {
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>") && detailedWith(fake, receipt.TS, "review submitted")
+	})
+	require.Len(t, tools.recorded(), 3)
+	require.NotNil(t, tools.recorded()[2].accepted)
 }
 
 // Someone else approves while the clicker is signing in: the consent's
@@ -859,7 +891,7 @@ func TestTeamReview_DecidedWhileSigningIn(t *testing.T) {
 	clickApprove(t, srv, "U2", receipt.ID, receipt.TS)
 	waitFor(t, "U2's approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U2>") })
 
-	sendClick(t, srv, "connector_connect", stateID, "", true)
+	sendClick(t, srv, "elicitation_done", stateID, "", true)
 	waitFor(t, "U1 is told who decided", func() bool { return ephemeralTo(fake, "U1", "already approved by <@U2>") })
 	require.Len(t, tools.recorded(), 2, "the consent calls no tool")
 }
@@ -875,7 +907,7 @@ func TestTeamReview_SurvivesRestart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tools := &recordingTools{results: []muster.Result{
 				{IsError: true, Text: "not a member of team-bumblebee"},
-				{Text: "review submitted on giantswarm/github#4711"},
+				{Text: "review submitted on example/org#1"},
 			}}
 			fake := newFakeSlackAPI()
 			apiURL := fake.server(t).URL
@@ -897,7 +929,7 @@ func TestTeamReview_SurvivesRestart(t *testing.T) {
 			calls := tools.recorded()
 			require.Len(t, calls, 2)
 			require.Equal(t, "id-token-U2", calls[1].bearer)
-			require.Equal(t, "x_giantswarm-repo-manager_approve_change", calls[1].tool)
+			require.Equal(t, "x_example-repo-manager_approve_change", calls[1].tool)
 			wantArgs, _ := json.Marshal(map[string]any{"pr": 4711})
 			gotArgs, _ := json.Marshal(calls[1].args)
 			require.JSONEq(t, string(wantArgs), string(gotArgs), "the arguments reach the tool as posted")
@@ -964,12 +996,12 @@ func TestTeamReview_ConsentGoneAfterRestartClickApproves(t *testing.T) {
 		return ok
 	})
 	waitFor(t, "the team sees who is signing in", func() bool {
-		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in")
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is finishing a step at muster")
 	})
 	restart(t, a1, srv1)
 
 	_, srv2 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
-	sendClick(t, srv2, "connector_connect", stateID, "", true)
+	sendClick(t, srv2, "elicitation_done", stateID, "", true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 1, "the click submits nothing: the state it stood for is gone")
 
@@ -1073,4 +1105,38 @@ func TestTeamReview_NeedsToolsAndLinking(t *testing.T) {
 	_, err := a.PostTeamReview(context.Background(), archiveReview())
 	require.Error(t, err)
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
+}
+
+// The gateway's own prompt gets the return too: muster's sign-in sends the
+// browser back with the prompt's key (and server=<name>, no elicitationId),
+// and the decision is submitted as the person without a Done click.
+func TestTeamReview_MustersReturnSubmitsTheDecision(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{
+		reviewSignIn(),
+		{Text: "review submitted on example/org#1"},
+	}}
+	a, srv, fake := teamReviewHarness(t, tools, func(a *slackadapter.Adapter) {
+		a.MusterURL = "https://muster.example"
+		a.ElicitationReturnURL = gatewayReturnURL
+	})
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+
+	var link string
+	waitFor(t, "a prompt is posted", func() bool {
+		var ok bool
+		link, _, ok = connectButton(fake)
+		return ok
+	})
+	require.True(t, strings.HasPrefix(link, "https://muster.example/oauth/proxy/start?redirect="), "muster's link with the return: %s", link)
+	require.Contains(t, link, "&state=abc123", "muster's own query is kept")
+	require.Contains(t, fake.pathCalls("chat.postEphemeral")[0].params["text"], "`"+strings.ReplaceAll(link, "&", "&amp;")+"`", "the link shown is the link opened")
+
+	getReturn(t, a, mustersReturn(t, link, url.Values{"server": {"example-repo-manager"}}))
+	waitFor(t, "the approval is submitted again as the person", func() bool { return len(tools.recorded()) == 2 })
+	require.NotNil(t, tools.recorded()[1].accepted)
+	waitFor(t, "the message shows the outcome", func() bool {
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>") && detailedWith(fake, receipt.TS, "review submitted")
+	})
 }

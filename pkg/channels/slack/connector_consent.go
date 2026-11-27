@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"time"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
@@ -19,11 +21,11 @@ type SignInAnswerer interface {
 	Decline(ctx context.Context, bearer string, signIn *muster.SignIn) error
 }
 
-// connectorCompletion binds a Connect prompt's link button to what the
-// person's consent continues. The button opens the server's link exactly as
-// given; its click, from the person the prompt is for, is their consent to
-// open it (the accept of the URL elicitation), and the first one runs the
-// continuation. Clicks after it only open the link again.
+// connectorCompletion binds a URL elicitation prompt's Done button to what it
+// continues. The link button opens the server's link and continues nothing;
+// Done, from the person the prompt is for, or muster's return with the
+// elicitation's id, is the accept of the URL elicitation, and the first one
+// runs the continuation. Later ones continue nothing.
 type connectorCompletion struct {
 	slackUser string // raw Slack user ID (U…) the prompt is for
 	channel   string // Slack channel the prompt was posted in
@@ -53,18 +55,25 @@ type connectorCompletion struct {
 	// continuation accepts the sign-in, which delivers it.
 	conversation string
 	reply        conversationReply
-	consented    bool
+	// elicitationID is the elicitation's id, which muster appends to the
+	// return after an approval; empty when it gave none.
+	elicitationID string
+	// returnKey is the random value the prompt's link carries in the
+	// gateway's return (promptLink); "" when the link got no return, and the
+	// prompt then continues on Done alone.
+	returnKey string
+	consented bool
 }
 
 // mintConnectorCompletion stores fresh completion state for a Connect prompt
 // and returns its opaque ID, which the prompt's link button carries as its
 // value.
 func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
-	raw := make([]byte, 16)
-	// crypto/rand.Read never returns an error (Go 1.24+).
-	_, _ = rand.Read(raw)
-	stateID := base64.RawURLEncoding.EncodeToString(raw)
+	stateID := randomToken()
 	entry.consented = false
+	if entry.elicitationID == "" && entry.signIn != nil {
+		entry.elicitationID = entry.signIn.ElicitationID
+	}
 
 	now := time.Now()
 	a.connectorCompletionsMu.Lock()
@@ -77,14 +86,84 @@ func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
 	return stateID
 }
 
-// dropConnectorCompletions forgets the completion states named, so the
-// buttons that carry them continue nothing.
+// randomToken is 128 random bits, URL-safe.
+func randomToken() string {
+	raw := make([]byte, 16)
+	// crypto/rand.Read never returns an error (Go 1.24+).
+	_, _ = rand.Read(raw)
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// dropConnectorCompletions marks the completion states named answered, so
+// the buttons that carry them continue nothing and say the prompt was
+// answered until the states expire.
 func (a *Adapter) dropConnectorCompletions(stateIDs []string) {
 	a.connectorCompletionsMu.Lock()
 	defer a.connectorCompletionsMu.Unlock()
 	for _, id := range stateIDs {
-		delete(a.connectorCompletions, id)
+		if stored, ok := a.connectorCompletions[id]; ok {
+			stored.value.consented = true
+			a.connectorCompletions[id] = stored
+		}
 	}
+}
+
+// deadPromptNotice is what a Done or Not now of slackUser's that continued
+// nothing tells them: "" for a prompt that is not theirs, which they cannot
+// see anyway.
+func (a *Adapter) deadPromptNotice(slackUser, stateID string) string {
+	a.connectorCompletionsMu.Lock()
+	defer a.connectorCompletionsMu.Unlock()
+	stored, found := a.connectorCompletions[stateID]
+	switch {
+	case !found || time.Now().After(stored.expires):
+		return promptGoneNotice
+	case stored.value.slackUser != slackUser:
+		return ""
+	case stored.value.consented:
+		return promptAlreadyContinuedNotice
+	}
+	return promptGoneNotice
+}
+
+// tellDeadPrompt answers a Done or Not now click that continued nothing with
+// why: an ephemeral prompt is rewritten to the notice through the click's
+// response_url, any other prompt (a card, a real message) gets it as an
+// ephemeral note under it, the card left alone.
+func (a *Adapter) tellDeadPrompt(ctx context.Context, click promptClick) {
+	notice := a.deadPromptNotice(click.slackUser, click.stateID)
+	if notice == "" || click.responseURL == "" {
+		return
+	}
+	var err error
+	if click.ephemeral {
+		err = respondURL(ctx, click.responseURL, click.threadTS, notice)
+	} else {
+		err = respondEphemeralNote(ctx, click.responseURL, click.threadTS, notice)
+	}
+	if err != nil {
+		a.Logger.Warn("slack: tell a dead prompt click failed", "user", click.slackUser, "error", err)
+	}
+}
+
+// promptClick is a click on a URL elicitation prompt's Done or Not now.
+type promptClick struct {
+	slackUser, stateID string
+	// responseURL is the click's response_url; ephemeral says whether the
+	// prompt is an ephemeral message, rewritten through it, or a card, a real
+	// message its own flow rewrites; threadTS is the prompt's thread.
+	responseURL string
+	ephemeral   bool
+	threadTS    string
+}
+
+// continuationURL is the response_url the continuation rewrites the prompt
+// through: an ephemeral's only.
+func (c promptClick) continuationURL() string {
+	if !c.ephemeral {
+		return ""
+	}
+	return c.responseURL
 }
 
 // takeConnectorAnswer records slackUser's answer to stateID's link, their
@@ -103,28 +182,17 @@ func (a *Adapter) takeConnectorAnswer(slackUser, stateID string) (connectorCompl
 	return stored.value, true
 }
 
-// handleConnectorConnect is a click on a Connect prompt's link button: Slack
-// opens the link, and the click is the person's consent to it. The first click
-// of the person the prompt is for runs what the prompt holds; any other is a
-// no-op.
-func (a *Adapter) handleConnectorConnect(slackUser, stateID, responseURL string) {
-	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
-	if !ok {
-		return
-	}
-	a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, responseURL) })
-}
-
 // handleConnectorDecline is a click on a Connect prompt's Not now: the person
 // will not open the link. The first click of the person the prompt is for
-// declines the sign-in to muster and drops what the prompt holds; any other
-// is a no-op.
-func (a *Adapter) handleConnectorDecline(slackUser, stateID, responseURL string) {
-	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
+// declines the elicitation to muster and drops what the prompt holds; any
+// other continues nothing and says why (tellDeadPrompt).
+func (a *Adapter) handleConnectorDecline(ctx context.Context, click promptClick) {
+	entry, ok := a.takeConnectorAnswer(click.slackUser, click.stateID)
 	if !ok {
+		a.tellDeadPrompt(ctx, click)
 		return
 	}
-	a.background(func(ctx context.Context) { a.dropAfterDecline(ctx, entry, responseURL) })
+	a.background(func(ctx context.Context) { a.dropAfterDecline(ctx, entry, click.continuationURL()) })
 }
 
 // dropAfterDecline answers muster's sign-in with decline, then settles what
@@ -133,9 +201,9 @@ func (a *Adapter) handleConnectorDecline(slackUser, stateID, responseURL string)
 func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletion, responseURL string) {
 	if a.SignIns != nil && a.OBO != nil && entry.signIn != nil {
 		if token, err := a.OBO.TokenFor(ctx, entry.slackUser); err != nil {
-			a.Logger.Warn("slack: token to decline a sign-in unavailable", "user", entry.slackUser, "error", err)
+			a.Logger.Warn("slack: token to decline an elicitation unavailable", "user", entry.slackUser, "error", err)
 		} else if err := a.SignIns.Decline(ctx, token, entry.signIn); err != nil {
-			a.Logger.Warn("slack: decline sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
+			a.Logger.Warn("slack: decline elicitation failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
 		}
 	}
 	switch {
@@ -150,7 +218,7 @@ func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletio
 			a.showTeamReviewStatus(ctx, rv, "")
 		}
 	}
-	a.Logger.Info("slack: sign-in declined", "record", "connector_declined", "user", entry.slackUser, "thread", entry.threadTS, "review", entry.review)
+	a.Logger.Info("slack: elicitation declined", "record", "connector_declined", "user", entry.slackUser, "thread", entry.threadTS, "review", entry.review)
 	if responseURL != "" {
 		if err := respondURL(ctx, responseURL, entry.threadTS, connectorDeclinedNotice); err != nil {
 			a.Logger.Warn("slack: rewrite connect prompt after decline failed", "thread", entry.threadTS, "error", err)
@@ -158,13 +226,15 @@ func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletio
 	}
 }
 
-// continueAfterConsent runs what a Connect prompt holds once its person agreed
-// to open the link. The prompt is replaced at once, since the click says
-// nothing of how the sign-in ends: each continuation reports its outcome on
-// its own surface. A runtime's sign-in resumes its paused task with accept:
-// the runtime retries its own call. The gateway's own call is accepted: muster
-// waits for the sign-in, then runs the call. Blocking, so it runs on the
-// adapter lifecycle context via background.
+// continueAfterConsent runs what a URL elicitation prompt holds once its
+// person is done at the link (Done, or muster's return). The prompt is
+// replaced at once, since Done says nothing of the outcome: each continuation
+// reports it on its own surface, from muster's answer to the retried call. A
+// runtime's elicitation resumes its paused task with accept: the runtime
+// retries its own call. The gateway's own call is accepted: muster runs it
+// when what it asked for is done (a sign-in it waits for, an approval it
+// matches) or asks again. Blocking, so it runs on the adapter lifecycle
+// context via background.
 func (a *Adapter) continueAfterConsent(ctx context.Context, entry connectorCompletion, responseURL string) {
 	notice := connectorContinuingNotice
 	if entry.signInTask != "" {
@@ -199,29 +269,54 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 	}
 	token, err := a.OBO.TokenFor(ctx, entry.slackUser)
 	if err != nil {
-		a.Logger.Warn("slack: token to accept a sign-in unavailable", "user", entry.slackUser, "error", err)
+		a.Logger.Warn("slack: token to accept an elicitation unavailable", "user", entry.slackUser, "error", err)
 		return muster.Result{}, false
 	}
 	res, err := a.SignIns.Accept(ctx, token, entry.signIn)
 	if err != nil {
-		a.Logger.Warn("slack: accept sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
+		a.Logger.Warn("slack: accept elicitation failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
 		return muster.Result{}, false
 	}
 	return res, true
 }
 
-// resumeHeldStart accepts the sign-in a Session start was asked for, which
-// waits for it, then runs the held message as the thread's first turn. The
-// replayed start names the same request, so it finds the Session the accepted
-// start made. The surfaces settle as delivered only when the accept ran the
-// start; otherwise the replayed start settles them or, still asked for the
-// sign-in, refreshes them with a new prompt.
+// resumeHeldStart accepts the URL elicitation a Session start was asked for
+// (muster waits for a sign-in, matches an approval), then runs the held
+// message as the thread's first turn. When the accept ran the start, the
+// surfaces settle as delivered and the replayed start gets the accepted
+// start's answer from the muster client instead of asking again
+// (muster.Client.CallIdempotent; agent-manager's start is idempotent per
+// request id). One muster still asks for (an approval not decided yet) gets
+// the prompt again, not a replay. One muster refused (a declined or expired
+// approval) settles them as not sent, with muster's words, and the held
+// message is dropped. When the accept failed, the replayed start settles them
+// or refreshes them with a new prompt.
 func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion) {
-	if res, ok := a.acceptSignIn(ctx, entry); ok && res.SignIn == nil {
+	res, ok := a.acceptSignIn(ctx, entry)
+	switch {
+	case ok && res.SignIn == nil && res.IsError:
+		a.Logger.Info("slack: session start refused after Done", "record", "session_connect_refused", "user", entry.slackUser, "thread", entry.threadTS, "reason", res.Text)
+		reason := "muster refused it"
+		if res.Text != "" {
+			reason = truncateRunes(escapeMrkdwn(res.Text), teamReviewReasonMax)
+		}
+		card := fmt.Sprintf(sessionConnectCardRefused, reason)
+		a.settleSessionConnectAs(ctx, entry.slackUser, entry.threadTS, fmt.Sprintf(sessionConnectRefusedFormat, entry.slackUser), card)
+		if err := a.apiClient().postEphemeralText(ctx, entry.channel, entry.slackUser, entry.threadTS, card); err != nil {
+			a.Logger.Warn("slack: session start refusal note failed", "thread", entry.threadTS, "error", err)
+		}
+		return
+	case ok && res.SignIn != nil:
+		// Still asked (an approval not decided yet): the person gets the
+		// prompt again for the elicitation muster answered the retry with.
+		// A replay would only call the start again to be asked the same.
+		a.promptSessionConnect(ctx, entry.held.Msg, entry.held.SlackChannel, entry.slackUser, "", false, &pkga2a.ConnectRequiredError{SignIn: res.SignIn})
+		return
+	case ok:
 		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
 	}
 	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after Done failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
 		a.postReplayFailureNote(ctx, entry.held.SlackChannel, entry.threadTS, err)
 	}
 }
@@ -230,7 +325,7 @@ func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion
 // if it is still paused on it.
 func (a *Adapter) resumeSignInTask(ctx context.Context, entry connectorCompletion) {
 	if a.pendingSignIn(entry.threadTS, entry.signInTask) == nil {
-		a.Logger.Info("slack: sign-in consent for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
+		a.Logger.Info("slack: Done for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
 		return
 	}
 	msg := channels.InboundMessage{
@@ -241,7 +336,7 @@ func (a *Adapter) resumeSignInTask(ctx context.Context, entry connectorCompletio
 		Subject:   entry.slackUser,
 	}
 	if err := a.replayDispatch(ctx, msg, entry.channel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Log(ctx, failureLogLevel(err), "slack: sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: resume after Done failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
 		a.postReplayFailureNote(ctx, entry.channel, entry.threadTS, err)
 	}
 }

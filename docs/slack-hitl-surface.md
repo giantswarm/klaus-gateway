@@ -28,8 +28,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 | >20, or any question >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
 
 Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
-Deny buttons. A task paused on an MCP server's sign-in link renders as the sign-in prompt of
-section 7.
+Deny buttons. A task paused on an MCP server's URL elicitation (a sign-in link, muster's tool
+approval page, any later one) renders as the generic prompt of section 7.
 Any prompt can also be answered by replying in-thread (a reply that opens with a mention of
 someone other than the bot is not for the agent and answers nothing); a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
@@ -305,69 +305,95 @@ question is added by the gateway.
 
 <img width="714" height="359" alt="image" src="https://github.com/user-attachments/assets/21e82e7c-0a78-429c-9e93-a684f527a6a3" />
 
-## 7. Connector login (agent needs a backend the user hasn't connected)
+## 7. URL elicitations (sign-in, tool approval, any later one)
 
-A sign-in an agent needs in a turn is always the runtime's URL elicitation: the task pauses at
-`input-required` with the server's `url_elicitation_request`, and the gateway posts the prompt
-below ("Sign-in a paused task waits on"). The gateway reads no login link out of the agent's
-text or tool results.
+A sign-in an agent needs in a turn and a tool call muster asks the person to approve (a tool set
+to *Ask*) are both the runtime's URL elicitation: the task pauses at `input-required` with the
+server's `url_elicitation_request` and the gateway posts the prompt below. The gateway reads no
+link out of agent text or tool results and does not tell a sign-in from an approval: they look
+the same.
 
-Every sign-in link follows MCP's URL mode elicitation. The prompt shows the whole link before
-the person agrees to open it: the domain it opens in bold ("Opens *muster.example*"), then the
-URL exactly as given, in code so Slack neither shortens nor links it. An internationalized
-domain is shown in its `xn--` punycode form with a warning that it may imitate another one; a
-non-ASCII domain with no punycode form is shown as written, with the same warning. The prompt's
-text is `verbatim`, so Slack links no URL in the server's message: the button is the one way to
-open a link. The server's message gets the room the section has left, so the link is never cut.
-The link button (`connector_connect`, labelled *Sign in*) opens the server's URL unchanged: the
-gateway adds no parameter to it. Its click, by the person the prompt is for, is their consent
-to open it, the `accept` of the elicitation. The first click continues what the prompt holds;
-later clicks only open the link again. A link that is not https (http only on a loopback
-host), carries credentials, is longer than 2000 bytes (each `&` counted as `&amp;`) or cannot be
-shown as written (spaces, control and format characters such as bidirectional overrides,
-backticks, `<` and `>`) is not offered.
+**Link display.** The prompt shows the whole link before it is opened: the domain in bold
+("Opens *muster.example*"), then the URL exactly as it opens, in code. An internationalized
+domain is shown in `xn--` punycode with a warning; a non-ASCII domain without punycode is shown
+as written, with the warning. The text is `verbatim`, so Slack links nothing in the server's
+message. The button (`connector_connect`, *Open ↗ <host>*) is the only way to open a link and
+continues nothing. A link that is not https (http only on loopback), carries credentials, exceeds
+2000 bytes (each `&` counted as `&amp;`) or cannot be shown as written (spaces, control and format
+characters, backticks, `<`, `>`) is not offered.
 
-The gateway's own Connect prompts (a Session start, a decision, a team review) also carry *Not
-now* (`action_id` `connector_decline`, `value` the completion state). Its first click by the
-person the prompt is for declines the sign-in to muster as the person (the `decline` of the
-elicitation: muster runs nothing), drops what the prompt held and rewrites it to "Not signed in.
-What waited for the sign-in was not sent; try again when you want to sign in."; the prompt's
-*Sign in* then continues nothing. A held Session start's thread line reads "@Jose did not sign
-in." and its DM card says the same; a decision or a team review loses the status line naming the
-person and stays open. A workspace provider's Connect prompt has no *Not now*: its click
-continues nothing either.
+**Done.** Every prompt carries *Done* (`elicitation_done`, `value` the completion state). The
+first click by the prompt's person is the `accept`: what the prompt holds continues and muster
+decides on the retried call (runs it after a completed sign-in or granted approval, refuses a
+declined or expired one, asks again for an approval not yet decided: muster does not wait for
+approvals). A click that continues nothing says why: "This prompt was already answered." or "This
+prompt can no longer continue: ..." (state lost, see below).
 
-The Connect prompt answers a Session start muster asked a sign-in for (the person has not
-consented to the server's GitHub App): "The conversation can't start yet. *muster* asks you to
-sign in once:", muster's message quoted, the link, then "Open it with *Sign in*: your message
-goes to the agent once you're signed in." The message is held. The click accepts the sign-in
-as the person: the gateway retries the start with muster's `requestState` and the `accept`,
-muster waits up to five minutes for the sign-in to complete and then starts the Session, and
-the held message runs as the thread's first turn (agent-manager's `start_session` is
-idempotent per request id, so the replayed start finds that Session). A sign-in that did not
-complete in time is asked for again by the replayed start. In a DM the card is a message of the
-conversation; a later message gets a card of its own, and the earlier one is rewritten to
-"Sign in with the newer prompt below." In a channel thread it is ephemeral, so the same card,
-led by "Asked in a thread in #channel." (the thread linked), also goes to the person's DM with
-the app, and a context line in the thread says whom it waits for and where the button is
-("Waiting for @Jose to sign in (the Sign in button is in a direct message from the app)"); a
-later message of the person's refreshes the DM card in place, and the line stays. Once the
-person has signed in, the line reads "@Jose signed in." and the card is a confirmation:
-"Signed in. Your message is on its way to the agent." when the click ran the held message,
-"Signed in." when their next turn that starts the Session found them signed in and the held
-message stays unsent. Every surface's button carries the prompt's completion state in its
-`value`; a click on the ephemeral replaces it at once through its `response_url` (Slack marks the
-click `container.is_ephemeral`) with "Opened the sign-in link. What waited for it goes ahead
-once you're signed in.", the cards are rewritten in place once the start settled.
+**Return.** A link on muster's origin (origin of `obo.musterUrl`, default port written or not)
+gets `redirect=<obo.callbackBaseUrl>/auth/slack/return?prompt=<key>` (random 128-bit key per
+prompt; an existing `redirect` is replaced). With that URL in muster's
+`oauth.mcpClient.postLoginRedirectAllowlist` (prefix match, query free), muster sends the browser
+back with the query kept (`elicitationId` appended after an approval, `server=<name>` after a
+sign-in). The return continues only the prompt its key names, if still waiting and within its
+lifetime, as *Done* would, as the person it was posted for; an `elicitationId` it carries must be
+that prompt's own. A bare `elicitationId` or a link off muster's origin resumes nothing. The page
+only says to go back to Slack and is the same for an unknown, used or missing key. Without the
+allowlist entry muster drops the redirect (and logs it): *Done* is the one way back. The return
+cannot rewrite the ephemeral, so its buttons stay; a later *Done* says it was already answered.
+`obo.musterUrl` must be muster's public origin (`aggregator.oauth.mcpClient.publicUrl`); an
+in-cluster address gets no return.
+
+**One process holds a prompt.** Completion states live in the posting process's memory for 30
+minutes (muster's longest `approval.ttl`). After a restart, or when a click or return reaches
+another replica, nothing continues: *Done* says the prompt can no longer continue. The chart runs
+one replica by default.
+
+**Not now.** The gateway's own prompts (Session start, decision, team review, conversation reply)
+also carry *Not now* (`connector_decline`, `value` the completion state). The first click by the
+prompt's person declines to muster (`decline`; nothing is sent on a `-32042` elicitation), drops
+what the prompt held and rewrites it to "Not now. What waited for it was not sent; try again when
+you're ready."; *Done* then continues nothing. A held Session start's thread line reads "@Jose
+chose not now."; a decision or team review loses its status line and stays open. A workspace
+provider's Connect prompt is a sign-in, not an elicitation: *Sign in* (or *Connect <provider>*),
+no *Done* or *Not now*, continues nothing.
+
+**Layout of the gateway's own prompts.** Muster's message in bold as the heading, a line on what
+waits ("Asked by *muster* before your answer goes through." for a decision, "... before your
+approval goes through." for a team review, "... before your reply goes to *Your guide*." for a
+conversation reply, "... before the conversation can start." for a Session start), the link, then
+"Open it, then choose *Done*: ...". The status line meanwhile reads "@Jose is finishing a step at
+muster to answer as themselves." When muster still asks on the retry, the person gets the prompt
+again ("Not done yet: *muster* still asks"), the status line reads "@Jose is not done at muster's
+link yet; their answer waits for it." and what waited stays held; the new prompt's *Done*
+continues it. A refused retry (declined or expired approval) is shown as the flow's refusal.
+
+**Session start.** muster asked for the start (GitHub App consent not given, or approval for
+`start_session`) and the message is held. *Done* retries the start (with muster's `requestState`
+and the `accept` on 2026-07-28, the plain call on 2025-11-25); muster waits up to five minutes
+for a sign-in or matches an approval, starts the Session, and the held message runs as the first
+turn. The replay gets the accepted start's answer (muster used the approval up; `start_session`
+is idempotent per request id). What muster still asks gets the prompt again, without a replay. A
+refused retry is not replayed: the line reads "@Jose is done; the conversation did not start.",
+the card and a thread note read "Your message was not sent: <muster's words>", and the held
+message is dropped. In a DM the card is a message of the conversation; a later message gets its
+own card and the earlier one is rewritten to "Use the newer prompt below." In a channel thread
+the card is ephemeral and also goes to the person's DM (led by "Asked in a thread in #channel."),
+with the thread line "Waiting for @Jose at *muster*'s link (the prompt is in a direct message
+from the app)"; later messages refresh the DM card. Once the start ran the line reads "@Jose is
+done." and the card confirms: "Done. Your message is on its way to the agent." (*Done* ran the
+held message) or "Done." (the next turn found nothing to ask; the held message stays unsent).
+Buttons carry the completion state in `value`; *Done* on the ephemeral replaces it through
+`response_url` with "Done. What waited for it goes ahead.".
 
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "verbatim": true, "text": "The conversation can't start yet. *muster* asks you to sign in once:\n>Sign in to agent-manager to continue.\nOpens *muster.example*\n`https://muster.example/oauth/proxy/start?state=abc`\nOpen it with *Sign in*: your message goes to the agent once you're signed in." } },
+    { "type": "section", "text": { "type": "mrkdwn", "verbatim": true, "text": "*Sign in to agent-manager to continue.*\nAsked by *muster* before the conversation can start.\nOpens *muster.example*\n`https://muster.example/oauth/proxy/start?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn%3Fprompt%3D<key>&amp;state=abc`\nOpen it, then choose *Done*: your message goes to the agent." } },
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "connector_connect", "value": "<completion state>", "url": "https://muster.example/oauth/proxy/start?state=abc" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Open ↗ muster.example" }, "style": "primary", "action_id": "connector_connect", "value": "<completion state>", "url": "https://muster.example/oauth/proxy/start?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn%3Fprompt%3D<key>&state=abc" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Done" }, "action_id": "elicitation_done", "value": "<completion state>" },
         { "type": "button", "text": { "type": "plain_text", "text": "Not now" }, "action_id": "connector_decline", "value": "<completion state>" }
       ]
     }
@@ -375,30 +401,46 @@ once you're signed in.", the cards are rewritten in place once the start settled
 }
 ```
 
-### Sign-in a paused task waits on
+### A URL elicitation a paused task waits on
 
-Every runtime the platform runs (the claude, codex and omp Harnesses, the Go ADK) relays MCP URL
-elicitations: it pauses the task at `input-required` with the server's sign-in link
-(`url_elicitation_request`, see `docs/kagent-a2a.md`). The server named is the MCP
-server that asked, muster for a platform agent; what needs the sign-in is in its message
-("Sign in to github to continue."). The link is minted for the person whose turn asked, so the
-prompt goes to them alone, ephemeral, and the thread gets "Waiting for @Jose to sign in (asked
-by *muster*).". The prompt reads "*muster* asks you to sign in so the agent can continue.",
-the server's message quoted under it, the link, then "Open it with *Sign in*: the agent
-continues once you're signed in.", with *Sign in* (`connector_connect`, the server's link
-unchanged), *Authorize all* where offered, and *Not now* (`action_id` `sign_in_decline`,
-`value` the thread and the paused task). The click on *Sign in* is the consent: it resumes the
-paused task with `accept` ("I've signed in, continue") and the prompt reads "Opened the sign-in
-link. The agent continues once you're signed in."; the runtime retries its call, and waiting for
-the sign-in is the runtime's and the server's part (muster waits for it on a 2026-07-28 retry).
-*Not now* resumes it with `decline`, and the prompt reads "Not signed in. The agent continues
-without it." A reply in the thread answers it too: a refusal (`no`, `cancel`, `not now`)
-declines, anything else accepts. The thread line then reads "@Jose signed in." or "@Jose did
-not sign in.". A click for a task no longer paused on that sign-in resumes nothing. When the
-task was answered elsewhere first (Backstage answers the same request), the click, *Not now*
-or a reply sends nothing, and
-the thread reads "This was already answered elsewhere, so this answer was not sent to the
-agent.". An approval or a question answered elsewhere ends the same way.
+Every runtime the platform runs (the claude, codex and omp Harnesses, the Go ADK) relays URL
+elicitations: the task pauses at `input-required` with `url_elicitation_request` (see
+`docs/kagent-a2a.md`). The prompt goes ephemeral (`postConnectEphemeral`) to the person whose
+turn asked; the thread gets "Waiting for @Jose (asked by *muster*).". The heading is the server's
+message in bold ("Sign in to github to continue.", "Alert Review wants to acknowledge an incident
+in PagerDuty."), then "Asked by *muster*.", the link and "Open it, then choose *Done* here: the
+agent continues." Message and server name are shown as written minus control and format
+characters; Slack's formatting characters (`*`, `~`, a backtick, an `_` outside a word) become
+full-width look-alikes. A host too long for the button is cut on the left ("Open ↗ …evil.example")
+so the registrable domain always shows; if even that does not fit the button reads *Open ↗* and
+the text shows the host. A server that sent no message gets "*muster* asks you to open a link so
+the agent can continue."
+
+Buttons: *Open ↗ <host>*, *Done*, *Not now* (`sign_in_decline`, `value` the thread and the paused
+task) and *Authorize all* where offered. *Done*, or muster's return for this prompt, resumes the
+task with `accept` ("Done. The agent continues."); the outcome is the server's. *Not now* resumes
+it with `decline` ("Not now. The agent continues without it."). A thread reply answers too: a
+refusal (`no`, `cancel`, `not now`) declines, anything else accepts. The thread line reads "@Jose
+is done." or "@Jose chose not now."; neither says what was decided. A *Done* for a task no longer
+paused on it resumes nothing. When the task was answered elsewhere first (Backstage), nothing is
+sent and the thread reads "This was already answered elsewhere, so this answer was not sent to
+the agent."; an approval or question answered elsewhere ends the same way.
+
+```json
+{
+  "blocks": [
+    { "type": "section", "text": { "type": "mrkdwn", "verbatim": true, "text": "*Alert Review wants to acknowledge an incident in PagerDuty.*\nAsked by *muster*.\nOpens *muster.example*\n`https://muster.example/approvals/0f3a9c?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn%3Fprompt%3D<key>`\nOpen it, then choose *Done* here: the agent continues." } },
+    {
+      "type": "actions",
+      "elements": [
+        { "type": "button", "text": { "type": "plain_text", "text": "Open ↗ muster.example" }, "style": "primary", "action_id": "connector_connect", "value": "<completion state>", "url": "https://muster.example/approvals/0f3a9c?redirect=https%3A%2F%2Fgateway.example%2Fauth%2Fslack%2Freturn%3Fprompt%3D<key>" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Done" }, "action_id": "elicitation_done", "value": "<completion state>" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Not now" }, "action_id": "sign_in_decline", "value": "{\"t\":\"<thread>\",\"id\":\"<task>\"}" }
+      ]
+    }
+  ]
+}
+```
 
 Where the gateway can read the person's grant status (see the authorize modal below), every
 muster server's Connect prompt carries *Authorize all* after its link button (`action_id`
@@ -419,7 +461,7 @@ gateway would not offer in a Connect prompt gets no button, and the row says so.
 counts the servers that come with the sign-in; *Refresh* (`authorize_refresh`) redraws it with
 new links. *Authorize* opens muster's link unchanged and continues nothing in Slack: the person
 redraws the modal with *Refresh* once they are back, and a Connect prompt the modal was opened
-from still waits for its own *Sign in*.
+from still waits for its own *Done*.
 
 ```json
 {
@@ -551,9 +593,10 @@ URL button for anything else, labelled by what it opens (*Open PR*, *Open run*, 
   the review stays open for another member; so is a manager the gateway could not reach.
 - **A backend the person has not connected yet is connected from the click.** When muster answers
   the call with a sign-in (the tool's server holds no grant for the person), the clicker gets
-  an ephemeral Connect prompt with muster's message and the whole link. Their click on *Sign
-  in* accepts the sign-in: the gateway retries the call with the `accept`, muster waits for the
-  sign-in and then runs it, so one click on the review and one consent are all it takes. The
+  an ephemeral Connect prompt with muster's message and the whole link (section 7). Their
+  *Done* accepts it: the gateway retries the call with the `accept`, muster waits for the
+  sign-in and then runs it, so one click on the review, the sign-in and *Done* are all it takes.
+  A tool approval muster asks for there is the same prompt. The
   wait is bounded below the review's claim lease, so no other click takes the review over
   meanwhile. A sign-in that did not complete in time is reported once, not looped.
 - **The clicker and the team read the same line.** A status line under the buttons names the
@@ -599,15 +642,16 @@ The Approve and Deny buttons' `value` is the JSON `{"r":"<review id>"}`; the id 
 ```
 
 While an attempt is pending the message carries a context block under the actions, such as
-`<@U…> is signing in to approve as themselves.` or
+`<@U…> is finishing a step at muster to approve as themselves.`,
+`<@U…> is not done at muster's link yet; their approval waits for it.` or
 `<@U…>'s approval was not accepted: …`. After the approval the message reads
 `*Approved* by <@U…> for team-bumblebee.`, then the ask, then the tool's answer in italics,
 with `<url|Open PR>` as a context block. The review is a record in the gateway's routing store
 for seven days (see [`POST /reviews`](api.md#post-reviews)): on a store that outlives the process
 a gateway restart changes nothing for the team, and a click on a review the gateway no longer
 holds — seven days passed, or `routing.store: memory` restarted — rewrites the message to say it
-expired. The completion state behind a review's *Sign in* button is the process's own: after a
-restart its click continues nothing, and the person clicks *Approve* again, now signed in.
+expired. The completion state behind a review's *Done* button is the process's own: after a
+restart its click says the prompt can no longer continue, and the person clicks *Approve* again.
 
 ## 11. Team notice (no decision)
 
@@ -830,10 +874,11 @@ tool decides whom the person may reach and the agent answers through the convers
 - **Not reached** (muster or the tool did not answer): `Not delivered to <from>: it could not be
   reached right now. Send it again in a moment.`
 - **Unlinked:** the sign-in card, in the thread; the person sends the reply again once signed in.
-  A sign-in muster asks for first is a *Connect* prompt in the thread showing muster's link; the
-  click on *Sign in* accepts it, and muster delivers the reply once the person signed in. A sign-in
-  that does not finish in time is `Not delivered to <from>: the sign-in did not finish in time.`;
-  *Not now* declines it and nothing is sent.
+  A URL elicitation muster asks for first (a sign-in, an approval) is the elicitation prompt in
+  the thread showing muster's link, the reply held behind it; *Done* accepts it, and muster
+  delivers the reply once the person is done there. When muster still asks on that retry (an
+  approval not decided yet), the prompt is posted again ("Not done yet: *muster* still asks
+  ...") and the reply stays held for its *Done*; *Not now* declines it and nothing is sent.
 - **Someone else** writing in the thread is told privately that it is the person's conversation;
   nothing is sent.
 

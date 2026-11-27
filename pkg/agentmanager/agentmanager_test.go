@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -360,4 +361,50 @@ func TestStartSession_RefusesWhatIsNoSession(t *testing.T) {
 			require.NotErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 		})
 	}
+}
+
+// A start muster asks approval for, approved and run by the accepted retry
+// after Done, is not asked a second time when the held message is replayed
+// (code review M1-KG-N-02): muster used the approval up when the retry ran,
+// so the replayed start gets the retry's answer instead of calling muster.
+// The fake is muster on protocol 2025-11-25 with the approval bound to the
+// person's token (muster #81: person and client), used once.
+func TestStartSession_ReplayAfterAnApprovedRetryDoesNotAskAgain(t *testing.T) {
+	var mu sync.Mutex
+	approved := map[string]bool{}
+	var asked []string
+	srv := mustertest.New(nil)
+	srv.Legacy = true
+	t.Cleanup(srv.Close)
+	srv.CallTools = map[string]func(mustertest.Call) mustertest.Answer{tool: func(c mustertest.Call) mustertest.Answer {
+		mu.Lock()
+		defer mu.Unlock()
+		if approved[c.Bearer] {
+			delete(approved, c.Bearer)
+			return mustertest.Answer{Text: `{"session":{"id":"` + sessionID + `","contextId":"` + sessionID + `","state":"RUNTIME_STATE_READY"}}`}
+		}
+		asked = append(asked, c.Bearer)
+		return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Confirm Start session in agent-manager.", URL: "https://muster.example/approvals/1"}}
+	}}
+	client := muster.NewClient(srv.URL)
+	starter := agentmanager.New(client, prefix, options)
+
+	_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
+	var challenge *pkga2a.ConnectRequiredError
+	require.ErrorAs(t, err, &challenge)
+
+	mu.Lock()
+	approved[asked[len(asked)-1]] = true
+	mu.Unlock()
+	res, err := client.Accept(context.Background(), bearer, challenge.SignIn)
+	require.NoError(t, err)
+	require.True(t, res.Dispatched, "the accepted retry ran the start")
+
+	session, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
+	require.NoError(t, err, "the replayed start is not asked again")
+	require.Equal(t, sessionID, session.ID)
+	require.Len(t, srv.Calls(), 2, "the replay did not call muster")
+
+	_, err = start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
+	require.ErrorAs(t, err, &challenge, "the answer is handed over once: a later start asks as muster would")
 }

@@ -34,14 +34,13 @@ const conversationKeep = 30 * 24 * time.Hour
 
 // What a conversation's messages and notes say.
 const (
-	conversationFromLine         = "%s · reply in this thread"
-	conversationNotYours         = "This thread is <@%s>'s conversation with %s; only they can write to it."
-	conversationNotDelivered     = "Not delivered to %s: %s"
-	conversationFailed           = "Not delivered to %s: it could not be reached right now. Send it again in a moment."
-	conversationConnectNotice    = "Not delivered to %s yet. *muster* asks you to sign in once:"
-	conversationConnectTail      = "Open it with *Sign in*: your reply goes to %s once you're signed in."
-	conversationSignInUnfinished = "Not delivered to %s: the sign-in did not finish in time. Send it again once you're signed in."
-	conversationDelivered        = "incoming_envelope"
+	conversationFromLine      = "%s · reply in this thread"
+	conversationNotYours      = "This thread is <@%s>'s conversation with %s; only they can write to it."
+	conversationNotDelivered  = "Not delivered to %s: %s"
+	conversationFailed        = "Not delivered to %s: it could not be reached right now. Send it again in a moment."
+	conversationConnectNotice = "%s before your reply goes to %s."
+	conversationConnectTail   = "Open it, then choose *Done*: your reply goes to %s."
+	conversationDelivered     = "incoming_envelope"
 )
 
 // OpenConversation sends the opening message to the person by direct message
@@ -161,10 +160,10 @@ type conversationReply struct {
 }
 
 // settleConversationReply tells the person what became of their reply: a
-// note when it was not delivered, a Connect prompt when muster asks for a
-// sign-in first, the delivered reaction otherwise. accepted is true when res
-// answers the retry that accepted such a sign-in: muster asking again then
-// means the sign-in did not complete in time, and is not prompted again.
+// note when it was not delivered, a prompt when muster answers with a URL
+// elicitation first, the delivered reaction otherwise. accepted is true when
+// res answers the retry of a prompt's Done: muster asking again then (an
+// approval not decided yet) gets the prompt again, the reply still held.
 func (a *Adapter) settleConversationReply(ctx context.Context, rv store.Review, user string, reply conversationReply, res muster.Result, err error, accepted bool) {
 	from := "*" + escapeMrkdwn(rv.Conversation.From) + "*"
 	note := ""
@@ -172,15 +171,14 @@ func (a *Adapter) settleConversationReply(ctx context.Context, rv store.Review, 
 	case err != nil:
 		a.Logger.Warn("slack: conversation reply tool call failed", "conversation", rv.ID, "tool", rv.Tool, "slack_user", user, "error", err)
 		note = fmt.Sprintf(conversationFailed, from)
-	case res.SignIn != nil && accepted:
-		a.Logger.Warn("slack: conversation reply still asks for a sign-in after the accepted one", "conversation", rv.ID, "tool", rv.Tool, "slack_user", user)
-		note = fmt.Sprintf(conversationSignInUnfinished, from)
 	case res.SignIn != nil:
-		a.Logger.Info("slack: conversation reply needs the person's sign-in", "record", "conversation_connect",
-			"conversation", rv.ID, "tool", rv.Tool, "slack_user", user)
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: user, channel: rv.Channel, threadTS: rv.TS, signIn: res.SignIn, conversation: rv.ID, reply: reply})
-		text := signInPromptText(fmt.Sprintf(conversationConnectNotice, from), res.SignIn.Message, res.SignIn.URL, fmt.Sprintf(conversationConnectTail, from))
-		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, user, text, res.SignIn.URL, stateID); err != nil {
+		// Asked again after Done (accepted), the reply stays held behind a
+		// new prompt: it goes only on the person's next Done.
+		a.Logger.Info("slack: conversation reply waits for the person at muster's link", "record", "conversation_connect",
+			"conversation", rv.ID, "tool", rv.Tool, "slack_user", user, "still_asked", accepted)
+		stateID, link := a.mintPrompt(connectorCompletion{slackUser: user, channel: rv.Channel, threadTS: rv.TS, signIn: res.SignIn, conversation: rv.ID, reply: reply}, res.SignIn.URL)
+		text := elicitationPromptText(res.SignIn.Message, fmt.Sprintf(conversationConnectNotice, elicitationLead(accepted), from), link, fmt.Sprintf(conversationConnectTail, from))
+		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, user, text, link, stateID); err != nil {
 			a.Logger.Warn("slack: conversation connect prompt failed", "conversation", rv.ID, "error", err)
 		}
 		return
@@ -212,7 +210,7 @@ func (a *Adapter) settleConversationReply(ctx context.Context, rv store.Review, 
 func (a *Adapter) resumeConversationReply(ctx context.Context, entry connectorCompletion) {
 	rv, found, err := a.reviews().GetReview(ctx, entry.conversation)
 	if err != nil || !found || rv.Conversation == nil {
-		a.Logger.Warn("slack: conversation lookup after sign-in failed", "conversation", entry.conversation, "found", found, "error", err)
+		a.Logger.Warn("slack: conversation lookup after Done failed", "conversation", entry.conversation, "found", found, "error", err)
 		return
 	}
 	if a.SignIns == nil || a.OBO == nil {
@@ -220,7 +218,7 @@ func (a *Adapter) resumeConversationReply(ctx context.Context, entry connectorCo
 	}
 	token, err := a.OBO.TokenFor(ctx, entry.slackUser)
 	if err != nil {
-		a.Logger.Warn("slack: token to accept a sign-in unavailable", "user", entry.slackUser, "error", err)
+		a.Logger.Warn("slack: token to accept an elicitation unavailable", "user", entry.slackUser, "error", err)
 		return
 	}
 	res, err := a.SignIns.Accept(ctx, token, entry.signIn)

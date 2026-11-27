@@ -98,19 +98,19 @@ const (
 	// teamReviewConnectNotice heads the Connect prompt, above muster's message
 	// and the link, and teamReviewConnectTail follows them. The verbs are the
 	// decision's: approve/approval, deny/denial.
-	teamReviewConnectNotice = "To %s as yourself, *muster* asks you to sign in once:"
-	teamReviewConnectTail   = "Open it with *Sign in*: your %s is submitted once you're signed in."
+	teamReviewConnectNotice = "%s before your %s goes through."
+	teamReviewConnectTail   = "Open it, then choose *Done*: your %s is submitted."
 )
 
 // Team-review status lines, under the buttons, read by the clicker and the
 // team alike. Each replaces the previous one; the decision's outcome replaces
 // them all. The noun is the decision's: approval or denial.
 const (
-	teamReviewStatusConnecting      = "<@%s> is signing in to %s as themselves."
-	teamReviewStatusRefused         = "<@%s>'s %s was not accepted: %s"
-	teamReviewStatusFailed          = "<@%s>'s %s could not be submitted to the manager; another click may do."
-	teamReviewStatusStillChallenged = "<@%s> did not finish signing in in time; another click may do."
-	teamReviewStatusActor           = "<@%s>'s approval was not accepted: the action is theirs, a second person decides."
+	teamReviewStatusConnecting = "<@%s> is finishing a step at muster to %s as themselves."
+	teamReviewStatusRefused    = "<@%s>'s %s was not accepted: %s"
+	teamReviewStatusFailed     = "<@%s>'s %s could not be submitted to the manager; another click may do."
+	teamReviewStatusStillAsked = "<@%s> is not done at muster's link yet; their %s waits for it."
+	teamReviewStatusActor      = "<@%s>'s approval was not accepted: the action is theirs, a second person decides."
 )
 
 // teamReviewReasonMax bounds a tool's text — its refusal in the status line,
@@ -615,16 +615,10 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 		return
 	}
 	if res.SignIn != nil {
+		// Asked again after Done, the person gets the prompt again: a new
+		// call happens only on their next Done, never on their behalf.
 		a.releaseTeamReview(ctx, rv.ID)
-		if accepted != nil {
-			// The sign-in was accepted and muster still asks for one: it did
-			// not complete in time. Do not loop the person through it again
-			// on their behalf.
-			a.Logger.Warn("slack: team review still asks for a sign-in after the accepted one", "review", rv.ID, "team", rv.Team, "tool", tool, "user", clicker)
-			a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusStillChallenged, clicker))
-			return
-		}
-		a.promptTeamReviewConnect(ctx, rv, clicker, decision, res.SignIn)
+		a.promptTeamReviewConnect(ctx, rv, clicker, decision, res.SignIn, accepted != nil)
 		return
 	}
 	if res.IsError {
@@ -826,19 +820,24 @@ func decidedNotice(rv store.Review) string {
 	return fmt.Sprintf(teamReviewApprovedNotice, rv.DecidedBy)
 }
 
-// promptTeamReviewConnect answers the sign-in muster asked a decision for:
-// the review is reopened for the team, the team sees who is signing in, and
-// the clicker gets a Connect prompt. Its completion state remembers the
-// review and the decision, so the click on its link submits the decision as
-// the person once they signed in.
-func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, signIn *muster.SignIn) {
-	a.Logger.Info("slack: team review needs the person's sign-in", "record", "team_review_connect",
-		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "denial", decision.deny)
-	a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusConnecting, clicker, decision.verb()))
+// promptTeamReviewConnect answers the URL elicitation muster asked a
+// decision for: the review is reopened for the team, the team sees who is at
+// muster's link, and the clicker gets a prompt. Its completion state
+// remembers the review and the decision, so its Done submits the decision as
+// the person. stillAsked is set when muster asked again on the retry of an
+// earlier prompt's Done: the prompt is posted again, saying so.
+func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, signIn *muster.SignIn, stillAsked bool) {
+	a.Logger.Info("slack: team review waits for the person at muster's link", "record", "team_review_connect",
+		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "denial", decision.deny, "still_asked", stillAsked)
+	status := fmt.Sprintf(teamReviewStatusConnecting, clicker, decision.verb())
+	if stillAsked {
+		status = fmt.Sprintf(teamReviewStatusStillAsked, clicker, decision.noun())
+	}
+	a.showTeamReviewStatus(ctx, rv, status)
 
-	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: clicker, channel: rv.Channel, signIn: signIn, review: rv.ID, decision: decision})
-	text := signInPromptText(fmt.Sprintf(teamReviewConnectNotice, decision.verb()), signIn.Message, signIn.URL, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, signIn.URL, stateID); err != nil {
+	stateID, link := a.mintPrompt(connectorCompletion{slackUser: clicker, channel: rv.Channel, signIn: signIn, review: rv.ID, decision: decision}, signIn.URL)
+	text := elicitationPromptText(signIn.Message, fmt.Sprintf(teamReviewConnectNotice, elicitationLead(stillAsked), decision.noun()), link, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, link, stateID); err != nil {
 		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.ID, "user", clicker, "error", err)
 	}
 }

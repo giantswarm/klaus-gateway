@@ -9,6 +9,23 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — one Slack prompt for every URL elicitation
+
+- Sign-ins, tool approvals muster asks for and any later URL elicitation get one Slack prompt:
+  muster's message, *Open ↗ <host>*, *Done*, *Not now*. Opening the link no longer continues the
+  conversation; the person chooses *Done* or muster's return does. This is the client side of
+  muster's tool approval: roll it out with or before the muster release that asks for approvals.
+- Links on muster's origin get `redirect=<obo.callbackBaseUrl>/auth/slack/return?prompt=<key>`.
+  To bring the browser back automatically, add `<obo.callbackBaseUrl>/auth/slack/return` to
+  muster's `oauth.mcpClient.postLoginRedirectAllowlist`. Without it muster drops the redirect
+  (a warning per link) and *Done* is the one way back.
+- `obo.musterUrl` must be muster's public origin (`aggregator.oauth.mcpClient.publicUrl`); an
+  in-cluster address gets no return.
+- What *Done* and the return continue lives in the posting process's memory for 30 minutes.
+  After a restart, or on another replica, *Done* says the prompt can no longer continue. Run
+  one replica (the chart's default).
+- A prompt posted before the upgrade continues nothing; the person sends their message again.
+
 ## 4.16.32 — sign-in links open unchanged
 
 - The gateway's muster client declares URL mode elicitation on MCP protocol 2026-07-28 and no

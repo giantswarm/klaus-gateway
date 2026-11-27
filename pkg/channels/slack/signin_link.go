@@ -1,11 +1,8 @@
 package slack
 
 import (
-	"net/url"
 	"strings"
 	"unicode/utf8"
-
-	"golang.org/x/net/idna"
 )
 
 // signInLinkText shows a link the person is asked to open before they agree
@@ -15,14 +12,7 @@ import (
 // that has no punycode form is shown as written, with the same warning. The
 // link must have passed muster.ValidateSignInURL.
 func signInLinkText(link string) string {
-	host := ""
-	if u, err := url.Parse(link); err == nil {
-		host = u.Hostname()
-	}
-	shown, err := idna.Lookup.ToASCII(host)
-	if err != nil {
-		shown = host
-	}
+	shown, host := shownHost(link)
 	var b strings.Builder
 	b.WriteString(signInLinkOpensLead)
 	b.WriteString("*" + escapeMrkdwn(shown) + "*")
@@ -60,7 +50,7 @@ func signInPromptText(lead, message, link, tail string) string {
 	}
 	var b strings.Builder
 	b.WriteString(lead)
-	if message = strings.TrimSpace(message); message != "" {
+	if message = strings.TrimSpace(plainMrkdwn(message)); message != "" {
 		// Quoting adds "\n>" before the message and a ">" after each newline.
 		room := slackSectionTextMax - utf8.RuneCountInString(lead+linkText+tail) - 2 - strings.Count(message, "\n")
 		if room = min(room, signInMessageMaxRunes); room > 1 {

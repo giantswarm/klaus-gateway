@@ -591,6 +591,29 @@ func TestFacade_SignInPauseEmitsASignInPrompt(t *testing.T) {
 	require.Empty(t, agent.canceled, "a paused task is left paused, not canceled")
 }
 
+// A tool approval muster asks for reaches the gateway as kagent relays every
+// MCP URL elicitation: a url_elicitation_request whose elicitation_id is
+// muster's, kept on the prompt so the generic return can find it.
+func TestFacade_ApprovalElicitationKeepsItsElicitationID(t *testing.T) {
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("Alert Review wants to acknowledge an incident in PagerDuty."))
+	require.NoError(t, pkga2a.AttachHITL(msg, pkga2a.URLElicitationRequest{
+		Type: pkga2a.HITLTypeURLElicitationRequest, ID: "elicit-1", Server: "muster",
+		Message: "Alert Review wants to acknowledge an incident in PagerDuty.",
+		URL:     "https://muster.example/approvals/0f3a9c", ElicitationID: "el-7d1e",
+	}))
+	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateInputRequired, msg))
+	f, _ := newA2AFacade(agent)
+
+	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
+	require.NoError(t, err)
+	deltas := drain(t, ch)
+	require.Len(t, deltas, 1)
+	require.Equal(t, &channels.HitlSignIn{
+		ID: "elicit-1", Server: "muster", Message: "Alert Review wants to acknowledge an incident in PagerDuty.",
+		URL: "https://muster.example/approvals/0f3a9c", ElicitationID: "el-7d1e",
+	}, deltas[0].Prompt.SignIn)
+}
+
 func TestFacade_SignInDecisionResumesThePausedTask(t *testing.T) {
 	for _, test := range []struct {
 		decision string

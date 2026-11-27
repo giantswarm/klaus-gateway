@@ -173,7 +173,7 @@ func parseHitlPrompt(msg *a2apkg.Message) *HitlPrompt {
 		return nil
 	}
 	if signIn := request.URLElicitation; signIn != nil {
-		return &HitlPrompt{SignIn: &HitlSignIn{ID: signIn.ID, Server: signIn.Server, Message: signIn.Message, URL: signIn.URL}, RequestID: request.ID()}
+		return &HitlPrompt{SignIn: &HitlSignIn{ID: signIn.ID, Server: signIn.Server, Message: signIn.Message, URL: signIn.URL, ElicitationID: signIn.ElicitationID}, RequestID: request.ID()}
 	}
 	if ask := request.AskUser; ask != nil {
 		prompt := &HitlPrompt{ToolName: AskUserToolName, OriginalCallID: ask.ResponseID(), RequestID: request.ID()}
