@@ -147,7 +147,7 @@ func declaredURLElicitation(ctx context.Context) bool {
 func result(a Answer) *mcp.CallToolResult {
 	inner := map[string]any{"isError": a.IsError, "content": []any{map[string]any{"type": "text", "text": a.Text}}}
 	if a.Undispatched {
-		return &mcp.CallToolResult{IsError: a.IsError, Content: []mcp.Content{mcp.NewTextContent(a.Text)}}
+		return &mcp.CallToolResult{IsError: a.IsError, Content: []mcp.Content{mcp.NewTextContent(a.Text)}, StructuredContent: a.Structured}
 	}
 	if a.Structured != nil {
 		inner["structuredContent"] = a.Structured

@@ -279,7 +279,7 @@ func (h *Handler) refusal(ctx context.Context, op string, err error) error {
 	case errors.As(err, &connect) && connect.SignIn != nil:
 		return actionRequired(connect.SignIn)
 	case errors.As(err, &refused):
-		return a2a.NewError(a2a.ErrUnauthenticated, "the platform refused the caller's token; a new token is needed").
+		return a2a.NewError(a2a.ErrUnauthenticated, "the platform could not authenticate the forwarded token").
 			WithErrorInfoMeta(map[string]string{"reason": refused.Reason})
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err

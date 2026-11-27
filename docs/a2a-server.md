@@ -104,8 +104,9 @@ audience the API server checks (`kubernetes` on Giant Swarm installations). The 
 must request that audience next to `a2aServer.token.audience`. Without it, muster answers
 every call with its re-login error, and `SendMessage` and `SendStreamingMessage` answer
 with the A2A error `UNAUTHENTICATED`. Its `google.rpc.ErrorInfo` detail carries muster's
-words in `metadata.reason`. A new application token does not help: the exchange's
-audiences must be fixed.
+words in `metadata.reason`. muster identifies this refusal with its MCP tool
+result's `structuredContent.status: unauthenticated`; the gateway does not parse
+the text. A new application token does not help: the exchange's audiences must be fixed.
 
 ## Sign-ins and tool approvals
 

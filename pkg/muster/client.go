@@ -165,6 +165,12 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 		inner.Dispatched = true
 		return inner, nil
 	}
+	if res.StructuredContent != nil {
+		outer.Structured, err = json.Marshal(res.StructuredContent)
+		if err != nil {
+			return Result{}, fmt.Errorf("muster: encode the call refusal's structured content: %w", err)
+		}
+	}
 	// call_tool's own refusal (an unknown tool, one outside the caller's
 	// toolset) is plain text with the meta-tool's isError set; a result that
 	// is no envelope is handed back as it is.

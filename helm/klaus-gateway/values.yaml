@@ -285,6 +285,8 @@ a2aServer:
   # caFile is a path inside the container to a CA bundle for
   # a2aServer.token.jwksUrl. caSecret takes precedence.
   caFile: ""
+  # Key of the CA bundle in caSecret.
+  caSecretKey: ca.crt
 
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a

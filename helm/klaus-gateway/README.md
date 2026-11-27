@@ -87,6 +87,7 @@ Slack channel gateway for the Agent Platform's kagent agents
 | a2aServer.minTokenLifetime | string | `"25m"` |  |
 | a2aServer.caSecret | string | `""` |  |
 | a2aServer.caFile | string | `""` |  |
+| a2aServer.caSecretKey | string | `"ca.crt"` |  |
 | slack.enabled | bool | `false` |  |
 | slack.mode | string | `"events"` |  |
 | slack.secretName | string | `""` |  |

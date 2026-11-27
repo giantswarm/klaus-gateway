@@ -77,6 +77,21 @@ func TestCallTool_MetaToolRefusalIsAResultNotAnError(t *testing.T) {
 	require.Equal(t, muster.Result{Text: "Tool execution failed: tool not found: x_repo_approve_change", IsError: true}, res)
 }
 
+func TestCallTool_PreservesStructuredMusterRefusal(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_repo_approve_change": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: "The caller's token was refused.", IsError: true, Undispatched: true, Structured: map[string]any{"status": "unauthenticated"}}
+		},
+	})
+	t.Cleanup(fake.Close)
+	result, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_approve_change", nil)
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.False(t, result.Dispatched)
+	require.JSONEq(t, `{"status":"unauthenticated"}`, string(result.Structured))
+	require.Equal(t, "The caller's token was refused.", result.Text)
+}
+
 func TestCallTool_RefusedTokenIsAnHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)

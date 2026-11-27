@@ -192,8 +192,7 @@ func (e *ConnectRequiredError) Error() string {
 
 // TokenRefusedError is muster refusing to run a call as the caller's token
 // itself: the token lacks an audience muster needs, or the Kubernetes API
-// rejects it. Only a new token helps. Reason is muster's own explanation. It
-// is ErrNoIdentity.
+// rejects it. Reason is muster's own explanation. It is ErrNoIdentity.
 type TokenRefusedError struct {
 	Reason string
 }

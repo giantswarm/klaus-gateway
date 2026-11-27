@@ -383,7 +383,7 @@ spec:
         secret:
           secretName: {{ .Values.a2aServer.caSecret }}
           items:
-          - key: ca.crt
+          - key: {{ .Values.a2aServer.caSecretKey | default "ca.crt" }}
             path: ca.crt
       {{- end }}
       {{- end }}

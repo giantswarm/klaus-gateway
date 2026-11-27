@@ -43,6 +43,9 @@
                 "caSecret": {
                     "type": "string"
                 },
+                "caSecretKey": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
