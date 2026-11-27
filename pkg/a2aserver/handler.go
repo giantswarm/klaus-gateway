@@ -26,6 +26,8 @@ type Agents interface {
 	Subscribe(ctx context.Context, taskID a2a.TaskID) iter.Seq2[a2a.Event, error]
 	GetTaskWithHistory(ctx context.Context, taskID a2a.TaskID, historyLength *int) (*a2a.Task, error)
 	CancelTask(ctx context.Context, taskID a2a.TaskID) (*a2a.Task, error)
+	// AgentCard is the Agent Card of the agent ctx names (pkga2a.WithAgentRef).
+	AgentCard(ctx context.Context) (*a2a.AgentCard, error)
 }
 
 // Handler serves the A2A protocol methods of the channel. Push notification
@@ -41,6 +43,8 @@ type Handler struct {
 	// unique, are not offered.
 	Organizations pkga2a.OrganizationNames
 	Logger        *slog.Logger
+
+	cards cardCache
 }
 
 var _ a2asrv.RequestHandler = (*Handler)(nil)
@@ -210,7 +214,8 @@ func (h *Handler) SubscribeToTask(ctx context.Context, req *a2a.SubscribeToTaskR
 }
 
 // GetExtendedAgentCard answers the public card with one JSON-RPC interface
-// per agent the caller may use, its tenant naming the agent.
+// per agent the caller may use: the agent's own endpoint, its tenant naming
+// the agent for clients that address agents by tenant.
 func (h *Handler) GetExtendedAgentCard(ctx context.Context, _ *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
 	if h.Card == nil || len(h.Card.SupportedInterfaces) == 0 {
 		return nil, a2a.ErrExtendedCardNotConfigured
@@ -229,7 +234,7 @@ func (h *Handler) GetExtendedAgentCard(ctx context.Context, _ *a2a.GetExtendedAg
 			continue
 		}
 		card.SupportedInterfaces = append(card.SupportedInterfaces, &a2a.AgentInterface{
-			URL: base.URL, ProtocolBinding: base.ProtocolBinding, ProtocolVersion: base.ProtocolVersion, Tenant: tenant,
+			URL: agentURL(base.URL, tenant), ProtocolBinding: base.ProtocolBinding, ProtocolVersion: base.ProtocolVersion, Tenant: tenant,
 		})
 		name := agent.DisplayName
 		if name == "" {

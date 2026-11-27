@@ -48,9 +48,10 @@ func mountA2AServer(_ context.Context, cfg config.A2AServerConfig, agents a2aser
 		Realm:            "klaus-gateway",
 		Logger:           logger,
 	}
-	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger})
+	server := &a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations, Logger: logger}
 	r.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	r.Handle(a2aServerPath, auth.Middleware(a2asrv.NewJSONRPCHandler(handler)))
+	r.Handle(a2aServerPath, auth.Middleware(a2asrv.NewJSONRPCHandler(a2aserver.NewRequestHandler(server))))
+	r.Handle(a2aServerPath+"/*", auth.Middleware(a2aserver.NewAgentPaths(server, a2aServerPath+"/")))
 	for _, issuer := range issuers {
 		logger.Info("A2A server card declares issuer", "name", issuer.Name, "issuer", issuer.Issuer, "audience", issuer.Audience)
 	}

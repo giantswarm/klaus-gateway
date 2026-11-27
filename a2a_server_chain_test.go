@@ -45,16 +45,18 @@ func TestPublicChainNeverReadsAnUnauthenticatedBody(t *testing.T) {
 	require.NoError(t, mountA2AServer(t.Context(), cfg, noAgents{}, noOrganizations{}, public, logger))
 	handler := server.New(server.Options{Logger: logger, Public: public}).PublicHandler()
 
-	for name, authorization := range map[string]string{"no token": "", "malformed token": "Bearer not-a-jwt", "other scheme": "Basic dXNlcjpwYXNz"} { //nolint:gosec // G101: invalid credentials the gateway must refuse
-		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/a2a", unreadBody{t: t})
-			request.Header.Set("Content-Type", "application/json")
-			if authorization != "" {
-				request.Header.Set("Authorization", authorization)
-			}
-			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, request)
-			require.Equal(t, http.StatusUnauthorized, recorder.Code)
-		})
+	for _, path := range []string{"/a2a", "/a2a/acme/billing"} {
+		for name, authorization := range map[string]string{"no token": "", "malformed token": "Bearer not-a-jwt", "other scheme": "Basic dXNlcjpwYXNz"} { //nolint:gosec // G101: invalid credentials the gateway must refuse
+			t.Run(path+" "+name, func(t *testing.T) {
+				request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, unreadBody{t: t})
+				request.Header.Set("Content-Type", "application/json")
+				if authorization != "" {
+					request.Header.Set("Authorization", authorization)
+				}
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				require.Equal(t, http.StatusUnauthorized, recorder.Code)
+			})
+		}
 	}
 }

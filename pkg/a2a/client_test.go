@@ -343,6 +343,35 @@ func TestClient_GetAndCancelTask(t *testing.T) {
 	require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
 }
 
+func TestClient_AgentCard_IsTheAgentsOwnAsTheCaller(t *testing.T) {
+	f := readyFake(t)
+	extension := a2apkg.AgentExtension{URI: pkga2a.HITLExtensionURI, Params: map[string]any{"kinds": []any{"tool_approval"}}}
+	f.cards = map[string]*a2apkg.AgentCard{sreTenant: {
+		Name:               "sre-agent",
+		Description:        "Runs the platform.",
+		Version:            "1",
+		DefaultInputModes:  []string{"text/plain"},
+		DefaultOutputModes: []string{"text/plain"},
+		Skills:             []a2apkg.AgentSkill{{ID: "sre", Name: "SRE", Description: "Operates clusters.", Tags: []string{"sre"}}},
+		Capabilities:       a2apkg.AgentCapabilities{Streaming: true, Extensions: []a2apkg.AgentExtension{extension}},
+		SupportedInterfaces: []*a2apkg.AgentInterface{
+			{URL: "http://kagent-controller.kagent:8083/agents/kagent/sre-agent", ProtocolBinding: a2apkg.TransportProtocolJSONRPC, ProtocolVersion: a2apkg.Version},
+		},
+	}}
+	f.permitted = map[string][]string{"Bearer " + userToken: {"kagent"}}
+	client := f.serve(t, pkga2a.Config{})
+
+	card, err := client.AgentCard(asUser(t.Context(), userToken))
+	require.NoError(t, err)
+	require.Equal(t, "sre-agent", card.Name)
+	require.Equal(t, []a2apkg.AgentExtension{extension}, card.Capabilities.Extensions)
+	require.Equal(t, []string{sreTenant}, f.tenants, "the card is read for the Agent's tenant")
+	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("GetExtendedAgentCard").Get("authorization"))
+
+	_, err = client.AgentCard(asUser(t.Context(), "stranger"))
+	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted, "a caller who may not use the Agent gets no card")
+}
+
 // A task over gRPC's message size, on the controller's send side or this
 // client's receive side, is ErrTaskTooLarge: reading it again does not help.
 func TestClient_GetTask_OverTheMessageSizeIsErrTaskTooLarge(t *testing.T) {
