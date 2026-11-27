@@ -126,7 +126,7 @@ The exchange is where the identity provider decides who may use the channel, so 
 configuration below is part of the channel's security, not an option.
 
 muster runs a call only as a token the Kubernetes API accepts: it must carry the
-audience the API server checks (`kubernetes` on Giant Swarm installations). The exchange
+audience the API server checks (`dex-k8s-authenticator` by default on Giant Swarm installations). The exchange
 must request that audience next to `a2aServer.token.audience`. Without it, muster answers
 every call with its re-login error, and `SendMessage` and `SendStreamingMessage` answer
 with the A2A error `UNAUTHENTICATED`. Its `google.rpc.ErrorInfo` detail carries muster's
@@ -134,6 +134,11 @@ words in `metadata.reason`. muster identifies this refusal with its MCP tool
 result's `structuredContent.status: unauthenticated`; the gateway does not parse
 the text. This requires muster 5.67.0-rc.18 or later. A new application token does
 not help: the exchange's audiences must be fixed.
+
+For a custom API audience, configure `muster.writesAsCaller.kubernetesAudience` in the muster chart
+and the exchange to use that exact client ID. Every requested cross-client audience
+must name a registered Dex client whose `trustedPeers` includes the exchange client.
+The string `kubernetes` works only when that installation registers and trusts it.
 
 ## Sign-ins and tool approvals
 
