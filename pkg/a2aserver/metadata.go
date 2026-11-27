@@ -53,14 +53,14 @@ func validateMCPRequestMetadata(values map[string]any) error {
 }
 
 // reservedMCPPrefix reports a key whose prefix has modelcontextprotocol or
-// mcp as its second label, which MCP reserves (basic, "_meta").
+// mcp as its second label, in any case, which MCP reserves (basic, "_meta").
 func reservedMCPPrefix(key string) bool {
 	prefix, _, ok := strings.Cut(key, "/")
 	if !ok {
 		return false
 	}
 	labels := strings.Split(prefix, ".")
-	return len(labels) > 1 && (labels[1] == "modelcontextprotocol" || labels[1] == "mcp")
+	return len(labels) > 1 && (strings.EqualFold(labels[1], "modelcontextprotocol") || strings.EqualFold(labels[1], "mcp"))
 }
 
 // NewRequestHandler validates and propagates ordinary request metadata.

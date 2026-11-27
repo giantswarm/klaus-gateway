@@ -586,8 +586,29 @@ func TestCancelMetadataIsValidated(t *testing.T) {
 	require.Empty(t, agents.refs, "the cancel never reaches the platform")
 }
 
+func TestReservedMCPPrefixIgnoresCase(t *testing.T) {
+	for _, key := range []string{"IO.ModelContextProtocol/x", "io.MCP/x", "com.MCP.example/x", "Org.ModelContextProtocol.Api/x"} {
+		t.Run("SendMessage "+key, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			_, body := postJSONRPC(t, server.URL, "", map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": map[string]any{key: "v"}})
+			require.NotNil(t, body.Error)
+			require.Equal(t, -32602, body.Error.Code)
+			require.Empty(t, agents.started)
+		})
+		t.Run("CancelTask "+key, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			_, body := postJSONRPCMethod(t, server.URL, "CancelTask", map[string]any{"tenant": tenant, "id": "task-1", "metadata": map[string]any{key: "v"}})
+			require.NotNil(t, body.Error)
+			require.Equal(t, -32602, body.Error.Code)
+			require.Empty(t, agents.refs, "the cancel never reaches the platform")
+		})
+	}
+}
+
 func TestMetadataPrefixesOutsideMCPsReservationPass(t *testing.T) {
-	for _, key := range []string{"com.example.mcp/x", "mcp/x", "io.example/modelcontextprotocol"} {
+	for _, key := range []string{"com.example.mcp/x", "mcp/x", "io.example/modelcontextprotocol", "MCP/x", "com.Example.MCP/x"} {
 		t.Run(key, func(t *testing.T) {
 			agents := &fakeAgents{}
 			server, _ := serve(t, agents, staticExchanger{})
