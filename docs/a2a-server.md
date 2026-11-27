@@ -93,12 +93,8 @@ The audience check in step 3 is the gateway's own: Dex does not check the subjec
 token's audience in an exchange (dexidp/dex#4397). The exchanged token's expiry is
 Dex's, not the subject token's.
 
-A later request with the same application token reuses the exchanged token, while the
-application token is still valid and the exchanged token still has
-`a2aServer.minTokenLifetime` left; otherwise the gateway exchanges again. A client that
-polls `GetTask` therefore causes one exchange per token, not one per poll. The gateway
-keeps at most 10,000 exchanged tokens in memory, keyed by the SHA-256 of the application
-token, and never longer than the application token is valid.
+Every request is exchanged on its own; exchanged tokens are not kept. A client that
+polls `GetTask` causes one exchange per poll.
 
 The exchange is where the identity provider decides who may use the channel, so its
 configuration below is part of the channel's security, not an option.

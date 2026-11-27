@@ -71,45 +71,6 @@ func TestShortLivedExchangedTokenIsRefused(t *testing.T) {
 	})
 }
 
-func TestExchangedTokenIsReusedWhileItLastsATurn(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		exchanger := &lifetimeExchanger{lifetime: 30 * time.Minute}
-		auth := &a2aserver.Authenticator{
-			Verifier:         clockVerifier{tokens: map[string]time.Time{clientToken: time.Now().Add(time.Hour), "other-token": time.Now().Add(time.Hour)}},
-			Exchanger:        exchanger,
-			MinTokenLifetime: 25 * time.Minute,
-		}
-		_, first := forward(t, auth, clientToken)
-		_, second := forward(t, auth, clientToken)
-		require.Equal(t, "exchanged-1", first)
-		require.Equal(t, first, second, "a poll with the same token reuses the exchange")
-
-		_, other := forward(t, auth, "other-token")
-		require.Equal(t, "exchanged-2", other, "another client token never shares an exchange")
-
-		time.Sleep(6 * time.Minute)
-		_, third := forward(t, auth, clientToken)
-		require.Equal(t, "exchanged-3", third, "24 minutes left is less than a turn: exchanged again")
-		require.Equal(t, int32(3), exchanger.calls.Load())
-	})
-}
-
-func TestCachedTokenNeverOutlivesTheClientToken(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		exchanger := &lifetimeExchanger{lifetime: time.Hour}
-		auth := &a2aserver.Authenticator{
-			Verifier:         clockVerifier{tokens: map[string]time.Time{clientToken: time.Now().Add(2 * time.Minute)}},
-			Exchanger:        exchanger,
-			MinTokenLifetime: time.Minute,
-		}
-		_, first := forward(t, auth, clientToken)
-		time.Sleep(3 * time.Minute)
-		_, second := forward(t, auth, clientToken)
-		require.Equal(t, "exchanged-1", first)
-		require.Equal(t, "exchanged-2", second, "the exchange is not reused past the client token's exp")
-	})
-}
-
 // unsignedJWT is a JWT-shaped token carrying claims, for code that reads
 // claims without a signature check.
 func unsignedJWT(t *testing.T, claims map[string]any) string {

@@ -3,7 +3,6 @@ package a2aserver
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -51,8 +50,6 @@ type Authenticator struct {
 	// Realm is the realm of the WWW-Authenticate challenge.
 	Realm  string
 	Logger *slog.Logger
-
-	exchanged exchangeCache
 }
 
 // ErrExchangeRefused is an exchange the identity provider refused.
@@ -85,25 +82,18 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// exchange runs next with the exchanged token of raw, reusing the one an
-// earlier request with raw got while it has MinTokenLifetime left.
+// exchange runs next with the token raw is exchanged for.
 func (a *Authenticator) exchange(raw string, verified VerifiedToken, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := sha256.Sum256([]byte(raw))
-		token, ok := a.exchanged.get(key, time.Now(), a.MinTokenLifetime)
-		if !ok {
-			issued, err := a.Exchanger.Exchange(r.Context(), raw, verified.Issuer)
-			if err == nil {
-				err = a.checkLifetime(issued, time.Now())
-			}
-			if err != nil {
-				a.refuseExchange(w, r, verified.Issuer, err)
-				return
-			}
-			a.exchanged.put(key, issued, verified.Expiry, time.Now())
-			token = issued.Token
+		issued, err := a.Exchanger.Exchange(r.Context(), raw, verified.Issuer)
+		if err == nil {
+			err = a.checkLifetime(issued, time.Now())
 		}
-		next.ServeHTTP(w, r.WithContext(pkga2a.WithForwardedToken(r.Context(), token)))
+		if err != nil {
+			a.refuseExchange(w, r, verified.Issuer, err)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(pkga2a.WithForwardedToken(r.Context(), issued.Token)))
 	})
 }
 
