@@ -71,7 +71,9 @@ gRPC response headers to its client interceptors or write activation acknowledge
 from its JSON-RPC server. The gateway therefore returns no `A2A-Extensions` response
 header and does not offer complete extension negotiation
 ([a2aproject/a2a-go#643](https://github.com/a2aproject/a2a-go/issues/643)). The public
-Agent Card declares no extensions.
+root card declares no extensions. Authenticated per-agent cards retain the runtime's
+extension declarations; the activation acknowledgement limitation applies to those
+endpoints too.
 
 ## How a request is authenticated
 

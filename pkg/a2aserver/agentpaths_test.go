@@ -90,6 +90,30 @@ func TestAgentExtendedCardKeepsTheSameAgent(t *testing.T) {
 	require.NoError(t, caller.UpdateCard(extended))
 }
 
+func TestAgentEndpointForwardsExtensionRequestsAndValidatesMetadata(t *testing.T) {
+	const extension = "https://example.com/extensions/test/v1"
+	agents := &fakeAgents{}
+	srv, _ := serve(t, agents)
+	status, body := getAgentCard(t, srv, agentCardPath, clientToken)
+	require.Equal(t, http.StatusOK, status)
+	caller := client(t, decodeCard(t, body), clientToken)
+	ctx := a2aclient.AttachServiceParams(t.Context(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extension}})
+	_, err := caller.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
+	require.NoError(t, err)
+	require.Equal(t, []string{extension}, agents.extensions[0])
+
+	for _, key := range []string{"progressToken", "io.modelcontextprotocol/related-task", extension} {
+		t.Run(key, func(t *testing.T) {
+			ctx := a2aclient.AttachServiceParams(t.Context(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {key}})
+			_, err := caller.SendMessage(ctx, &a2a.SendMessageRequest{
+				Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{key: "value"},
+			})
+			require.ErrorIs(t, err, a2a.ErrInvalidParams)
+		})
+	}
+	require.Len(t, agents.started, 1)
+}
+
 func TestAgentExtendedCardRequiresAccessToTheAgent(t *testing.T) {
 	srv, _ := serve(t, &fakeAgents{})
 	for _, agentTenant := range []string{"acme/no-such-agent", "shared/twin", "acme/broken", "kagent/default-agent"} {
