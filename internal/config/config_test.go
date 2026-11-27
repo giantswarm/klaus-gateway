@@ -459,14 +459,18 @@ func appBase() config.Config {
 	base.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080"
 	base.OBO.MusterURL = "https://muster.example.com"
 	base.A2AServer = config.A2AServerConfig{ //nolint:gosec // G101: a file path, not a credential
-		Enabled:                  true,
-		PublicURL:                "https://gateway.example.com",
-		Issuer:                   "https://dex.example.com",
-		Audience:                 "klaus-gateway-app",
+		Enabled:   true,
+		PublicURL: "https://gateway.example.com",
+		Issuers: []config.TrustedIssuer{{
+			Name: "dex", Issuer: "https://dex.example.com", JWKSURL: "https://dex.example.com/keys",
+			Audience: "klaus-gateway-app", AllowedClients: []string{"example-app"}, ConnectorID: "dex-self",
+		}},
+		ExchangeTokenURL:         "https://dex.example.com/token",
 		ExchangeClientID:         "klaus-gateway-exchange",
 		ExchangeClientSecretFile: "/etc/klaus-gateway/a2a-server/client-secret",
 		ExchangeAudiences:        []string{"kagent"},
 		MaxBodyBytes:             base.A2AServer.MaxBodyBytes,
+		MinTokenLifetime:         base.A2AServer.MinTokenLifetime,
 	}
 	return base
 }
@@ -476,41 +480,12 @@ func TestValidate_AppAllowedClients(t *testing.T) {
 	require.NoError(t, base.Validate())
 
 	cfg := base
-	cfg.A2AServer.AllowedClients = []string{"example-app"}
-	require.NoError(t, cfg.Validate())
+	cfg.A2AServer.Issuers = slices.Clone(base.A2AServer.Issuers)
+	cfg.A2AServer.Issuers[0].AllowedClients = nil
+	require.ErrorContains(t, cfg.Validate(), "allowedClients", "an issuer without allowed clients accepts any client: refused")
 
-	cfg.A2AServer.AllowedClients = []string{"example-app", "klaus-gateway-exchange"}
+	cfg.A2AServer.Issuers[0].AllowedClients = []string{"example-app", "klaus-gateway-exchange"}
 	require.ErrorContains(t, cfg.Validate(), "exchange client")
-}
-
-func TestLoad_AppAllowedClients(t *testing.T) {
-	cfg, err := config.Load([]string{"--a2a-server-allowed-clients", "example-app, other-app"})
-	require.NoError(t, err)
-	require.Equal(t, []string{"example-app", "other-app"}, cfg.A2AServer.AllowedClients)
-}
-
-func TestAppConfig_SingleIssuerIsAOneEntryList(t *testing.T) {
-	cfg := appBase().A2AServer
-	cfg.AllowedClients = []string{"example-app"}
-	cfg.ExchangeConnectorID = "dex-self"
-	cfg.CAFile = "/etc/ca.crt"
-	require.Equal(t, []config.TrustedIssuer{{ //nolint:gosec // G101: test URLs, not credentials
-		Name:           "oauth2",
-		Issuer:         "https://dex.example.com",
-		JWKSURL:        "https://dex.example.com/keys",
-		TokenURL:       "https://dex.example.com/token",
-		Audience:       "klaus-gateway-app",
-		AllowedClients: []string{"example-app"},
-		ConnectorID:    "dex-self",
-		CAFile:         "/etc/ca.crt",
-	}}, cfg.TrustedIssuers())
-	require.Equal(t, "https://dex.example.com/token", cfg.ExchangeEndpoint())
-
-	cfg.TokenURL = "https://dex.example.com/oauth/token"
-	require.Equal(t, "https://dex.example.com/oauth/token", cfg.ExchangeEndpoint())
-	cfg.ExchangeTokenURL = "https://dex.internal/token"
-	require.Equal(t, "https://dex.internal/token", cfg.ExchangeEndpoint())
-	require.Equal(t, "https://dex.example.com/oauth/token", cfg.TrustedIssuers()[0].TokenURL, "the card names the issuer's endpoint")
 }
 
 const issuersFile = `- name: dex
@@ -546,8 +521,8 @@ func TestLoad_AppIssuersFile(t *testing.T) {
 			Audience: "klaus-gateway-app", AllowedClients: []string{"example-app"}, ConnectorID: "dex-self"},
 		{Name: "outside", Issuer: "https://idp.example.org", JWKSURL: "https://idp.example.org/keys", Audience: "klaus-gateway-outside",
 			AllowedClients: []string{"outside-backend", "outside-backend-2"}, ConnectorID: "outside-idp", SubjectTokenType: config.SubjectTokenAccessToken, CAFile: "/etc/klaus-gateway/a2a-server-ca/ca.crt"},
-	}, cfg.A2AServer.TrustedIssuers())
-	require.Equal(t, "https://dex.example.com/token", cfg.A2AServer.ExchangeEndpoint())
+	}, cfg.A2AServer.Issuers)
+	require.Equal(t, "https://dex.example.com/token", cfg.A2AServer.ExchangeTokenURL)
 
 	_, err = config.Load([]string{"--a2a-server-issuers-file", writeIssuers(t, "- name: dex\n  jwks: https://dex.example.com/keys\n")})
 	require.ErrorContains(t, err, "jwks", "an unknown field is refused")
@@ -561,19 +536,16 @@ func TestValidate_AppIssuers(t *testing.T) {
 	loaded, err := config.Load([]string{"--a2a-server-issuers-file", path})
 	require.NoError(t, err)
 	base := appBase()
-	base.A2AServer.Issuer, base.A2AServer.Audience = "", ""
 	base.A2AServer.Issuers = loaded.A2AServer.Issuers
-	base.A2AServer.ExchangeTokenURL = "https://dex.example.com/token"
 	require.NoError(t, base.Validate())
 
 	for name, test := range map[string]struct {
 		change func(*config.A2AServerConfig)
 		want   string
 	}{
-		"both forms":           {func(c *config.A2AServerConfig) { c.Issuer = "https://dex.example.com" }, "exclusive"},
-		"connector flag too":   {func(c *config.A2AServerConfig) { c.ExchangeConnectorID = "dex-self" }, "exclusive"},
 		"no exchange endpoint": {func(c *config.A2AServerConfig) { c.ExchangeTokenURL = "" }, "--a2a-server-exchange-token-url"},
 		"no issuer at all":     {func(c *config.A2AServerConfig) { c.Issuers = nil }, "--a2a-server-issuers-file"},
+		"no allowed clients":   {func(c *config.A2AServerConfig) { c.Issuers[1].AllowedClients = nil }, "allowedClients"},
 		"duplicate name":       {func(c *config.A2AServerConfig) { c.Issuers[1].Name = "dex" }, "name \"dex\" is not unique"},
 		"duplicate issuer":     {func(c *config.A2AServerConfig) { c.Issuers[1].Issuer = "https://dex.example.com" }, "is not unique"},
 		"no key set":           {func(c *config.A2AServerConfig) { c.Issuers[1].JWKSURL = "" }, "jwksUrl"},
@@ -610,4 +582,18 @@ func TestAppMaxBodyBytes(t *testing.T) {
 	invalid := appBase()
 	invalid.A2AServer.MaxBodyBytes = 0
 	require.ErrorContains(t, invalid.Validate(), "--a2a-server-max-body-bytes")
+}
+
+func TestAppMinTokenLifetime(t *testing.T) {
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, 25*time.Minute, cfg.A2AServer.MinTokenLifetime, "a Slack turn's default")
+
+	cfg, err = config.Load([]string{"--a2a-server-min-token-lifetime", "40m"})
+	require.NoError(t, err)
+	require.Equal(t, 40*time.Minute, cfg.A2AServer.MinTokenLifetime)
+
+	invalid := appBase()
+	invalid.A2AServer.MinTokenLifetime = 30 * time.Second
+	require.ErrorContains(t, invalid.Validate(), "--a2a-server-min-token-lifetime")
 }

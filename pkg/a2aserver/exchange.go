@@ -35,13 +35,21 @@ type Exchanger struct {
 	HTTPClient *http.Client
 }
 
+// ExchangedToken is the token an exchange issued and when it expires.
+type ExchangedToken struct {
+	Token string
+	// Expiry is the earlier of the response's expires_in (RFC 8693 section
+	// 2.2.1) and the token's exp; zero when the response states neither.
+	Expiry time.Time
+}
+
 // Exchange returns the exchanged ID token for a subject token of issuer,
 // through issuer's connector (Dex's connector_id) and with its subject token
 // type.
-func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer TrustedIssuer) (string, error) {
+func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer TrustedIssuer) (ExchangedToken, error) {
 	endpoint, err := url.Parse(e.TokenURL)
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
-		return "", fmt.Errorf("token exchange endpoint must be an absolute HTTPS URL without userinfo or fragment")
+		return ExchangedToken{}, fmt.Errorf("token exchange endpoint must be an absolute HTTPS URL without userinfo or fragment")
 	}
 	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
@@ -61,7 +69,7 @@ func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer Tr
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.TokenURL, strings.NewReader(form.Encode())) //nolint:gosec // G704: the token endpoint is operator configuration (a chart value)
 	if err != nil {
-		return "", fmt.Errorf("token exchange request: %w", err)
+		return ExchangedToken{}, fmt.Errorf("token exchange request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -77,12 +85,12 @@ func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer Tr
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := clientCopy.Do(req) //nolint:gosec // G704: the token endpoint is operator configuration (a chart value)
 	if err != nil {
-		return "", fmt.Errorf("token exchange: %w", err)
+		return ExchangedToken{}, fmt.Errorf("token exchange: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, exchangeResponseLimit))
 	if err != nil {
-		return "", fmt.Errorf("token exchange response: %w", err)
+		return ExchangedToken{}, fmt.Errorf("token exchange response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		var oauthErr struct {
@@ -91,25 +99,44 @@ func (e *Exchanger) Exchange(ctx context.Context, subjectToken string, issuer Tr
 		}
 		_ = json.Unmarshal(body, &oauthErr)
 		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
-			return "", fmt.Errorf("%w: %s: %s", ErrExchangeRefused, oauthErr.Error, oauthErr.ErrorDescription)
+			return ExchangedToken{}, fmt.Errorf("%w: %s: %s", ErrExchangeRefused, oauthErr.Error, oauthErr.ErrorDescription)
 		}
-		return "", fmt.Errorf("token exchange: status %d: %s", resp.StatusCode, oauthErr.Error)
+		return ExchangedToken{}, fmt.Errorf("token exchange: status %d: %s", resp.StatusCode, oauthErr.Error)
 	}
 	var issued struct {
 		AccessToken     string `json:"access_token"`
 		IssuedTokenType string `json:"issued_token_type"`
 		TokenType       string `json:"token_type"`
+		ExpiresIn       int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &issued); err != nil {
-		return "", fmt.Errorf("token exchange response: %w", err)
+		return ExchangedToken{}, fmt.Errorf("token exchange response: %w", err)
 	}
 	if issued.AccessToken == "" || issued.IssuedTokenType != tokenTypeIDToken {
-		return "", fmt.Errorf("token exchange: no ID token issued (issued_token_type %q)", issued.IssuedTokenType)
+		return ExchangedToken{}, fmt.Errorf("token exchange: no ID token issued (issued_token_type %q)", issued.IssuedTokenType)
 	}
 	if !strings.EqualFold(issued.TokenType, "Bearer") {
-		return "", fmt.Errorf("token exchange: unsupported token_type %q", issued.TokenType)
+		return ExchangedToken{}, fmt.Errorf("token exchange: unsupported token_type %q", issued.TokenType)
 	}
-	return issued.AccessToken, nil
+	return ExchangedToken{Token: issued.AccessToken, Expiry: issuedExpiry(time.Now(), issued.ExpiresIn, issued.AccessToken)}, nil
+}
+
+// issuedExpiry is the earlier of now + expiresIn and the token's exp, read
+// without a signature check: it is only a deadline. Zero when neither is
+// known.
+func issuedExpiry(now time.Time, expiresIn int64, token string) time.Time {
+	var expiry time.Time
+	if expiresIn > 0 {
+		expiry = now.Add(time.Duration(expiresIn) * time.Second)
+	}
+	if claims, err := mcpoidc.ParseUnverifiedClaims(token); err == nil {
+		if exp, ok := claims["exp"].(float64); ok && exp > 0 {
+			if fromClaim := time.Unix(int64(exp), 0); expiry.IsZero() || fromClaim.Before(expiry) {
+				expiry = fromClaim
+			}
+		}
+	}
+	return expiry
 }
 
 // TrustedIssuer is an identity provider whose tokens the channel accepts.
@@ -174,32 +201,36 @@ func NewJWTVerifier(issuers []TrustedIssuer, exchangeClientID string) *JWTVerifi
 // Verify selects the trusted issuer by the token's unverified iss and checks
 // the token with that issuer alone (mcp-oauth's ValidateIDToken: signature
 // with a pinned asymmetric algorithm, expiry, not-before, issuer and
-// audience), then the client that requested it. It returns the issuer.
-func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (TrustedIssuer, error) {
+// audience), then the client that requested it.
+func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (VerifiedToken, error) {
 	unverified, err := mcpoidc.ParseUnverifiedClaims(rawToken)
 	if err != nil {
-		return TrustedIssuer{}, fmt.Errorf("malformed token: %w", err)
+		return VerifiedToken{}, fmt.Errorf("malformed token: %w", err)
 	}
 	iss, _ := unverified["iss"].(string)
 	issuer, ok := v.issuers[iss]
 	if !ok {
-		return TrustedIssuer{}, fmt.Errorf("issuer %q is not trusted", iss)
+		return VerifiedToken{}, fmt.Errorf("issuer %q is not trusted", iss)
 	}
 	claims, err := mcpoidc.ValidateIDToken(ctx, rawToken, issuer.JWKS, issuer.JWKSURL, issuer.Issuer, []string{issuer.Audience})
 	if err != nil {
-		return TrustedIssuer{}, err
+		return VerifiedToken{}, err
 	}
 	if !slices.Contains([]string(claims.Audience), issuer.Audience) {
-		return TrustedIssuer{}, fmt.Errorf("token audience does not match %q exactly", issuer.Audience)
+		return VerifiedToken{}, fmt.Errorf("token audience does not match %q exactly", issuer.Audience)
 	}
 	client, err := requestingClient(issuer, claims.AuthorizedParty, claims.ClientID, []string(claims.Audience))
 	if err != nil {
-		return TrustedIssuer{}, err
+		return VerifiedToken{}, err
 	}
 	if err := v.checkClient(issuer, client); err != nil {
-		return TrustedIssuer{}, err
+		return VerifiedToken{}, err
 	}
-	return issuer, nil
+	verified := VerifiedToken{Issuer: issuer}
+	if claims.Expiry != nil {
+		verified.Expiry = claims.Expiry.Time()
+	}
+	return verified, nil
 }
 
 func (v *JWTVerifier) checkClient(issuer TrustedIssuer, client string) error {

@@ -12,7 +12,9 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -22,6 +24,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/a2aserver"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
@@ -40,23 +43,23 @@ const issuerConnector = "dex-self"
 
 type staticVerifier struct{ accept string }
 
-func (v staticVerifier) Verify(_ context.Context, raw string) (a2aserver.TrustedIssuer, error) {
+func (v staticVerifier) Verify(_ context.Context, raw string) (a2aserver.VerifiedToken, error) {
 	if raw != v.accept {
-		return a2aserver.TrustedIssuer{}, errors.New("bad token")
+		return a2aserver.VerifiedToken{}, errors.New("bad token")
 	}
-	return a2aserver.TrustedIssuer{Name: "dex", ConnectorID: issuerConnector}, nil
+	return a2aserver.VerifiedToken{Issuer: a2aserver.TrustedIssuer{Name: "dex", ConnectorID: issuerConnector}, Expiry: time.Now().Add(time.Hour)}, nil
 }
 
 type staticExchanger struct{ err error }
 
-func (e staticExchanger) Exchange(_ context.Context, subject string, issuer a2aserver.TrustedIssuer) (string, error) {
+func (e staticExchanger) Exchange(_ context.Context, subject string, issuer a2aserver.TrustedIssuer) (a2aserver.ExchangedToken, error) {
 	if e.err != nil {
-		return "", e.err
+		return a2aserver.ExchangedToken{}, e.err
 	}
 	if subject != clientToken || issuer.ConnectorID != issuerConnector {
-		return "", a2aserver.ErrExchangeRefused
+		return a2aserver.ExchangedToken{}, a2aserver.ErrExchangeRefused
 	}
-	return exchangedToken, nil
+	return a2aserver.ExchangedToken{Token: exchangedToken, Expiry: time.Now().Add(time.Hour)}, nil
 }
 
 // fakeAgents records what the channel asks of the platform.
@@ -72,6 +75,8 @@ type fakeAgents struct {
 	extensions    [][]string
 	streamErr     error
 	configuration *a2a.SendMessageConfig
+	// startErrs are returned by the next Session starts, one each.
+	startErrs []error
 }
 
 // propagatedExtensions are the A2A-Extensions values ctx passes on.
@@ -99,6 +104,11 @@ func (f *fakeAgents) StartSession(ctx context.Context, agentRef, requestID, _ st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, requestID)
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		return pkga2a.Session{}, err
+	}
 	return pkga2a.Session{ID: newSessionID, State: "READY"}, nil
 }
 
@@ -193,10 +203,10 @@ func serve(t *testing.T, agents a2aserver.Agents, exchanger a2aserver.TokenExcha
 		{Name: "outside", Issuer: "https://idp.example.org", Audience: outsideAudience, OpenIDConnectURL: "https://idp.example.org/.well-known/openid-configuration"},
 		{Name: "rfc8414", Issuer: "https://as.example.net", Audience: outsideAudience, TokenURL: "https://as.example.net/oauth/token", MetadataURL: "https://as.example.net/.well-known/oauth-authorization-server"}, //nolint:gosec // G101: a test URL
 	}})
-	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, Realm: "klaus-gateway"}
+	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: exchanger, MaxBodyBytes: testBodyLimit, Realm: "klaus-gateway"}
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}})
-	mux.Handle("/a2a", a2aserver.LimitBody(testBodyLimit, auth.Middleware(a2asrv.NewJSONRPCHandler(handler))))
+	mux.Handle("/a2a", auth.Middleware(a2asrv.NewJSONRPCHandler(handler)))
 	return srv, card
 }
 
@@ -338,7 +348,11 @@ func TestRequestMetadataValuesRemainOpaque(t *testing.T) {
 }
 
 func TestMalformedRequestMetadataIsRefusedBeforeDispatch(t *testing.T) {
-	for _, key := range []string{"not valid/key", "io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo", "io.modelcontextprotocol/clientCapabilities", "progressToken", "traceparent"} {
+	for _, key := range []string{
+		"not valid/key", "", "io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo",
+		"io.modelcontextprotocol/clientCapabilities", "io.modelcontextprotocol/related-task", "io.modelcontextprotocol/model-immediate-response",
+		"dev.mcp/anything", "org.modelcontextprotocol.api/x", "com.mcp.tools/x", "progressToken", "traceparent",
+	} {
 		t.Run(key, func(t *testing.T) {
 			agents := &fakeAgents{}
 			server, _ := serve(t, agents, staticExchanger{})
@@ -387,7 +401,17 @@ type jsonrpcResponse struct {
 
 func postJSONRPC(t *testing.T, base, extensions string, params map[string]any) (*http.Response, jsonrpcResponse) {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": params})
+	return postJSONRPCRequest(t, base, extensions, "SendMessage", params)
+}
+
+func postJSONRPCMethod(t *testing.T, base, method string, params map[string]any) (*http.Response, jsonrpcResponse) {
+	t.Helper()
+	return postJSONRPCRequest(t, base, "", method, params)
+}
+
+func postJSONRPCRequest(t *testing.T, base, extensions, method string, params map[string]any) (*http.Response, jsonrpcResponse) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	require.NoError(t, err)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/a2a", bytes.NewReader(payload))
 	require.NoError(t, err)
@@ -458,14 +482,16 @@ func TestExchangerSendsAnRFC8693Request(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"` + exchangedToken + `","issued_token_type":"urn:ietf:params:oauth:token-type:id_token","token_type":"bearer"}`))
+		_, _ = w.Write([]byte(`{"access_token":"` + exchangedToken + `","issued_token_type":"urn:ietf:params:oauth:token-type:id_token","token_type":"bearer","expires_in":1800}`))
 	}))
 	t.Cleanup(dex.Close)
 	e := &a2aserver.Exchanger{TokenURL: dex.URL, ClientID: "klaus-gateway-app", ClientSecret: "s3cr3t:/", Audiences: []string{"kagent", "dex-k8s-authenticator"}, HTTPClient: dex.Client()}
 
+	before := time.Now()
 	token, err := e.Exchange(t.Context(), clientToken, a2aserver.TrustedIssuer{ConnectorID: "dex-self"})
 	require.NoError(t, err)
-	require.Equal(t, exchangedToken, token)
+	require.Equal(t, exchangedToken, token.Token)
+	require.WithinRange(t, token.Expiry, before.Add(30*time.Minute), time.Now().Add(30*time.Minute), "expires_in sets the expiry")
 	require.Equal(t, "urn:ietf:params:oauth:grant-type:token-exchange", form.Get("grant_type"))
 	require.Equal(t, "urn:ietf:params:oauth:token-type:id_token", form.Get("subject_token_type"))
 	require.Equal(t, "urn:ietf:params:oauth:token-type:id_token", form.Get("requested_token_type"))
@@ -484,9 +510,10 @@ func TestExchangerSendsAnRFC8693Request(t *testing.T) {
 	require.Equal(t, "urn:ietf:params:oauth:token-type:id_token", form.Get("requested_token_type"), "the platform still gets an ID token")
 }
 
-func TestOversizedBodyIsRefusedBeforeAnything(t *testing.T) {
+func TestOversizedBodyIsRefusedBeforeTheExchange(t *testing.T) {
 	agents := &fakeAgents{}
-	srv, _ := serve(t, agents, staticExchanger{})
+	exchanger := &countingExchanger{}
+	srv, _ := serve(t, agents, exchanger)
 	text := strings.Repeat("x", testBodyLimit)
 	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": map[string]any{
 		"tenant":  tenant,
@@ -509,9 +536,108 @@ func TestOversizedBodyIsRefusedBeforeAnything(t *testing.T) {
 		})
 	}
 	require.Empty(t, agents.refs, "nothing is asked of the platform")
+	require.Zero(t, exchanger.calls.Load(), "nothing is asked of the identity provider")
 
 	small := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(strings.Repeat("x", testBodyLimit/2)))
 	_, err = client(t, &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{{URL: srv.URL + "/a2a", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version}}}, clientToken).
 		SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: small})
 	require.NoError(t, err, "a body under the cap is served whole")
+}
+
+// countingExchanger is staticExchanger counting its exchanges.
+type countingExchanger struct{ calls atomic.Int32 }
+
+func (e *countingExchanger) Exchange(ctx context.Context, subject string, issuer a2aserver.TrustedIssuer) (a2aserver.ExchangedToken, error) {
+	e.calls.Add(1)
+	return staticExchanger{}.Exchange(ctx, subject, issuer)
+}
+
+// unreadBody fails the test when it is read.
+type unreadBody struct{ t *testing.T }
+
+func (b unreadBody) Read([]byte) (int, error) {
+	b.t.Error("the body of an unauthenticated request was read")
+	return 0, io.EOF
+}
+
+func TestUnauthenticatedBodyIsNeverRead(t *testing.T) {
+	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, Exchanger: staticExchanger{}, MaxBodyBytes: testBodyLimit, Realm: "klaus-gateway"}
+	handler := auth.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("an unauthenticated request was served") }))
+	for name, header := range map[string]string{"no token": "", "invalid token": "Bearer forged"} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/a2a", unreadBody{t: t})
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			require.Equal(t, http.StatusUnauthorized, recorder.Code)
+		})
+	}
+}
+
+func TestCancelMetadataIsValidated(t *testing.T) {
+	agents := &fakeAgents{}
+	server, _ := serve(t, agents, staticExchanger{})
+	response, body := postJSONRPCMethod(t, server.URL, "CancelTask", map[string]any{"tenant": tenant, "id": "task-1", "metadata": map[string]any{"io.modelcontextprotocol/related-task": "x"}})
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NotNil(t, body.Error)
+	require.Equal(t, -32602, body.Error.Code)
+	require.Empty(t, agents.refs, "the cancel never reaches the platform")
+}
+
+func TestReservedMCPPrefixIgnoresCase(t *testing.T) {
+	for _, key := range []string{"IO.ModelContextProtocol/x", "io.MCP/x", "com.MCP.example/x", "Org.ModelContextProtocol.Api/x"} {
+		t.Run("SendMessage "+key, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			_, body := postJSONRPC(t, server.URL, "", map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": map[string]any{key: "v"}})
+			require.NotNil(t, body.Error)
+			require.Equal(t, -32602, body.Error.Code)
+			require.Empty(t, agents.started)
+		})
+		t.Run("CancelTask "+key, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			_, body := postJSONRPCMethod(t, server.URL, "CancelTask", map[string]any{"tenant": tenant, "id": "task-1", "metadata": map[string]any{key: "v"}})
+			require.NotNil(t, body.Error)
+			require.Equal(t, -32602, body.Error.Code)
+			require.Empty(t, agents.refs, "the cancel never reaches the platform")
+		})
+	}
+}
+
+func TestMetadataPrefixesOutsideMCPsReservationPass(t *testing.T) {
+	for _, key := range []string{"com.example.mcp/x", "mcp/x", "io.example/modelcontextprotocol", "MCP/x", "com.Example.MCP/x"} {
+		t.Run(key, func(t *testing.T) {
+			agents := &fakeAgents{}
+			server, _ := serve(t, agents, staticExchanger{})
+			_, body := postJSONRPC(t, server.URL, "", map[string]any{"tenant": tenant, "message": map[string]any{"messageId": "m-1", "role": "ROLE_USER", "parts": []any{map[string]any{"text": "hi"}}}, "metadata": map[string]any{key: "v"}})
+			require.Nil(t, body.Error, "only a second label of modelcontextprotocol or mcp is reserved")
+			require.Equal(t, map[string]any{key: "v"}, agents.metadata[0])
+		})
+	}
+}
+
+func TestSessionStartSignInReachesTheCaller(t *testing.T) {
+	const approval = "https://muster.example/approvals/1"
+	agents := &fakeAgents{startErrs: []error{&pkga2a.ConnectRequiredError{SignIn: &muster.SignIn{Message: "Confirm Start session in agent-manager.", URL: approval}}}}
+	_, card := serve(t, agents, staticExchanger{})
+	caller := client(t, card, clientToken)
+	message := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))
+
+	_, err := caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: message})
+	require.ErrorIs(t, err, a2a.ErrUnauthorized)
+	var refusal *a2a.Error
+	require.ErrorAs(t, err, &refusal)
+	metadata, ok := refusal.ErrorInfo().Value["metadata"].(map[string]string)
+	require.True(t, ok, "the step travels in the ErrorInfo detail: %#v", refusal.ErrorInfo().Value)
+	require.Equal(t, approval, metadata["url"])
+	require.Equal(t, "Confirm Start session in agent-manager.", metadata["message"])
+	require.Empty(t, agents.streamed, "no turn runs before the step")
+
+	_, err = caller.SendMessage(t.Context(), &a2a.SendMessageRequest{Tenant: tenant, Message: message})
+	require.NoError(t, err, "the same message sent again starts the Session")
+	require.Equal(t, []string{message.ID, message.ID}, agents.started, "both starts carry the message id agent-manager deduplicates by")
+	require.Len(t, agents.streamed, 1)
 }

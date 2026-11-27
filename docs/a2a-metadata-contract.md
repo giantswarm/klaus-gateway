@@ -30,10 +30,12 @@ request supplies its own values; an absent or empty map inherits nothing.
 Servers can still expose values to the model by echoing them in tool results.
 
 Top-level names follow MCP's `_meta` key syntax; nested values remain opaque.
-Caller-supplied `progressToken`, `traceparent`, `tracestate`, `baggage`, and
-`io.modelcontextprotocol/{protocolVersion,clientInfo,clientCapabilities,logLevel,serverInfo,subscriptionId}`
-are refused before execution because the transport owns them. Existing outgoing
-metadata wins other collisions, without merging nested objects.
+A key MCP reserves is refused before execution: any key whose prefix has
+`modelcontextprotocol` or `mcp` as its second label (`io.modelcontextprotocol/`,
+`dev.mcp/`, `org.modelcontextprotocol.api/`, but not `com.example.mcp/`), and the
+transport-owned `progressToken`, `traceparent`, `tracestate` and `baggage`. The same
+check covers `CancelTask` metadata. Existing outgoing metadata wins other collisions,
+without merging nested objects.
 
 Message and part metadata keep their existing meaning and are not forwarded as
 request metadata. Authentication and authorization remain on their existing

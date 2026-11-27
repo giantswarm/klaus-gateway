@@ -75,13 +75,17 @@
                             "name",
                             "issuer",
                             "jwksUrl",
-                            "audience"
+                            "audience",
+                            "allowedClients"
                         ],
                         "additionalProperties": true
                     }
                 },
                 "maxBodyBytes": {
                     "type": "integer"
+                },
+                "minTokenLifetime": {
+                    "type": "string"
                 },
                 "publicUrl": {
                     "type": "string"

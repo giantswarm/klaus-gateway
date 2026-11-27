@@ -9,6 +9,21 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next - A2A server issuer configuration
+
+The single-issuer flags `--a2a-server-issuer`, `--a2a-server-jwks-url`,
+`--a2a-server-audience`, `--a2a-server-allowed-clients`, `--a2a-server-token-url`,
+`--a2a-server-exchange-connector-id` and `--a2a-server-allow-private-ip-jwks-hosts`
+are removed. They shipped in 4.20.0 release candidates only. Move their values to one
+entry in the YAML list named by `--a2a-server-issuers-file`: `issuer`, `jwksUrl`,
+`audience`, `allowedClients`, `tokenUrl`, `connectorId` and `allowPrivateIpJwksHosts`.
+Every entry needs a nonempty `allowedClients` list. The chart's `a2aServer.issuers`
+already uses this list format.
+
+`a2aServer.minTokenLifetime` is a minimum remaining lifetime at admission, not a
+turn timeout or renewal mechanism. Set Dex's `expiry.idTokens` above that floor.
+A turn that outlasts its token can still fail; the runtime does not refresh it.
+
 ## 4.16.32 — sign-in links open unchanged
 
 - The gateway's muster client declares URL mode elicitation on MCP protocol 2026-07-28 and no

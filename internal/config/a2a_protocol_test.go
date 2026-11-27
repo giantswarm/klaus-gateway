@@ -13,13 +13,3 @@ func TestA2AExchangeRequiresHTTPS(t *testing.T) {
 		require.Error(t, configuration.Validate(), endpoint)
 	}
 }
-
-func TestA2ASingleIssuerPreservesIdentifier(t *testing.T) {
-	configuration := appBase()
-	configuration.A2AServer.Issuer = "https://idp.example.org/"
-	require.NoError(t, configuration.Validate())
-	issuer := configuration.A2AServer.TrustedIssuers()[0]
-	require.Equal(t, configuration.A2AServer.Issuer, issuer.Issuer)
-	require.Equal(t, "https://idp.example.org/keys", issuer.JWKSURL)
-	require.Equal(t, "https://idp.example.org/token", issuer.TokenURL)
-}
