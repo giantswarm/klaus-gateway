@@ -9,7 +9,8 @@
 // never reaches the gateway. The gateway verifies the platform token
 // (PlatformVerifier) and acts with it unchanged.
 //
-// The A2A tenant names the agent as <organization>/<agent>. A message without a
+// An agent is addressed as <organization>/<agent>: by its own endpoint and
+// Agent Card under /a2a (NewAgentPaths), or by the A2A tenant on /a2a. A message without a
 // context id starts a platform Session through agent-manager; the Session id
 // is the context id of every later message.
 //

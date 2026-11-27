@@ -60,6 +60,10 @@ type fakeAgents struct {
 	configuration *a2a.SendMessageConfig
 	// startErrs are returned by the next Session starts, one each.
 	startErrs []error
+	// cardReads counts the agent cards read from the controller; cardErr,
+	// when set, is the controller's refusal.
+	cardReads int
+	cardErr   error
 }
 
 // propagatedExtensions are the A2A-Extensions values ctx passes on.
@@ -139,6 +143,44 @@ func (f *fakeAgents) CancelTask(_ context.Context, id a2a.TaskID) (*a2a.Task, er
 	return &a2a.Task{ID: id, Status: a2a.TaskStatus{State: a2a.TaskStateCanceled}}, nil
 }
 
+// AgentCard answers the controller's card of the agent ctx names, which
+// lives at the controller's own URL.
+func (f *fakeAgents) AgentCard(ctx context.Context) (*a2a.AgentCard, error) {
+	f.record(ctx)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cardReads++
+	if f.cardErr != nil {
+		return nil, f.cardErr
+	}
+	ref := pkga2a.AgentRefFromContext(ctx)
+	return &a2a.AgentCard{
+		Name:        "export-agent",
+		Description: "Exports data.",
+		Version:     "1.2.3",
+		SupportedInterfaces: []*a2a.AgentInterface{
+			{URL: "http://kagent-controller.kagent.svc:8083/agents/" + ref, ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version},
+			{URL: "grpc://kagent-controller.kagent.svc:8080", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: a2a.Version, Tenant: ref},
+		},
+		Capabilities:       a2a.AgentCapabilities{Streaming: true, PushNotifications: true, ExtendedAgentCard: true, Extensions: agentExtensions()},
+		DefaultInputModes:  []string{"text/plain"},
+		DefaultOutputModes: []string{"text/plain", "application/json"},
+		Skills:             []a2a.AgentSkill{{ID: "export", Name: "Export", Description: "Exports data.", Tags: []string{"export"}}},
+		Provider:           &a2a.AgentProvider{Org: "kagent", URL: "http://kagent-controller.kagent.svc:8083"},
+		IconURL:            "http://kagent-controller.kagent.svc:8083/icons/" + ref,
+		Signatures:         []a2a.AgentCardSignature{{Protected: "e30", Signature: "c2ln"}},
+	}, nil
+}
+
+// agentExtensions are the extensions the controller declares on an agent's
+// card: kagent's HITL and usage extensions, with parameters.
+func agentExtensions() []a2a.AgentExtension {
+	return []a2a.AgentExtension{
+		{URI: pkga2a.HITLExtensionURI, Description: "Human in the loop.", Params: map[string]any{"kinds": []any{"tool_approval", "ask_user"}}},
+		{URI: "https://kagent.dev/extensions/usage/v1", Required: false, Params: map[string]any{"unit": "tokens"}},
+	}
+}
+
 func (f *fakeAgents) record(ctx context.Context) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -188,8 +230,9 @@ func serve(t *testing.T, agents a2aserver.Agents) (*httptest.Server, *a2a.AgentC
 	}})
 	auth := &a2aserver.Authenticator{Verifier: staticVerifier{accept: clientToken}, MaxBodyBytes: testBodyLimit, Realm: "klaus-gateway"}
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	handler := a2aserver.NewRequestHandler(&a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}})
-	mux.Handle("/a2a", auth.Middleware(a2asrv.NewJSONRPCHandler(handler)))
+	server := &a2aserver.Handler{Agents: agents, Card: card, Organizations: organizations{}}
+	mux.Handle("/a2a", auth.Middleware(a2asrv.NewJSONRPCHandler(a2aserver.NewRequestHandler(server))))
+	mux.Handle("/a2a/", auth.Middleware(a2aserver.NewAgentPaths(server, "/a2a/")))
 	return srv, card
 }
 
@@ -237,6 +280,7 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 		Capabilities        map[string]any            `json:"capabilities"`
 		SecuritySchemes     map[string]map[string]any `json:"securitySchemes"`
 		Security            []map[string]any          `json:"securityRequirements"`
+		Skills              []a2a.AgentSkill          `json:"skills"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&card))
 
@@ -261,9 +305,13 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 	}, card.SecuritySchemes["outside"], "an issuer without a token endpoint names its discovery document")
 	require.Len(t, card.Security, 3, "any one scheme is enough")
 	require.Empty(t, card.Capabilities["extensions"])
+	require.NotEqual(t, true, card.Capabilities["extendedAgentCard"])
 	require.Len(t, card.SupportedInterfaces, 1)
 	require.Equal(t, "1.0", card.SupportedInterfaces[0]["protocolVersion"])
 	require.NotContains(t, card.SupportedInterfaces[0], "tenant", "the public card names no agent")
+	require.Equal(t, []a2a.AgentSkill{{
+		ID: "agent", Name: "Run an agent", Description: "Run the agent selected by the request's tenant.", Tags: []string{"agent"},
+	}}, card.Skills)
 }
 
 func TestConversationForwardsRawMetadataWithoutActivation(t *testing.T) {
@@ -482,15 +530,13 @@ func TestPlatformErrorsNameNothingBehindTheGateway(t *testing.T) {
 	require.NotContains(t, err.Error(), "kagent")
 }
 
-func TestExtendedCardListsTheCallersAgents(t *testing.T) {
+func TestRootCardOffersNoAgentDirectory(t *testing.T) {
 	agents := &fakeAgents{}
 	_, card := serve(t, agents)
 	c := client(t, card, clientToken)
-	extended, err := c.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
-	require.NoError(t, err)
-	require.Len(t, extended.SupportedInterfaces, 1, "unavailable agents, agents outside an organization and of an ambiguous organization are left out")
-	require.Equal(t, tenant, extended.SupportedInterfaces[0].Tenant)
-	require.Equal(t, card.SupportedInterfaces[0].URL, extended.SupportedInterfaces[0].URL)
+	_, err := c.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
+	require.ErrorIs(t, err, a2a.ErrExtendedCardNotConfigured)
+	require.Zero(t, agents.cardReads)
 }
 
 func TestOversizedBodyIsRefused(t *testing.T) {

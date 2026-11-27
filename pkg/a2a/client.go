@@ -353,7 +353,7 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	transport := a2agrpc.NewGRPCTransportFromClient(a2apb.NewA2AServiceClient(conn))
+	transport := a2agrpc.NewGRPCTransportFromClient(skillFillingClient{a2apb.NewA2AServiceClient(conn)})
 	// NewFromEndpoints does no I/O: the factory below hands back the transport
 	// on the shared connection, so the only error source is a configuration
 	// mismatch between the endpoint and the registered transport.
@@ -657,6 +657,24 @@ func (c *Client) GetTaskWithHistory(ctx context.Context, taskID a2apkg.TaskID, h
 		return nil, c.mapA2AError(ctx, err)
 	}
 	return task, nil
+}
+
+// AgentCard returns the Agent Card of the Agent ctx names (WithAgentRef), as
+// the caller: the controller's extended card for the Agent's tenant.
+func (c *Client) AgentCard(ctx context.Context) (*a2apkg.AgentCard, error) {
+	callCtx, err := c.a2aCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tenant, err := c.tenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	card, err := c.a2a.GetExtendedAgentCard(callCtx, &a2apkg.GetExtendedAgentCardRequest{Tenant: tenant})
+	if err != nil {
+		return nil, c.mapA2AError(ctx, err)
+	}
+	return card, nil
 }
 
 // CancelTask cancels a running task server-side and returns its final state.

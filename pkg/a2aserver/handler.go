@@ -26,14 +26,15 @@ type Agents interface {
 	Subscribe(ctx context.Context, taskID a2a.TaskID) iter.Seq2[a2a.Event, error]
 	GetTaskWithHistory(ctx context.Context, taskID a2a.TaskID, historyLength *int) (*a2a.Task, error)
 	CancelTask(ctx context.Context, taskID a2a.TaskID) (*a2a.Task, error)
+	// AgentCard is the Agent Card of the agent ctx names (pkga2a.WithAgentRef).
+	AgentCard(ctx context.Context) (*a2a.AgentCard, error)
 }
 
 // Handler serves the A2A protocol methods of the channel. Push notification
 // configs and task listing are not offered.
 type Handler struct {
 	Agents Agents
-	// Card is the public Agent Card; the extended card adds one interface per
-	// agent the caller may use.
+	// Card supplies the public endpoint and security schemes for per-agent cards.
 	Card *a2a.AgentCard
 	// Organizations names the organization of an agent's namespace. An
 	// A2A client addresses an agent as <organization>/<agent>; agents
@@ -41,6 +42,8 @@ type Handler struct {
 	// unique, are not offered.
 	Organizations pkga2a.OrganizationNames
 	Logger        *slog.Logger
+
+	cards cardCache
 }
 
 var _ a2asrv.RequestHandler = (*Handler)(nil)
@@ -209,35 +212,12 @@ func (h *Handler) SubscribeToTask(ctx context.Context, req *a2a.SubscribeToTaskR
 	}
 }
 
-// GetExtendedAgentCard answers the public card with one JSON-RPC interface
-// per agent the caller may use, its tenant naming the agent.
-func (h *Handler) GetExtendedAgentCard(ctx context.Context, _ *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
-	if h.Card == nil || len(h.Card.SupportedInterfaces) == 0 {
+// GetExtendedAgentCard answers the card of the agent the request names.
+func (h *Handler) GetExtendedAgentCard(ctx context.Context, request *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
+	if request == nil || request.Tenant == "" {
 		return nil, a2a.ErrExtendedCardNotConfigured
 	}
-	agents, err := h.Agents.ListAgents(ctx)
-	if err != nil {
-		return nil, h.refusal(ctx, "list agents", err)
-	}
-	card := *h.Card
-	base := h.Card.SupportedInterfaces[0]
-	card.SupportedInterfaces = make([]*a2a.AgentInterface, 0, len(agents))
-	card.Skills = make([]a2a.AgentSkill, 0, len(agents))
-	for _, agent := range agents {
-		tenant, ok := h.tenant(agent)
-		if !ok {
-			continue
-		}
-		card.SupportedInterfaces = append(card.SupportedInterfaces, &a2a.AgentInterface{
-			URL: base.URL, ProtocolBinding: base.ProtocolBinding, ProtocolVersion: base.ProtocolVersion, Tenant: tenant,
-		})
-		name := agent.DisplayName
-		if name == "" {
-			name = agent.Name
-		}
-		card.Skills = append(card.Skills, a2a.AgentSkill{ID: tenant, Name: name, Description: agent.Description, Tags: []string{"agent"}})
-	}
-	return &card, nil
+	return h.agentCard(ctx, request.Tenant)
 }
 
 // ListTasks is not offered.

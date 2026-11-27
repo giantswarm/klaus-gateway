@@ -53,7 +53,8 @@ type fakeKagent struct {
 	sessions     map[string]*apiv1alpha1.Session
 	byRequest    map[string]string // creator|request_id -> session id
 	tasks        map[string]*a2apkg.Task
-	events       []a2apkg.Event // played back by SendStreamingMessage
+	cards        map[string]*a2apkg.AgentCard // tenant -> the Agent's card
+	events       []a2apkg.Event               // played back by SendStreamingMessage
 	// requestMetadata and requestExtensions are the metadata and the
 	// a2a-extensions values of the last SendStreamingMessage.
 	requestMetadata   map[string]any
@@ -423,6 +424,27 @@ func (f *fakeKagent) CancelTask(ctx context.Context, req *a2apb.CancelTaskReques
 	canceled.Status = a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}
 	f.tasks[req.GetId()] = &canceled
 	return pbconv.ToProtoTask(&canceled)
+}
+
+// GetExtendedAgentCard mirrors the A2A gateway's per-Agent card: the tenant
+// names the Agent, which the caller must be allowed to use.
+func (f *fakeKagent) GetExtendedAgentCard(ctx context.Context, req *a2apb.GetExtendedAgentCardRequest) (*a2apb.AgentCard, error) {
+	f.record(ctx, "GetExtendedAgentCard")
+	if _, err := creator(ctx); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tenants = append(f.tenants, req.GetTenant())
+	namespace, _, ok := strings.Cut(req.GetTenant(), "/")
+	if !ok {
+		return nil, invalidRequest("Agent tenant must be namespace/name")
+	}
+	card, ok := f.cards[req.GetTenant()]
+	if !ok || !f.permits(ctx, namespace) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized")
+	}
+	return pbconv.ToProtoAgentCard(card)
 }
 
 // --- kagent.api.v1alpha1.AgentService ---

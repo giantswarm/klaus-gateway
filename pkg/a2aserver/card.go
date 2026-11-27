@@ -39,31 +39,32 @@ type CardIssuer struct {
 	OpenIDConnectURL string
 }
 
-// NewCard returns the public Agent Card: the endpoint, one security scheme
-// per trusted issuer, any one of which is enough, and an extended card
-// naming the agents per caller.
-func NewCard(cfg CardConfig) *a2a.AgentCard {
-	schemes := make(a2a.NamedSecuritySchemes, len(cfg.Issuers))
-	requirements := make(a2a.SecurityRequirementsOptions, 0, len(cfg.Issuers))
-	for _, issuer := range cfg.Issuers {
+// NewCard returns the public routing endpoint and one security scheme per
+// trusted issuer, any one of which is enough. Agents have their own cards.
+func NewCard(configuration CardConfig) *a2a.AgentCard {
+	schemes := make(a2a.NamedSecuritySchemes, len(configuration.Issuers))
+	requirements := make(a2a.SecurityRequirementsOptions, 0, len(configuration.Issuers))
+	for _, issuer := range configuration.Issuers {
 		name := a2a.SecuritySchemeName(issuer.Name)
 		schemes[name] = securityScheme(issuer)
 		requirements = append(requirements, a2a.SecurityRequirements{name: {ScopeOpenID}})
 	}
-	capabilities := a2a.AgentCapabilities{Streaming: true, ExtendedAgentCard: true}
+	capabilities := a2a.AgentCapabilities{Streaming: true}
 	return &a2a.AgentCard{
 		Name:        "Agent Platform",
-		Description: "Agents of the platform. The authenticated extended card lists the agents the caller may use, one interface per agent, its tenant naming the agent.",
-		Version:     cfg.Version,
+		Description: "Agents of the platform, addressed by tenant. Configure the Agent Card URL of the agent to use.",
+		Version:     configuration.Version,
 		SupportedInterfaces: []*a2a.AgentInterface{{
-			URL:             cfg.URL,
+			URL:             configuration.URL,
 			ProtocolBinding: a2a.TransportProtocolJSONRPC,
 			ProtocolVersion: a2a.Version,
 		}},
-		Capabilities:         capabilities,
-		DefaultInputModes:    []string{"text/plain"},
-		DefaultOutputModes:   []string{"text/plain"},
-		Skills:               []a2a.AgentSkill{},
+		Capabilities:       capabilities,
+		DefaultInputModes:  []string{"text/plain"},
+		DefaultOutputModes: []string{"text/plain"},
+		Skills: []a2a.AgentSkill{{
+			ID: "agent", Name: "Run an agent", Description: "Run the agent selected by the request's tenant.", Tags: []string{"agent"},
+		}},
 		SecuritySchemes:      schemes,
 		SecurityRequirements: requirements,
 	}

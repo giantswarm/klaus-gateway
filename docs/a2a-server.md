@@ -12,19 +12,27 @@ through agent-manager, called through muster). `obo.enabled` is not needed.
 
 ## Endpoints
 
-Both are served on the gateway's public listener (`server.port`), next to the Slack
+They are served on the gateway's public listener (`server.port`), next to the Slack
 endpoints. agentgateway's routes, rendered by agent-platform, send them to the gateway.
 
 | Path | What |
 |---|---|
-| `/.well-known/agent-card.json` | Public Agent Card: the `/a2a` interface and one security scheme per trusted issuer, any one of which is enough. Needs no token. |
-| `/a2a` | A2A JSON-RPC. Every request needs `Authorization: Bearer <platform token>`. The body is read only after the token is verified: a request without a valid token gets 401 with its body unread. A body larger than `a2aServer.maxBodyBytes` (2 MiB by default) is then refused with 413 before it is read as JSON. The authenticated extended card lists one interface per agent the caller may use. |
+| `GET /.well-known/agent-card.json` | Public server card: the `/a2a` interface and one security scheme per trusted issuer, any one of which is enough. Needs no token. |
+| `POST /a2a/<organization>/<agent>` | A2A JSON-RPC for one agent. A request's `tenant`, when set, must be `<organization>/<agent>`; another is refused with `-32602` (invalid params). |
+| `GET /a2a/<organization>/<agent>/.well-known/agent-card.json` | The agent's own Agent Card (see [Agent Card](#agent-card)). |
+| `POST /a2a` | A2A JSON-RPC for every agent, each addressed by its `tenant`. `GetExtendedAgentCard` with that tenant returns the agent's card. There is no tenantless extended card or agent directory. |
+
+Every path under `/a2a` needs `Authorization: Bearer <platform token>`. The body is read
+only after the token is verified: a request without a valid token gets 401 with its body
+unread. A body larger than `a2aServer.maxBodyBytes` (2 MiB by default) is then refused
+with 413 before it is read as JSON.
 
 Every call must send `A2A-Version: 1.0`: a call without it is an A2A 0.3 call (A2A 1.0
 section 3.6.2) and is refused with `-32009` (version not supported).
 
-An agent is addressed by the A2A `tenant` as `<organization>/<agent>`. Only agents of an
-organization are offered; an unknown or unoffered tenant is refused with the same error.
+An agent is addressed as `<organization>/<agent>`, by its endpoint's path or by the A2A
+`tenant`. Only agents of an organization are offered; an unknown or unoffered agent is
+refused with the same error.
 A message without a context id starts a platform Session, and the Session id is the
 context id of every later message.
 
@@ -63,7 +71,9 @@ gRPC response headers to its client interceptors or write activation acknowledge
 from its JSON-RPC server. The gateway therefore returns no `A2A-Extensions` response
 header and does not offer complete extension negotiation
 ([a2aproject/a2a-go#643](https://github.com/a2aproject/a2a-go/issues/643)). The public
-Agent Card declares no extensions.
+root card declares no extensions. Authenticated per-agent cards retain the runtime's
+extension declarations; the activation acknowledgement limitation applies to those
+endpoints too.
 
 ## How a request is authenticated
 
@@ -160,6 +170,36 @@ Who can complete a step:
   Approvals for application identities are not supported.
 
 ## Agent Card
+
+Each agent has its own Agent Card at `/a2a/<organization>/<agent>/.well-known/agent-card.json`.
+A2A 1.0.1 has one well-known card per host (section 8.2), so these are pre-configured
+card URLs (section 8): an application is given the URL of the agent it uses. Reading one
+needs the platform token, like the endpoint itself. An agent the caller may not use and
+an agent that does not exist both answer 404.
+
+The gateway reads the agent's card from the kagent controller as the caller and keeps
+its `name`, `description`, `version`, `skills`, default input and output modes and
+extensions. Streaming follows the agent's capabilities; the gateway provides an extended
+card and no push notification configuration. It replaces the interfaces with the
+agent's JSON-RPC endpoint on the gateway, `<publicUrl>/a2a/<organization>/<agent>`, and
+the security schemes with the gateway's (below), and drops the controller's signatures,
+provider and icon: the card names nothing behind the gateway. A card is reused for one
+minute; whether the caller may use the agent is checked on every read. An agent without
+A2A skills ([kagent-dev/kagent#3804](https://github.com/kagent-dev/kagent/issues/3804)) gets
+one skill with its name and description, tagged `agent`, since a card needs at least one.
+The fallback skill ID is `agent`, independent of the internal namespace.
+
+The public root card describes the shared routing endpoint with one skill, running the
+agent selected by the tenant. It offers no directory or extended card. Applications use a
+configured per-agent card URL. On an agent's
+endpoint, `GetExtendedAgentCard` returns that same agent's card after checking access again.
+The shared `/a2a` endpoint also accepts `GetExtendedAgentCard` when its request supplies
+the agent's tenant. Each card's `supportedInterfaces` describes only that agent's
+transport, as defined by A2A 1.0.1 section 4.4.6.
+
+Card GETs use agentgateway's static backend, which preserves the configured public URLs
+and error statuses. JSON-RPC POSTs use its A2A backend for protocol metrics and method
+logging.
 
 The public card has one security scheme per entry of `a2aServer.issuers`, named by the
 entry's `name`, and one security requirement per scheme: a token of any one issuer is
