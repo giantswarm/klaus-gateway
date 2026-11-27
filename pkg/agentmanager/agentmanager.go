@@ -136,6 +136,9 @@ func (s *Starter) StartSession(ctx context.Context, bearer string, target pkga2a
 	if res.SignIn != nil {
 		return pkga2a.Session{}, &pkga2a.ConnectRequiredError{SignIn: res.SignIn}
 	}
+	if callerUnauthenticated(res) {
+		return pkga2a.Session{}, &pkga2a.TokenRefusedError{Reason: res.Text}
+	}
 	if !res.Dispatched {
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: muster did not run %s: %s", ref, s.tool, res.Text)
 	}
@@ -216,6 +219,8 @@ func (s *Starter) organizationOf(ctx context.Context, bearer, namespace string) 
 		return "", nil
 	case res.SignIn != nil:
 		return "", &pkga2a.ConnectRequiredError{SignIn: res.SignIn}
+	case callerUnauthenticated(res):
+		return "", &pkga2a.TokenRefusedError{Reason: res.Text}
 	case !res.Dispatched || res.IsError:
 		s.logger.Warn("agentmanager: organizations unavailable, starting by namespace", "namespace", namespace, "answer", res.Text)
 		return "", nil
@@ -240,6 +245,16 @@ func (s *Starter) organizationOf(ctx context.Context, bearer, namespace string) 
 		return name, nil
 	}
 	return "", nil
+}
+
+func callerUnauthenticated(result muster.Result) bool {
+	if result.Dispatched || !result.IsError {
+		return false
+	}
+	var refusal struct {
+		Status string `json:"status"`
+	}
+	return json.Unmarshal(result.Structured, &refusal) == nil && refusal.Status == "unauthenticated"
 }
 
 // tokenRefused reports whether muster refused the caller's token.

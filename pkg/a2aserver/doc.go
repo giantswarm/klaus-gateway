@@ -2,12 +2,12 @@
 // clients, such as an application's backend acting for its own users. An A2A
 // client never reaches the agent runtime behind the gateway.
 //
-// The A2A client authenticates with an OAuth 2.0 bearer token (RFC 6750)
-// that one of the trusted issuers issued for that issuer's audience. The
-// gateway picks the issuer by the token's iss, verifies the token with that
-// issuer alone, exchanges it at the installation's identity provider for a
-// token meant for the platform (RFC 8693) and acts with that token only: the
-// A2A client's token is never sent on.
+// The A2A client authenticates at agentgateway with an OAuth 2.0 bearer token
+// (RFC 6750) that one of the trusted issuers issued for that issuer's
+// audience. agentgateway verifies it and exchanges it at the installation's
+// identity provider for a platform token (RFC 8693); the A2A client's token
+// never reaches the gateway. The gateway verifies the platform token
+// (PlatformVerifier) and acts with it unchanged.
 //
 // The A2A tenant names the agent as <organization>/<agent>. A message without a
 // context id starts a platform Session through agent-manager; the Session id

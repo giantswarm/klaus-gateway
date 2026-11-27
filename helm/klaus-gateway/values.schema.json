@@ -43,29 +43,11 @@
                 "caSecret": {
                     "type": "string"
                 },
+                "caSecretKey": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
-                },
-                "exchange": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "audiences": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        },
-                        "clientId": {
-                            "type": "string"
-                        },
-                        "existingSecret": {
-                            "type": "string"
-                        },
-                        "tokenUrl": {
-                            "type": "string"
-                        }
-                    }
                 },
                 "issuers": {
                     "type": "array",
@@ -74,11 +56,29 @@
                         "required": [
                             "name",
                             "issuer",
-                            "jwksUrl",
-                            "audience",
-                            "allowedClients"
+                            "audience"
                         ],
-                        "additionalProperties": true
+                        "additionalProperties": false,
+                        "properties": {
+                            "audience": {
+                                "type": "string"
+                            },
+                            "issuer": {
+                                "type": "string"
+                            },
+                            "metadataUrl": {
+                                "type": "string"
+                            },
+                            "name": {
+                                "type": "string"
+                            },
+                            "openIdConnectUrl": {
+                                "type": "string"
+                            },
+                            "tokenUrl": {
+                                "type": "string"
+                            }
+                        }
                     }
                 },
                 "maxBodyBytes": {
@@ -89,6 +89,33 @@
                 },
                 "publicUrl": {
                     "type": "string"
+                },
+                "token": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "allowPrivateIpJwksHosts": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "allowedClients": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "audience": {
+                            "type": "string"
+                        },
+                        "issuer": {
+                            "type": "string"
+                        },
+                        "jwksUrl": {
+                            "type": "string"
+                        }
+                    }
                 }
             }
         },

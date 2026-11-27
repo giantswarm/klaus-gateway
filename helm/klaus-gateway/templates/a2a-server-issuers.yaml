@@ -1,5 +1,5 @@
 {{- if .Values.a2aServer.enabled }}
-# The issuers the A2A server trusts, read by --a2a-server-issuers-file.
+# The issuers the A2A server's Agent Card declares, read by --a2a-server-issuers-file.
 apiVersion: v1
 kind: ConfigMap
 metadata:

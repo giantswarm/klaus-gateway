@@ -75,7 +75,7 @@ pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, Agent rost
 pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
 pkg/channels/           Gateway interface (turns, resumes, sessions, thread records) + its Facade
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + Socket Mode
-pkg/a2aserver/          A2A server for outside A2A clients (/a2a): trusted issuers, RFC 8693 exchange, request-scoped MCP metadata forwarding
+pkg/a2aserver/          A2A server for outside A2A clients (/a2a) behind agentgateway's token check and exchange: platform token check, Agent Card, request-scoped MCP metadata forwarding
 pkg/routing/store/      Store interface + three backends (memory, valkey, bolt); thread state + team reviews, decisions and conversations
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/auth/satoken/       TokenReview verifier of the team-review endpoint

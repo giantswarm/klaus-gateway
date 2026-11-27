@@ -128,8 +128,8 @@ spec:
         {{- if not .Values.a2a.enabled }}
         {{- fail "a2aServer.enabled requires a2a.enabled: the channel runs turns through the kagent client" }}
         {{- end }}
-        {{- if not .Values.a2aServer.exchange.audiences }}
-        {{- fail "a2aServer.exchange.audiences is required with a2aServer.enabled" }}
+        {{- if not .Values.a2aServer.token.allowedClients }}
+        {{- fail "a2aServer.token.allowedClients is required with a2aServer.enabled" }}
         {{- end }}
         {{- if not .Values.a2aServer.issuers }}
         {{- fail "a2aServer.issuers needs at least one issuer with a2aServer.enabled" }}
@@ -138,10 +138,13 @@ spec:
         - --a2a-server-enabled
         - --a2a-server-public-url={{ required "a2aServer.publicUrl is required with a2aServer.enabled" .publicUrl }}
         - --a2a-server-issuers-file=/etc/klaus-gateway/a2a-server-issuers/issuers.yaml
-        - --a2a-server-exchange-token-url={{ required "a2aServer.exchange.tokenUrl is required with a2aServer.enabled" .exchange.tokenUrl }}
-        - --a2a-server-exchange-client-id={{ required "a2aServer.exchange.clientId is required with a2aServer.enabled" .exchange.clientId }}
-        - --a2a-server-exchange-client-secret-file=/etc/klaus-gateway/a2a-server/client-secret
-        - --a2a-server-exchange-audiences={{ join "," .exchange.audiences }}
+        - --a2a-server-token-issuer={{ required "a2aServer.token.issuer is required with a2aServer.enabled" .token.issuer }}
+        - --a2a-server-token-jwks-url={{ required "a2aServer.token.jwksUrl is required with a2aServer.enabled" .token.jwksUrl }}
+        - --a2a-server-token-audience={{ required "a2aServer.token.audience is required with a2aServer.enabled" .token.audience }}
+        - --a2a-server-token-allowed-clients={{ join "," .token.allowedClients }}
+        {{- with .token.allowPrivateIpJwksHosts }}
+        - --a2a-server-token-allow-private-ip-jwks-hosts={{ join "," . }}
+        {{- end }}
         - --a2a-server-max-body-bytes={{ int64 .maxBodyBytes }}
         - --a2a-server-min-token-lifetime={{ .minTokenLifetime }}
         {{- if .caSecret }}
@@ -333,9 +336,6 @@ spec:
           readOnly: true
         {{- end }}
         {{- if .Values.a2aServer.enabled }}
-        - name: a2a-server-exchange-client
-          mountPath: /etc/klaus-gateway/a2a-server
-          readOnly: true
         - name: a2a-server-issuers
           mountPath: /etc/klaus-gateway/a2a-server-issuers
           readOnly: true
@@ -375,12 +375,6 @@ spec:
             path: ca.crt
       {{- end }}
       {{- if .Values.a2aServer.enabled }}
-      - name: a2a-server-exchange-client
-        secret:
-          secretName: {{ required "a2aServer.exchange.existingSecret is required with a2aServer.enabled" .Values.a2aServer.exchange.existingSecret }}
-          items:
-          - key: client-secret
-            path: client-secret
       - name: a2a-server-issuers
         configMap:
           name: {{ include "resource.default.name" . }}-a2a-server-issuers
@@ -389,7 +383,7 @@ spec:
         secret:
           secretName: {{ .Values.a2aServer.caSecret }}
           items:
-          - key: ca.crt
+          - key: {{ .Values.a2aServer.caSecretKey | default "ca.crt" }}
             path: ca.crt
       {{- end }}
       {{- end }}

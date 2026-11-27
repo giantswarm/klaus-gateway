@@ -3,8 +3,9 @@
 The gateway's A2A server lets an outside A2A client, such as an application's backend
 acting for its own users, talk to the platform's agents over
 [A2A v1.0](https://a2a-protocol.org/v1.0.1/specification/) JSON-RPC. The A2A client never
-reaches kagent: the gateway authenticates it, exchanges its token for a platform token and
-runs the turn through the same kagent client as the Slack channel.
+reaches kagent: it reaches the gateway through agentgateway, which checks its token and
+exchanges it for a platform token. The gateway checks the platform token and runs the
+turn with it through the same kagent client as the Slack channel.
 
 It is off by default. It needs `a2a.enabled` and `obo.musterUrl` (a Session is started
 through agent-manager, called through muster). `obo.enabled` is not needed.
@@ -12,12 +13,12 @@ through agent-manager, called through muster). `obo.enabled` is not needed.
 ## Endpoints
 
 Both are served on the gateway's public listener (`server.port`), next to the Slack
-endpoints. The installation's ingress or agentgateway route must send them to the gateway.
+endpoints. agentgateway's routes, rendered by agent-platform, send them to the gateway.
 
 | Path | What |
 |---|---|
 | `/.well-known/agent-card.json` | Public Agent Card: the `/a2a` interface and one security scheme per trusted issuer, any one of which is enough. Needs no token. |
-| `/a2a` | A2A JSON-RPC. Every request needs `Authorization: Bearer <token>`. The body is read only after the token is verified: a request without a valid token gets 401 with its body unread. A body larger than `a2aServer.maxBodyBytes` (2 MiB by default) is then refused with 413 before it is read as JSON or the token is exchanged. The authenticated extended card lists one interface per agent the caller may use. |
+| `/a2a` | A2A JSON-RPC. Every request needs `Authorization: Bearer <platform token>`. The body is read only after the token is verified: a request without a valid token gets 401 with its body unread. A body larger than `a2aServer.maxBodyBytes` (2 MiB by default) is then refused with 413 before it is read as JSON. The authenticated extended card lists one interface per agent the caller may use. |
 
 Every call must send `A2A-Version: 1.0`: a call without it is an A2A 0.3 call (A2A 1.0
 section 3.6.2) and is refused with `-32009` (version not supported).
@@ -50,61 +51,68 @@ See the [metadata contract](a2a-metadata-contract.md) for top-level key validati
 
 ## How a request is authenticated
 
-The gateway trusts the issuers listed in `a2aServer.issuers`: the installation's own Dex, for
-applications that get a Dex token, and any outside identity provider whose tokens Dex
-can exchange through a connector. The exchange itself always runs at the installation's
-Dex (`a2aServer.exchange.tokenUrl`).
+Two components check tokens. agentgateway admits the A2A client's token and exchanges it;
+the gateway admits only the platform token that exchange issued.
+
+**At agentgateway** (agent-platform renders one `AgentgatewayPolicy` on the `/a2a` route):
 
 1. The application gets a token from one of the trusted issuers for that issuer's
-   `audience`. From Dex, for example with `client_credentials` and the scope
-   `audience:server:client_id:<audience>`.
-2. The gateway reads the token's `iss` without trusting it and picks the issuer entry
-   with exactly that `issuer`. A token of any other issuer is refused (401
-   `invalid_token`).
-3. With that entry alone, the gateway checks the token's signature (against the entry's
-   `jwksUrl`, with a pinned asymmetric algorithm), issuer, `aud` (must contain the entry's
-   `audience` exactly), expiry, not-before and issued-at, with mcp-oauth's OIDC token validation.
-   For ID tokens, the requesting client is `azp`, or the sole `aud` entry when `azp` is absent.
-   For access tokens, it is `client_id` (RFC 9068), with `azp` supported for providers that
-   supply that claim alone. Conflicting `client_id` and `azp` values are refused for access tokens,
-   and the resource audience is never used as their client identity. Access-token support uses
-   these JWT conventions; it does not enforce the complete RFC 9068 profile's `typ`, `jti`
-   and other required claims. A token requested by `a2aServer.exchange.clientId` is a platform
-   token and is refused, whichever issuer signed it. Only tokens of the entry's `allowedClients`
-   are accepted; every entry must list at least one. It does not check groups.
-4. The gateway exchanges the token at `a2aServer.exchange.tokenUrl` (RFC 8693), authenticated
-   as `a2aServer.exchange.clientId`, through the entry's `connectorId`, for the audiences in
-   `a2aServer.exchange.audiences`. The subject token type is the entry's `subjectTokenType`
-   (`urn:ietf:params:oauth:token-type:id_token` by default, or
-   `urn:ietf:params:oauth:token-type:access_token`); the requested token type is always
-   `urn:ietf:params:oauth:token-type:id_token`. The exchange endpoint must use HTTPS without
-   userinfo or a fragment; redirects are refused, and each exchange has a ten-second deadline.
-   This Dex exchange profile requires an issued ID token with `token_type=Bearer`
-   (case-insensitive). Other usage types, including `N_A` and `DPoP`, are unsupported.
-5. The exchanged token must have at least `a2aServer.minTokenLifetime` (25 minutes by
-   default) left: the agent runtime keeps it for the whole turn and cannot renew it. Its
-   lifetime is the earlier of the exchange response's `expires_in` (RFC 8693 section 2.2.1)
-   and the token's `exp`. A shorter or unknown lifetime is refused with 502 and logged as
-   an error. This is an admission floor, not a turn timeout or token renewal: a turn
-   that outlasts the remaining token lifetime can still fail.
-6. The turn runs with the exchanged token only. The application's token is never sent
-   on.
+   `audience`: the installation's own Dex (for example with `client_credentials` and the
+   scope `audience:server:client_id:<audience>`), or an outside identity provider that
+   Dex can exchange tokens of through a connector.
+2. JWT authentication, mode `Strict`, with one provider per trusted issuer. A provider
+   checks the signature against its issuer's key set, the issuer, the expiry and an
+   exact `aud`. A token of any other issuer is refused with 401.
+3. An authorization rule checks the requesting client per issuer: `azp`, or the sole
+   `aud` entry when `azp` is absent, must be one of that issuer's allowed clients.
+4. Backend auth `oauthTokenExchange` exchanges the token at the installation's Dex
+   (RFC 8693), authenticated as the exchange client (`klaus-gateway-exchange` below). The
+   connector is picked by the token's `iss` (`additionalParams.connector_id`, a CEL
+   expression), the audiences are Dex scopes `audience:server:client_id:<aud>`, and the
+   requested token type is `urn:ietf:params:oauth:token-type:id_token`. The subject token
+   type is one value for every issuer. The exchange's token cache is off
+   (`cache.inMemory.maxEntries: 0`): agentgateway reuses a cached token until shortly
+   before it expires, which does not leave a turn its minimum lifetime.
+5. The exchanged token replaces the application's token. The application's token is never
+   sent to the gateway.
 
-The audience check in step 3 is the gateway's own: Dex does not check the subject
-token's audience in an exchange (dexidp/dex#4397). The exchanged token's expiry is
-Dex's, not the subject token's.
+**At the gateway** (`a2aServer.token`):
 
-Every request is exchanged on its own; exchanged tokens are not kept. A client that
-polls `GetTask` causes one exchange per poll.
+6. With mcp-oauth's OIDC token validation, the gateway checks the platform token's
+   signature (against `a2aServer.token.jwksUrl`, with a pinned asymmetric algorithm),
+   issuer (`a2aServer.token.issuer`, exactly), `aud` (must contain
+   `a2aServer.token.audience` exactly), expiry, not-before and issued-at. The requesting
+   client is `azp`, or the sole `aud` entry when `azp` is absent, and must be one of
+   `a2aServer.token.allowedClients`: the exchange client. Any other token, an
+   application's token sent past agentgateway included, is refused with 401.
+7. The token must have at least `a2aServer.minTokenLifetime` (25 minutes by default) left:
+   the agent runtime keeps it for the whole turn and cannot renew it. A token with less
+   left, or without `exp`, is refused with 502 and logged as an error. This is an
+   admission floor, not a turn timeout or token renewal: a turn that outlasts the
+   remaining lifetime can still fail.
+8. The turn runs with the platform token, unchanged.
+
+Dex does not check the subject token's audience in an exchange (dexidp/dex#4397), so
+agentgateway's audience check in step 2 is what enforces it. Every request is exchanged on
+its own: a client that polls `GetTask` causes one exchange per poll.
 
 The exchange is where the identity provider decides who may use the channel, so its
 configuration below is part of the channel's security, not an option.
+
+muster runs a call only as a token the Kubernetes API accepts: it must carry the
+audience the API server checks (`kubernetes` on Giant Swarm installations). The exchange
+must request that audience next to `a2aServer.token.audience`. Without it, muster answers
+every call with its re-login error, and `SendMessage` and `SendStreamingMessage` answer
+with the A2A error `UNAUTHENTICATED`. Its `google.rpc.ErrorInfo` detail carries muster's
+words in `metadata.reason`. muster identifies this refusal with its MCP tool
+result's `structuredContent.status: unauthenticated`; the gateway does not parse
+the text. A new application token does not help: the exchange's audiences must be fixed.
 
 ## Sign-ins and tool approvals
 
 muster can ask the person behind a token to act before a tool runs: sign in to a
 connector, or approve the call (tool approval, giantswarm/muster#1912). The person is
-whoever the exchanged token names, and only that person can complete the step, on
+whoever the platform token names, and only that person can complete the step, on
 muster's page.
 
 - **Before the agent starts.** When muster asks for a step on agent-manager's
@@ -136,8 +144,10 @@ Who can complete a step:
 
 ## Agent Card
 
-The public card has one security scheme per issuer, named by the entry's `name`, and one
-security requirement per scheme: a token of any one issuer is enough.
+The public card has one security scheme per entry of `a2aServer.issuers`, named by the
+entry's `name`, and one security requirement per scheme: a token of any one issuer is
+enough. The entries name the issuers only; list the same issuers in agentgateway's JWT
+providers, which check their tokens.
 
 | Entry sets | Scheme |
 |---|---|
@@ -155,20 +165,19 @@ Dex's token exchange through an `oidc` connector checks the subject token's sign
 issuer and expiry, but not its audience (dexidp/dex#4397, fix proposed in
 dexidp/dex#5165). Dex also adds the requesting client to the `aud` of every
 cross-client token (dexidp/dex#1087). With Dex as it is today, all of the following are
-required for the issuer entry of the installation's own Dex. An outside issuer's entry
-needs items 2, 4, 5 and 7, applied to its own connector, and the connector described
-under [Outside issuers](#outside-issuers).
+required for the installation's own Dex as a trusted issuer. An outside issuer needs
+items 2, 4, 5 and 7, applied to its own connector, and the connector described under
+[Outside issuers](#outside-issuers).
 
-1. **A separate exchange client.** `a2aServer.exchange.clientId` must not be the Dex entry's
-   `audience`. Register one client as the audience applications request (`klaus-gateway-app` below)
-   and another that the gateway authenticates as for the exchange
-   (`klaus-gateway-exchange`). Otherwise every exchanged token also carries
-   `aud: klaus-gateway-app`. The gateway refuses it by its `azp`, but the self connector
-   would still accept it as a subject token from any client allowed to use it.
-2. **Each platform audience trusts the exchange client.** Every client in
-   `a2aServer.exchange.audiences` lists the exchange client in `trustedPeers`, not the
-   audience client. The audience client lists the application clients in
-   `trustedPeers`.
+1. **A separate exchange client.** The exchange client agentgateway authenticates as
+   (`klaus-gateway-exchange` below) must not be the audience applications request
+   (`klaus-gateway-app` below). Otherwise every exchanged token also carries
+   `aud: klaus-gateway-app`, and the self connector would accept it as a subject token
+   from any client allowed to use it.
+2. **Each platform audience trusts the exchange client.** Every audience agentgateway's
+   exchange requests (`a2aServer.token.audience` among them) lists the exchange client in
+   `trustedPeers`, not the application audience client. The application audience client
+   lists the application clients in `trustedPeers`.
 3. **`allowedGroups` on the self connector.** The `oidc` connector that points at Dex
    itself accepts only tokens whose `groups` contain a group that application clients
    alone get (through `clientCredentialsClaims`). No static user, other connector or
@@ -183,18 +192,20 @@ under [Outside issuers](#outside-issuers).
 6. **`client_credentials` in `oauth2.grantTypes`.** Dex v2.46 does not enable it by
    default. It is installation-wide: every confidential client can then use it.
 7. **Token lifetime.** `expiry.idTokens` must be longer than `a2aServer.minTokenLifetime`,
-   or every request is refused (step 5). Keep it no longer than that needs: an exchanged
+   or every request is refused (step 7). Keep it no longer than that needs: an exchanged
    token can itself be exchanged again while it is valid (dexidp/dex#3546).
 
 When dexidp/dex#5165 is released, also set `validateTokenExchangeAudience: true` with
-`clientID: <audience>` (the Dex entry's) on the self connector. Together with item 1 it refuses any
-subject token not issued for the application audience, exchanged tokens included.
+`clientID: <audience>` (the application audience) on the self connector. Together with
+item 1 it refuses any subject token not issued for the application audience, exchanged
+tokens included.
 
-Each entry's `allowedClients` (the application clients, `example-app` below) refuses
-tokens other clients request for the application audience; items 1 and 3 still keep
-the self connector from exchanging them.
+agentgateway's allowed clients per issuer (the application clients, `example-app` below)
+refuse tokens other clients request for the application audience; items 1 and 3 still
+keep the self connector from exchanging them.
 
-Example, with one application client `example-app` (secrets omitted):
+Example, with one application client `example-app` and the platform token's audience
+`klaus-gateway` (secrets omitted):
 
 ```yaml
 oauth2:
@@ -234,8 +245,11 @@ staticClients:
     trustedPeers: [example-app]
     allowedConnectors: [dex-self]
   - id: klaus-gateway-exchange
-    name: klaus-gateway token exchange
+    name: klaus-gateway token exchange (agentgateway)
     allowedConnectors: [dex-self]
+  - id: klaus-gateway
+    trustedPeers: [klaus-gateway-exchange]
+    allowedConnectors: [github]
   - id: kagent
     trustedPeers: [klaus-gateway-exchange]
     allowedConnectors: [github]
@@ -273,19 +287,19 @@ staticClients:
     allowedConnectors: [dex-self, example-idp]
 ```
 
-An issuer that sends access tokens sets
-`subjectTokenType: urn:ietf:params:oauth:token-type:access_token` on its entry.
-Dex's `oidc` connector verifies only ID tokens itself: it exchanges an access token by
-calling the issuer's userinfo endpoint with it (dex `connector/oidc/oidc.go:612-625`),
-so the connector needs `getUserInfo: true` and the issuer a userinfo endpoint that
-answers for those access tokens. The gateway still checks the access token's
-signature, issuer, audience, expiry and client itself (step 3), so it must be a JWT.
+agentgateway names one subject token type for every issuer. Dex's `oidc` connector
+verifies only ID tokens itself: it exchanges an access token by calling the issuer's
+userinfo endpoint with it (dex `connector/oidc/oidc.go:612-625`), so an issuer that sends
+access tokens needs the connector's `getUserInfo: true`, a userinfo endpoint that answers
+for those access tokens, and every other issuer sending access tokens too. agentgateway
+still checks the token's signature, issuer, audience, expiry and client itself (steps 2
+and 3), so it must be a JWT.
 
 The connector trusts that issuer only, so a Dex token cannot be exchanged through it,
 and the issuer's tokens cannot be exchanged through `dex-self`. The issuer must publish
-its key set where the gateway reaches it (`jwksUrl`), and Dex must reach its discovery
-document. The claim Dex maps to the exchanged token's `email` must be a stable
-identifier the issuer sets, not a display name.
+its key set where agentgateway reaches it, and Dex must reach its discovery document. The
+claim Dex maps to the exchanged token's `email` must be a stable identifier the issuer
+sets, not a display name.
 
 ## Chart values
 
@@ -300,61 +314,54 @@ obo:
 a2aServer:
   enabled: true
   publicUrl: https://klaus-gateway.example.com
+  # The issuers the Agent Card declares; agentgateway checks their tokens.
   issuers:
     # The installation's Dex, for A2A clients with a Dex client.
     - name: dex
       issuer: https://dex.example.com
-      jwksUrl: https://dex.example.com/keys
       tokenUrl: https://dex.example.com/token
       audience: klaus-gateway-app
-      allowedClients: [example-app]
-      connectorId: dex-self
-    # An application's own token service, exchanged through its connector.
+    # An application's own token service.
     - name: example-idp
       issuer: https://idp.example.org
-      jwksUrl: https://idp.example.org/keys
       audience: klaus-gateway-outside
-      allowedClients: [example-backend]
-      connectorId: example-idp
-  exchange:
-    tokenUrl: https://dex.example.com/token
-    clientId: klaus-gateway-exchange
-    # Secret in the release namespace, key client-secret.
-    existingSecret: klaus-gateway-exchange-client
-    # kagent checks its own audience; muster and the Kubernetes API server
-    # check dex-k8s-authenticator.
-    audiences: [kagent, dex-k8s-authenticator]
+  # The platform token agentgateway's exchange issues.
+  token:
+    issuer: https://dex.example.com
+    jwksUrl: https://dex.example.com/keys
+    audience: klaus-gateway
+    allowedClients: [klaus-gateway-exchange]
   # Largest /a2a request body, 2 MiB by default.
   maxBodyBytes: 2097152
-  # Least lifetime an exchanged token must have left; Dex's expiry.idTokens
+  # Least lifetime the platform token must have left; Dex's expiry.idTokens
   # must be longer.
   minTokenLifetime: 25m
-  # Secret with key ca.crt, when the exchange's token endpoint is not publicly
-  # trusted. An issuer entry names it as caFile: /etc/klaus-gateway/a2a-server-ca/ca.crt.
+  # Secret with key ca.crt, when token.jwksUrl is not publicly trusted.
   caSecret: ""
 ```
 
-The gateway fetches each `jwksUrl` with mcp-oauth's SSRF-safe client: the URL must use
-`https`, and a host that resolves to a private, loopback or link-local address is refused.
-An identity provider reached inside the cluster lists its hostname in the entry's
-`allowPrivateIpJwksHosts` (for example `dex.dex.svc.cluster.local`), which admits private
-addresses (RFC 1918, RFC 4193) for that host only; loopback and link-local stay refused.
+The gateway fetches `a2aServer.token.jwksUrl` with mcp-oauth's SSRF-safe client: the URL
+must use `https`, and a host that resolves to a private, loopback or link-local address
+is refused. An identity provider reached inside the cluster lists its hostname in
+`a2aServer.token.allowPrivateIpJwksHosts` (for example `dex.dex.svc.cluster.local`), which
+admits private addresses (RFC 1918, RFC 4193) for that host only; loopback and link-local
+stay refused.
 
-The chart renders `a2aServer.issuers` into the ConfigMap `<release>-a2a-server-issuers`, read with
-`--a2a-server-issuers-file`; a change to it rolls the pods. The gateway refuses to start on an
-unknown field in an entry, a missing `name`, `issuer`, `jwksUrl`, `audience` or `allowedClients`, or a
-`name` or `issuer` used twice. The render fails when `a2aServer.enabled` is set without
-`a2a.enabled`, `publicUrl`, an issuer, `exchange.tokenUrl`, `exchange.clientId`,
-`exchange.existingSecret`, `exchange.audiences` or `obo.musterUrl`. The chart never
-renders the exchange client's secret.
+The chart renders `a2aServer.issuers` into the ConfigMap `<release>-a2a-server-issuers`,
+read with `--a2a-server-issuers-file`; a change to it rolls the pods. The values schema and
+the gateway refuse an unknown field in an entry, a missing `name`, `issuer` or `audience`,
+or a `name` or `issuer` used twice. The render fails when `a2aServer.enabled` is set
+without `a2a.enabled`, `publicUrl`, an issuer, `token.issuer`, `token.jwksUrl`,
+`token.audience`, `token.allowedClients` or `obo.musterUrl`.
 
 ## Flags
 
 | Flag | Meaning |
 |---|---|
-| `--a2a-server-issuers-file` | YAML list of issuer entries, the fields of `a2aServer.issuers`. |
-| `--a2a-server-exchange-token-url` | Token endpoint the exchange runs at. |
-| `--a2a-server-exchange-client-id`, `--a2a-server-exchange-client-secret-file`, `--a2a-server-exchange-audiences` | The exchange client and the audiences it asks for. |
-| `--a2a-server-ca-file` | CA bundle for the exchange's token endpoint. |
+| `--a2a-server-issuers-file` | YAML list of the issuers the Agent Card declares, the fields of `a2aServer.issuers`. |
+| `--a2a-server-token-issuer`, `--a2a-server-token-jwks-url`, `--a2a-server-token-audience` | The platform token's issuer, its HTTPS key set and the audience the token must carry. |
+| `--a2a-server-token-allowed-clients` | Comma-separated clients whose platform tokens are accepted: agentgateway's exchange client. |
+| `--a2a-server-token-allow-private-ip-jwks-hosts` | Comma-separated hostnames whose key set URL may resolve to a private address. |
+| `--a2a-server-ca-file` | CA bundle for the platform token's key set. |
 | `--a2a-server-max-body-bytes` | Largest `/a2a` request body; 2 MiB by default. |
-| `--a2a-server-min-token-lifetime` | Least lifetime an exchanged token must have left; 25m by default, at least 1m. |
+| `--a2a-server-min-token-lifetime` | Least lifetime the platform token must have left; 25m by default, at least 1m. |

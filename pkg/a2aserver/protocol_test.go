@@ -41,7 +41,7 @@ func TestSendUsesNativeTaskExecution(t *testing.T) {
 	for _, immediately := range []bool{false, true} {
 		t.Run(fmt.Sprint(immediately), func(t *testing.T) {
 			agents := &protocolAgents{task: &a2a.Task{ID: "task-1", ContextID: newSessionID, Status: a2a.TaskStatus{State: a2a.TaskStateSubmitted}}}
-			_, card := serve(t, agents, staticExchanger{})
+			_, card := serve(t, agents)
 			configuration := &a2a.SendMessageConfig{ReturnImmediately: immediately, HistoryLength: new(0), AcceptedOutputModes: []string{"text/plain"}}
 			result, err := client(t, card, clientToken).SendMessage(t.Context(), &a2a.SendMessageRequest{
 				Tenant: tenant, Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Config: configuration,
@@ -64,7 +64,7 @@ func TestHistoryLimitsOnEveryTaskResponse(t *testing.T) {
 					a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("three")),
 				}
 				agents := &protocolAgents{task: &a2a.Task{ID: "task-1", ContextID: newSessionID, History: history}}
-				_, card := serve(t, agents, staticExchanger{})
+				_, card := serve(t, agents)
 				caller := client(t, card, clientToken)
 				request := &a2a.SendMessageRequest{Tenant: tenant, Message: a2a.NewMessage(a2a.MessageRoleUser), Config: &a2a.SendMessageConfig{HistoryLength: limit}}
 				var task *a2a.Task
@@ -108,7 +108,7 @@ func TestRecognizedErrorsKeepCodesAndHideBackendText(t *testing.T) {
 	} {
 		t.Run(sentinel.Error(), func(t *testing.T) {
 			agents := &protocolAgents{refusal: fmt.Errorf("%w: private backend details", sentinel)}
-			_, card := serve(t, agents, staticExchanger{})
+			_, card := serve(t, agents)
 			_, err := client(t, card, clientToken).GetTask(t.Context(), &a2a.GetTaskRequest{Tenant: tenant, ID: "task-1"})
 			require.ErrorIs(t, err, sentinel)
 			require.NotContains(t, err.Error(), "private backend details")

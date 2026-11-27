@@ -304,6 +304,53 @@ func TestStartSession_MusterRefusingTheTokenIsNoIdentity(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 }
 
+// muster answers a call it cannot run as the caller's token (it lacks an
+// audience muster needs, or the Kubernetes API rejects it) with its re-login
+// error instead of dispatching the tool: a refused token, with muster's reason.
+func TestStartSession_MusterAuthenticationRefusalIsTokenRefused(t *testing.T) {
+	const reason = "The forwarded token cannot authenticate at the Kubernetes API."
+	structured := map[string]any{"status": "unauthenticated"}
+	starter, _ := starterAnswering(t, mustertest.Answer{Undispatched: true, IsError: true, Text: reason, Structured: structured})
+	_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
+	var refused *pkga2a.TokenRefusedError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, reason, refused.Reason)
+	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
+
+	starter, srv := starterWith(t, map[string]func(map[string]any) mustertest.Answer{
+		prefix + "list_organizations": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Undispatched: true, IsError: true, Text: reason, Structured: structured}
+		},
+		tool: func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: `{"session":{"id":"` + sessionID + `"}}`}
+		},
+	})
+	_, err = start(starter, "agents-acme", "billing", "", workspaces.Grant{})
+	require.ErrorAs(t, err, &refused)
+	require.Len(t, srv.Calls(), 1)
+}
+
+func TestStartSession_OnlyMusterAuthenticationErrorsAreTokenRefusals(t *testing.T) {
+	const reason = "A re-login is required"
+	for name, answer := range map[string]mustertest.Answer{
+		"text alone":         {Undispatched: true, IsError: true, Text: reason},
+		"backend status":     {IsError: true, Text: reason, Structured: map[string]any{"status": "unauthenticated"}},
+		"non-error status":   {Undispatched: true, Text: reason, Structured: map[string]any{"status": "unauthenticated"}},
+		"other status":       {Undispatched: true, IsError: true, Text: reason, Structured: map[string]any{"status": "auth_required"}},
+		"non-object content": {Undispatched: true, IsError: true, Text: reason, Structured: "unauthenticated"},
+		"non-string status":  {Undispatched: true, IsError: true, Text: reason, Structured: map[string]any{"status": 401}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			starter, _ := starterAnswering(t, answer)
+			_, err := start(starter, "kagent", "sre-agent", "", workspaces.Grant{})
+			require.Error(t, err)
+			var refused *pkga2a.TokenRefusedError
+			require.False(t, errors.As(err, &refused))
+			require.NotErrorIs(t, err, pkga2a.ErrNoIdentity)
+		})
+	}
+}
+
 // The sign-in muster asks for (the person is signed in but has not connected
 // a server the start goes through) is a URL elicitation: the channel's
 // Connect prompt, not the sign-in prompt.

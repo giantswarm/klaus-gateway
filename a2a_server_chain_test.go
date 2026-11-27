@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -34,18 +32,13 @@ func (noOrganizations) Shared(string) bool                         { return fals
 type noAgents struct{ a2aserver.Agents }
 
 func TestPublicChainNeverReadsAnUnauthenticatedBody(t *testing.T) {
-	secret := filepath.Join(t.TempDir(), "secret")
-	require.NoError(t, os.WriteFile(secret, []byte("s"), 0o600))
-	cfg := config.A2AServerConfig{ //nolint:gosec // G101: test endpoints and a client id, no credential
-		Enabled:                  true,
-		PublicURL:                "https://gateway.example.org",
-		Issuers:                  []config.TrustedIssuer{{Name: "dex", Issuer: "https://dex.example.org", JWKSURL: "https://dex.example.org/keys", Audience: "klaus-gateway-app", AllowedClients: []string{"app"}}},
-		ExchangeTokenURL:         "https://dex.example.org/token",
-		ExchangeClientID:         "klaus-gateway-exchange",
-		ExchangeClientSecretFile: secret,
-		ExchangeAudiences:        []string{"agent-platform"},
-		MaxBodyBytes:             config.DefaultA2AServerMaxBodyBytes,
-		MinTokenLifetime:         config.DefaultA2AServerMinTokenLifetime,
+	cfg := config.A2AServerConfig{
+		Enabled:          true,
+		PublicURL:        "https://gateway.example.org",
+		Issuers:          []config.CardIssuer{{Name: "dex", Issuer: "https://dex.example.org", Audience: "klaus-gateway-app"}},
+		Token:            config.PlatformToken{Issuer: "https://dex.example.org", JWKSURL: "https://dex.example.org/keys", Audience: "klaus-gateway", AllowedClients: []string{"klaus-gateway-exchange"}},
+		MaxBodyBytes:     config.DefaultA2AServerMaxBodyBytes,
+		MinTokenLifetime: config.DefaultA2AServerMinTokenLifetime,
 	}
 	logger := slog.New(slog.DiscardHandler)
 	public := chi.NewRouter()
