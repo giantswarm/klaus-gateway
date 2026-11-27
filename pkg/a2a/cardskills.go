@@ -24,7 +24,7 @@ func (c skillFillingClient) GetExtendedAgentCard(ctx context.Context, in *a2apb.
 		return card, err
 	}
 	card.Skills = []*a2apb.AgentSkill{{
-		Id:          in.GetTenant(),
+		Id:          "agent",
 		Name:        card.GetName(),
 		Description: card.GetDescription(),
 		Tags:        []string{agentSkillTag},

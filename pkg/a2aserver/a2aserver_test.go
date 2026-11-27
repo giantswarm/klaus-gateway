@@ -162,7 +162,7 @@ func (f *fakeAgents) AgentCard(ctx context.Context) (*a2a.AgentCard, error) {
 			{URL: "http://kagent-controller.kagent.svc:8083/agents/" + ref, ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version},
 			{URL: "grpc://kagent-controller.kagent.svc:8080", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: a2a.Version, Tenant: ref},
 		},
-		Capabilities:       a2a.AgentCapabilities{Streaming: true, Extensions: agentExtensions()},
+		Capabilities:       a2a.AgentCapabilities{Streaming: true, PushNotifications: true, ExtendedAgentCard: true, Extensions: agentExtensions()},
 		DefaultInputModes:  []string{"text/plain"},
 		DefaultOutputModes: []string{"text/plain", "application/json"},
 		Skills:             []a2a.AgentSkill{{ID: "export", Name: "Export", Description: "Exports data.", Tags: []string{"export"}}},
@@ -280,6 +280,7 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 		Capabilities        map[string]any            `json:"capabilities"`
 		SecuritySchemes     map[string]map[string]any `json:"securitySchemes"`
 		Security            []map[string]any          `json:"securityRequirements"`
+		Skills              []a2a.AgentSkill          `json:"skills"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&card))
 
@@ -304,9 +305,13 @@ func TestPublicCardOffersEachIssuer(t *testing.T) {
 	}, card.SecuritySchemes["outside"], "an issuer without a token endpoint names its discovery document")
 	require.Len(t, card.Security, 3, "any one scheme is enough")
 	require.Empty(t, card.Capabilities["extensions"])
+	require.NotEqual(t, true, card.Capabilities["extendedAgentCard"])
 	require.Len(t, card.SupportedInterfaces, 1)
 	require.Equal(t, "1.0", card.SupportedInterfaces[0]["protocolVersion"])
 	require.NotContains(t, card.SupportedInterfaces[0], "tenant", "the public card names no agent")
+	require.Equal(t, []a2a.AgentSkill{{
+		ID: "agent", Name: "Run an agent", Description: "Run the agent selected by the request's tenant.", Tags: []string{"agent"},
+	}}, card.Skills)
 }
 
 func TestConversationForwardsRawMetadataWithoutActivation(t *testing.T) {
@@ -525,15 +530,13 @@ func TestPlatformErrorsNameNothingBehindTheGateway(t *testing.T) {
 	require.NotContains(t, err.Error(), "kagent")
 }
 
-func TestExtendedCardListsTheCallersAgents(t *testing.T) {
+func TestRootCardOffersNoAgentDirectory(t *testing.T) {
 	agents := &fakeAgents{}
 	_, card := serve(t, agents)
 	c := client(t, card, clientToken)
-	extended, err := c.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
-	require.NoError(t, err)
-	require.Len(t, extended.SupportedInterfaces, 1, "unavailable agents, agents outside an organization and of an ambiguous organization are left out")
-	require.Equal(t, tenant, extended.SupportedInterfaces[0].Tenant)
-	require.Equal(t, card.SupportedInterfaces[0].URL+"/"+tenant, extended.SupportedInterfaces[0].URL, "each agent's interface is its own endpoint")
+	_, err := c.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
+	require.ErrorIs(t, err, a2a.ErrExtendedCardNotConfigured)
+	require.Zero(t, agents.cardReads)
 }
 
 func TestOversizedBodyIsRefused(t *testing.T) {

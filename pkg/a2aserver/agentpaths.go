@@ -90,9 +90,9 @@ type pathTenant struct {
 	tenant string
 }
 
-func (p *pathTenant) Before(ctx context.Context, _ *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
+func (p *pathTenant) Before(ctx context.Context, _ *a2asrv.CallContext, request *a2asrv.Request) (context.Context, any, error) {
 	var field *string
-	switch payload := req.Payload.(type) {
+	switch payload := request.Payload.(type) {
 	case *a2a.SendMessageRequest:
 		field = &payload.Tenant
 	case *a2a.GetTaskRequest:
@@ -171,12 +171,13 @@ func (h *Handler) agentCard(ctx context.Context, tenant string) (*a2a.AgentCard,
 	return card, nil
 }
 
-// publicAgentCard is own as an A2A client sees it: the agent's identity,
-// skills and capabilities (its extensions included) unchanged, its only
-// interface the agent's endpoint on this server and its security the
-// server's. Nothing names the controller, its namespace or its URLs.
+// publicAgentCard projects the agent's card onto this server's transport and
+// security. Push configuration is not served; the extended card is this card.
 func (h *Handler) publicAgentCard(own *a2a.AgentCard, tenant string) *a2a.AgentCard {
 	base := h.Card.SupportedInterfaces[0]
+	capabilities := own.Capabilities
+	capabilities.PushNotifications = false
+	capabilities.ExtendedAgentCard = true
 	return &a2a.AgentCard{
 		Name:        own.Name,
 		Description: own.Description,
@@ -184,7 +185,7 @@ func (h *Handler) publicAgentCard(own *a2a.AgentCard, tenant string) *a2a.AgentC
 		SupportedInterfaces: []*a2a.AgentInterface{{
 			URL: agentURL(base.URL, tenant), ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version,
 		}},
-		Capabilities:         own.Capabilities,
+		Capabilities:         capabilities,
 		DefaultInputModes:    own.DefaultInputModes,
 		DefaultOutputModes:   own.DefaultOutputModes,
 		Skills:               own.Skills,

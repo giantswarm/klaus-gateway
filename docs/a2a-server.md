@@ -20,7 +20,7 @@ endpoints. agentgateway's routes, rendered by agent-platform, send them to the g
 | `GET /.well-known/agent-card.json` | Public server card: the `/a2a` interface and one security scheme per trusted issuer, any one of which is enough. Needs no token. |
 | `POST /a2a/<organization>/<agent>` | A2A JSON-RPC for one agent. A request's `tenant`, when set, must be `<organization>/<agent>`; another is refused with `-32602` (invalid params). |
 | `GET /a2a/<organization>/<agent>/.well-known/agent-card.json` | The agent's own Agent Card (see [Agent Card](#agent-card)). |
-| `POST /a2a` | A2A JSON-RPC for every agent, each addressed by its `tenant`. The authenticated extended card lists one interface per agent the caller may use: its `/a2a/<organization>/<agent>` endpoint, with that tenant. |
+| `POST /a2a` | A2A JSON-RPC for every agent, each addressed by its `tenant`. `GetExtendedAgentCard` with that tenant returns the agent's card. There is no tenantless extended card or agent directory. |
 
 Every path under `/a2a` needs `Authorization: Bearer <platform token>`. The body is read
 only after the token is verified: a request without a valid token gets 401 with its body
@@ -177,17 +177,27 @@ an agent that does not exist both answer 404.
 
 The gateway reads the agent's card from the kagent controller as the caller and keeps
 its `name`, `description`, `version`, `skills`, default input and output modes and
-`capabilities`, its extensions included, unchanged. It replaces the interfaces with the
+extensions. Streaming follows the agent's capabilities; the gateway provides an extended
+card and no push notification configuration. It replaces the interfaces with the
 agent's JSON-RPC endpoint on the gateway, `<publicUrl>/a2a/<organization>/<agent>`, and
 the security schemes with the gateway's (below), and drops the controller's signatures,
 provider and icon: the card names nothing behind the gateway. A card is reused for one
 minute; whether the caller may use the agent is checked on every read. An agent without
-A2A skills gets one skill with its name and description, tagged `agent`, since a card
-needs at least one.
+A2A skills ([kagent-dev/kagent#3804](https://github.com/kagent-dev/kagent/issues/3804)) gets
+one skill with its name and description, tagged `agent`, since a card needs at least one.
+The fallback skill ID is `agent`, independent of the internal namespace.
 
-agentgateway's A2A backend rewrites a card's interface URLs from the public path the card
-was read at. The agent's endpoint is the card's own path without
-`/.well-known/agent-card.json`, so the rewrite keeps it.
+The public root card describes the shared routing endpoint with one skill, running the
+agent selected by the tenant. It offers no directory or extended card. Applications use a
+configured per-agent card URL. On an agent's
+endpoint, `GetExtendedAgentCard` returns that same agent's card after checking access again.
+The shared `/a2a` endpoint also accepts `GetExtendedAgentCard` when its request supplies
+the agent's tenant. Each card's `supportedInterfaces` describes only that agent's
+transport, as defined by A2A 1.0.1 section 4.4.6.
+
+Card GETs use agentgateway's static backend, which preserves the configured public URLs
+and error statuses. JSON-RPC POSTs use its A2A backend for protocol metrics and method
+logging.
 
 The public card has one security scheme per entry of `a2aServer.issuers`, named by the
 entry's `name`, and one security requirement per scheme: a token of any one issuer is

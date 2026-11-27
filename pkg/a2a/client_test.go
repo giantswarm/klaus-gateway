@@ -397,7 +397,8 @@ func TestClient_AgentCard_WithoutSkillsGetsOneNamedAfterTheAgent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, card.Skills, 1)
 	skill := card.Skills[0]
-	require.Equal(t, sreTenant, skill.ID)
+	require.Equal(t, "agent", skill.ID)
+	require.NotContains(t, skill.ID, "kagent")
 	require.Equal(t, "sre-agent", skill.Name)
 	require.Equal(t, "Runs the platform.", skill.Description)
 	require.Equal(t, []string{"agent"}, skill.Tags)

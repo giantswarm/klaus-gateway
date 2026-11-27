@@ -44,6 +44,12 @@ A turn that outlasts its token can still fail; the runtime does not refresh it.
 - Run muster 5.67.0-rc.18 or later to identify caller-token refusals through
   `structuredContent.status: unauthenticated`. Older versions do not supply that
   status, so the gateway cannot classify their refusal text as `UNAUTHENTICATED`.
+- Configure each application's Agent Card URL as
+  `/a2a/<organization>/<agent>/.well-known/agent-card.json`. The root card no longer
+  offers a tenantless extended card listing different agents as interfaces.
+  `/a2a` requests with an explicit tenant keep working, including `GetExtendedAgentCard`
+  for that agent. Per-agent cards advertise streaming and extended cards, with push
+  notification configuration disabled.
 
 ## 4.16.32 — sign-in links open unchanged
 

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -69,6 +68,58 @@ func TestAgentCardKeepsTheAgentsExtensions(t *testing.T) {
 	require.Equal(t, clientToken, agents.tokens[len(agents.tokens)-1], "the card is read as the caller")
 }
 
+func TestAgentCardCapabilitiesMatchTheGateway(t *testing.T) {
+	srv, _ := serve(t, &fakeAgents{})
+	status, body := getAgentCard(t, srv, agentCardPath, clientToken)
+	require.Equal(t, http.StatusOK, status)
+	card := decodeCard(t, body)
+	require.True(t, card.Capabilities.Streaming)
+	require.True(t, card.Capabilities.ExtendedAgentCard)
+	require.False(t, card.Capabilities.PushNotifications)
+}
+
+func TestAgentExtendedCardKeepsTheSameAgent(t *testing.T) {
+	srv, _ := serve(t, &fakeAgents{})
+	status, body := getAgentCard(t, srv, agentCardPath, clientToken)
+	require.Equal(t, http.StatusOK, status)
+	card := decodeCard(t, body)
+	caller := client(t, card, clientToken)
+	extended, err := caller.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
+	require.NoError(t, err)
+	require.Equal(t, card, extended)
+	require.NoError(t, caller.UpdateCard(extended))
+}
+
+func TestAgentExtendedCardRequiresAccessToTheAgent(t *testing.T) {
+	srv, _ := serve(t, &fakeAgents{})
+	for _, agentTenant := range []string{"acme/no-such-agent", "shared/twin", "acme/broken", "kagent/default-agent"} {
+		t.Run(agentTenant, func(t *testing.T) {
+			caller, err := a2aclient.NewFromEndpoints(t.Context(), []*a2a.AgentInterface{{
+				URL: srv.URL + "/a2a/" + agentTenant, ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version,
+			}}, a2aclient.WithJSONRPCTransport(&http.Client{Transport: bearerTransport{token: clientToken}}))
+			require.NoError(t, err)
+			_, err = caller.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
+			require.ErrorIs(t, err, a2a.ErrUnauthorized)
+		})
+	}
+}
+
+func TestSharedEndpointExtendedCardRequiresAnAgent(t *testing.T) {
+	agents := &fakeAgents{}
+	srv, _ := serve(t, agents)
+	caller, err := a2aclient.NewFromEndpoints(t.Context(), []*a2a.AgentInterface{{
+		URL: srv.URL + "/a2a", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: a2a.Version,
+	}}, a2aclient.WithJSONRPCTransport(&http.Client{Transport: bearerTransport{token: clientToken}}))
+	require.NoError(t, err)
+	_, err = caller.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{})
+	require.ErrorIs(t, err, a2a.ErrExtendedCardNotConfigured)
+	require.Zero(t, agents.cardReads)
+	extended, err := caller.GetExtendedAgentCard(t.Context(), &a2a.GetExtendedAgentCardRequest{Tenant: tenant})
+	require.NoError(t, err)
+	require.Equal(t, "export-agent", extended.Name)
+	require.Equal(t, srv.URL+"/a2a/"+tenant, extended.SupportedInterfaces[0].URL)
+}
+
 func TestAgentCardNamesNothingBehindTheGateway(t *testing.T) {
 	srv, card := serve(t, &fakeAgents{})
 
@@ -85,6 +136,21 @@ func TestAgentCardNamesNothingBehindTheGateway(t *testing.T) {
 	}}, agentCard.SupportedInterfaces, "the agent's only interface is its endpoint on the gateway")
 	require.Equal(t, card.SecuritySchemes, agentCard.SecuritySchemes, "the gateway's sign-in schemes, not the controller's")
 	require.Equal(t, card.SecurityRequirements, agentCard.SecurityRequirements)
+}
+
+func TestAgentCardKeepsTheConfiguredPublicOriginAndPath(t *testing.T) {
+	const publicURL = "https://agents.private.internal/proxy/a2a"
+	card := a2aserver.NewCard(a2aserver.CardConfig{URL: publicURL, Version: "test"})
+	paths := a2aserver.NewAgentPaths(&a2aserver.Handler{Agents: &fakeAgents{}, Card: card, Organizations: organizations{}}, "/a2a/")
+	request := httptest.NewRequestWithContext(pkga2a.WithForwardedToken(t.Context(), clientToken), http.MethodGet, agentCardPath, nil)
+	request.Host = "untrusted.example"
+	request.Header.Set("Forwarded", "host=untrusted.example;proto=http")
+	request.Header.Set("X-Forwarded-Host", "untrusted.example")
+	recorder := httptest.NewRecorder()
+	paths.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	actual := decodeCard(t, recorder.Body.Bytes())
+	require.Equal(t, publicURL+"/"+tenant, actual.SupportedInterfaces[0].URL)
 }
 
 func TestAgentCardOfAnAgentTheCallerMayNotUseIsNotFound(t *testing.T) {
@@ -188,43 +254,4 @@ func TestAgentCardIsReusedForAMinute(t *testing.T) {
 		require.Equal(t, http.StatusOK, read())
 		require.Equal(t, 2, agents.cardReads, "after a minute the card is read again")
 	})
-}
-
-// agentgatewayInterfaceURL ports agentgateway's rewrite of an Agent Card's
-// interface URLs for a route without a URL rewrite filter
-// (crates/agentgateway/src/a2a/mod.rs, rewrite_agent_card,
-// build_agent_path and public_interface_url): the public card URL without
-// its /.well-known/agent-card.json suffix, followed by what remains of the
-// interface's path after the backend request path without that suffix.
-func agentgatewayInterfaceURL(publicCardURL, backendCardPath, interfaceURL string) string {
-	base := strings.TrimSuffix(publicCardURL, "/.well-known/agent-card.json")
-	backendAgentPath := strings.TrimSuffix(backendCardPath, "/.well-known/agent-card.json")
-	path := interfaceURL
-	if i := strings.Index(interfaceURL, "://"); i >= 0 {
-		if j := strings.Index(interfaceURL[i+3:], "/"); j >= 0 {
-			path = interfaceURL[i+3+j:]
-		} else {
-			path = ""
-		}
-	}
-	relative := path
-	if rest, ok := strings.CutPrefix(path, backendAgentPath); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
-		relative = rest
-	}
-	return base + relative
-}
-
-func TestAgentCardURLSurvivesAgentgatewaysRewrite(t *testing.T) {
-	const publicURL = "https://agents.example.com"
-	card := a2aserver.NewCard(a2aserver.CardConfig{URL: publicURL + "/a2a", Version: "test"})
-	paths := a2aserver.NewAgentPaths(&a2aserver.Handler{Agents: &fakeAgents{}, Card: card, Organizations: organizations{}}, "/a2a/")
-	req := httptest.NewRequestWithContext(pkga2a.WithForwardedToken(t.Context(), clientToken), http.MethodGet, agentCardPath, nil)
-	recorder := httptest.NewRecorder()
-	paths.ServeHTTP(recorder, req)
-	require.Equal(t, http.StatusOK, recorder.Code)
-
-	emitted := decodeCard(t, recorder.Body.Bytes()).SupportedInterfaces[0].URL
-	require.Equal(t, publicURL+"/a2a/"+tenant, emitted)
-	require.Equal(t, emitted, agentgatewayInterfaceURL(publicURL+agentCardPath, agentCardPath, emitted),
-		"agentgateway's card rewrite leaves the gateway's agent URL as it is")
 }
